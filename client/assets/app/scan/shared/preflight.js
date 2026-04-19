@@ -117,8 +117,8 @@ function shouldUseGeoSweep() {
 }
 
 async function geoSweepScan(today) {
-  // Build a fast lookup: lowercase name → original name (for case-insensitive matching)
-  const artistIndex = new Map(ARTISTS.map(a => [a.toLowerCase(), a]));
+  // Build a normalized alias index for exact performer-slot matches.
+  const artistIndex = buildArtistAliasIndex(ARTISTS);
   const found = new Map(); // artist → shows[]
 
   dblog('info', `Geo sweep: scanning ${[...includeCountries].join(',')} for all music events, then matching ${ARTISTS.length} artists`);
@@ -155,22 +155,14 @@ async function geoSweepScan(today) {
         const date = ev.dates?.start?.localDate;
         if (!date || date < today) continue;
 
-        const v = ev._embedded?.venues?.[0];
-        const lat = parseFloat(v?.location?.latitude);
-        const lng = parseFloat(v?.location?.longitude);
         const attractions = ev._embedded?.attractions || [];
         for (const attr of attractions) {
-          const attrLower = (attr.name || '').toLowerCase();
-          if (!artistIndex.has(attrLower)) continue; // not one of our artists
+          const attrKey = _normText(attr.name || '');
+          if (!artistIndex.has(attrKey)) continue; // not one of our artists
 
-          const artist = artistIndex.get(attrLower);
-          const show = {
-            id: ev.id, artist, date,
-            venue: v?.name || '', city: v?.city?.name || '',
-            country: cc, state: v?.state?.stateCode || '',
-            lat: isNaN(lat) ? null : lat, lng: isNaN(lng) ? null : lng,
-            url: ev.url, eventName: ev.name || '', _src: 'tm_geo', isFest: isFestivalLikeEvent(ev),
-          };
+          const artist = artistIndex.get(attrKey);
+          const show = buildConcertFromTicketmasterEvent(artist, ev, 'tm_geo', { country: cc });
+          if (!show) continue;
           if (!found.has(artist)) found.set(artist, []);
           // Avoid duplicate events (same ID, same artist)
           const existing = found.get(artist);

@@ -184,13 +184,6 @@ function _eventNameLooksLikeArtistShow(artist, evName) {
   });
 }
 
-function artistMatch(artist, ev, ambig) {
-  const attractions = ev._embedded?.attractions || [];
-  if (attractions.some(a => _attractionMatchesArtist(artist, a.name))) return true;
-  if (ambig || attractions.length) return false;
-  return _eventNameLooksLikeArtistShow(artist, ev.name || '');
-}
-
 function _festivalConcertBridge(f, c) {
   if (!f || !c || !f.date || !c.date || !c.artist) return false;
   const from = shiftIsoDate(f.date, -1);

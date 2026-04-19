@@ -1,13 +1,5 @@
 'use strict';
 
-function artistIsAmbiguous(name) {
-  const n = (name || '').trim().toLowerCase();
-  if (n.length <= 2) return true;
-  if (!n.includes(' ') && n.length <= 3) return true;
-  if (AMBIG_OVERRIDE.has(n)) return true;
-  return false;
-}
-
 // Cache TTL for attractionIds — they almost never change
 const TTL_ATTRACTION    = 30 * 24 * 3600e3; // 30 days — IDs never change, cache aggressively
 const TTL_UPCOMING      = 24 * 3600e3;       // 24h — re-check event count daily
@@ -222,20 +214,9 @@ async function fetchConcerts(artist, today, existingShows = null) {
             const evs2 = d2?._embedded?.events || [];
             for (const ev of evs2) {
               if (!attractionId && !artistMatch(artist, ev, ambig)) continue;
-              const date = ev.dates?.start?.localDate; if (!date) continue;
-              const v = ev._embedded?.venues?.[0];
-              const lat = parseFloat(v?.location?.latitude);
-              const lng = parseFloat(v?.location?.longitude);
-              const cc = v?.country?.countryCode || '';
-              if (!countryAllowed(cc)) continue;
-              shows.push({
-                id: ev.id, artist, date,
-                venue: v?.name || '', city: v?.city?.name || '',
-                country: cc, state: v?.state?.stateCode || '',
-                lat: isNaN(lat) ? null : lat, lng: isNaN(lng) ? null : lng,
-                url: ev.url, eventName: ev.name || '', _src: 'tm',
-                isFest: isFestivalLikeEvent(ev),
-              });
+              const show = buildConcertFromTicketmasterEvent(artist, ev, 'tm');
+              if (!show || !countryAllowed(show.country)) continue;
+              shows.push(show);
             }
             break;
           }
@@ -249,21 +230,9 @@ async function fetchConcerts(artist, today, existingShows = null) {
 
     for (const ev of evs) {
       if (!attractionId && !artistMatch(artist, ev, ambig)) continue;
-      const date = ev.dates?.start?.localDate; if (!date) continue;
-      const v = ev._embedded?.venues?.[0];
-      const lat = parseFloat(v?.location?.latitude);
-      const lng = parseFloat(v?.location?.longitude);
-      const cc = v?.country?.countryCode || '';
-      if (!countryAllowed(cc)) continue;
-
-      shows.push({
-        id: ev.id, artist, date,
-        venue: v?.name || '', city: v?.city?.name || '',
-        country: cc, state: v?.state?.stateCode || '',
-        lat: isNaN(lat) ? null : lat, lng: isNaN(lng) ? null : lng,
-        url: ev.url, eventName: ev.name || '', _src: 'tm',
-        isFest: isFestivalLikeEvent(ev),
-      });
+      const show = buildConcertFromTicketmasterEvent(artist, ev, 'tm');
+      if (!show || !countryAllowed(show.country)) continue;
+      shows.push(show);
     }
 
     if (evs.length < TM_MAX) break; // last page — no need to fetch more
@@ -330,18 +299,9 @@ async function fetchBIT(artist, today) {
     if (!Array.isArray(data)) return [];
     const shows = [];
     for (const ev of data) {
-      const date = ev.datetime?.split('T')[0]; if (!date || date < today) continue;
-      const v = ev.venue || {};
-      const lat = parseFloat(v.latitude), lng = parseFloat(v.longitude);
-      const cc = (v.country || '').slice(0,2).toUpperCase() || '';
-      if (!countryAllowed(cc)) continue;
-      shows.push({
-        id: 'bit_' + ev.id, artist, date,
-        venue: v.name || '', city: v.city || '',
-        country: cc, state: v.region || '',
-        lat: isNaN(lat) ? null : lat, lng: isNaN(lng) ? null : lng,
-        url: ev.url || '', eventName: ev.title || ev.description || '', _src: 'bit',
-      });
+      const show = buildConcertFromBandsintownEvent(artist, ev, today);
+      if (!show || !countryAllowed(show.country)) continue;
+      shows.push(show);
     }
     if (shows.length) dblog('ok', `${artist}: +${shows.length} shows (Bandsintown fallback)`);
     return shows;

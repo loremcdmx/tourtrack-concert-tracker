@@ -1,95 +1,20 @@
 'use strict';
 
 function deduplicateConcerts(list) {
-  return _deduplicateConcerts(list, false);
+  return deduplicateConcertRecords(list, false);
 }
 
 function _concertScore(c) {
-  return (c.url ? 6 : 0)
-    + (c.lat != null && c.lng != null ? 4 : 0)
-    + (_venueCore(c.venue || '').length ? 3 : 0)
-    + (_cityCore(c.city || '').length ? 2 : 0)
-    + (_normalizedUrlKey(c.url).length ? 1 : 0)
-    + ((c.eventName || '').length > (c.artist || '').length ? 1 : 0)
-    + (c.isFest ? 1 : 0);
+  return concertQualityScore(c);
 }
 function _sameConcert(a, b, aggressive) {
-  if (_normText(a.artist) !== _normText(b.artist) || a.date !== b.date) return false;
-
-  const urlA = _normalizedUrlKey(a.url);
-  const urlB = _normalizedUrlKey(b.url);
-  if (urlA && urlB && urlA === urlB) return true;
-  if (a.id && b.id && a.id === b.id) return true;
-
-  const venueA = _venueCore(a.venue || '');
-  const venueB = _venueCore(b.venue || '');
-  const cityA = _cityCore(a.city || '');
-  const cityB = _cityCore(b.city || '');
-  const sameCountry = !(a.country && b.country) || a.country === b.country;
-
-  if (venueA && venueB && venueA === venueB && (!cityA || !cityB || cityA === cityB) && sameCountry) return true;
-  if (venueA && venueB && sameCountry && (!cityA || !cityB || cityA === cityB) &&
-      _tokenOverlap(venueA, venueB) >= (aggressive ? 0.58 : 0.72)) return true;
-
-  if (a.lat != null && a.lng != null && b.lat != null && b.lng != null) {
-    const dist = geoDist(a.lat, a.lng, b.lat, b.lng);
-    if (dist <= (aggressive ? 8 : 3)) {
-      if (!cityA || !cityB || cityA === cityB) return true;
-      if (venueA && venueB && _tokenOverlap(venueA, venueB) >= 0.45) return true;
-    }
-  }
-
-  if (aggressive && cityA && cityB && cityA === cityB && sameCountry) {
-    const eventOverlap = _tokenOverlap(a.eventName || a.venue, b.eventName || b.venue);
-    if ((!venueA || !venueB || _tokenOverlap(venueA, venueB) >= 0.45) && eventOverlap >= 0.35) return true;
-  }
-  return false;
+  return concertsLikelySame(a, b, { aggressive });
 }
 function _mergeConcertPair(a, b) {
-  const primary = _concertScore(b) > _concertScore(a) ? b : a;
-  const secondary = primary === a ? b : a;
-  return {
-    ...secondary,
-    ...primary,
-    id: primary.id || secondary.id,
-    artist: primary.artist || secondary.artist,
-    date: primary.date || secondary.date,
-    venue: (_venueCore(primary.venue).length >= _venueCore(secondary.venue).length ? primary.venue : secondary.venue) || primary.venue || secondary.venue || '',
-    city: primary.city || secondary.city || '',
-    country: primary.country || secondary.country || '',
-    state: primary.state || secondary.state || '',
-    lat: primary.lat != null ? primary.lat : secondary.lat,
-    lng: primary.lng != null ? primary.lng : secondary.lng,
-    url: primary.url || secondary.url || '',
-    eventName: primary.eventName || secondary.eventName || '',
-    isFest: !!(primary.isFest || secondary.isFest),
-    _src: _uniqueCI([primary._src, secondary._src].filter(Boolean)).join('+'),
-  };
+  return mergeConcertRecords(a, b);
 }
 function _deduplicateConcerts(list, aggressive) {
-  const buckets = new Map();
-  for (const c of list || []) {
-    if (!c || !c.artist || !c.date) continue;
-    const key = `${_normText(c.artist)}|${c.date}`;
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push({ ...c });
-  }
-
-  const out = [];
-  for (const group of buckets.values()) {
-    group.sort((a, b) => _concertScore(b) - _concertScore(a));
-    const merged = [];
-    for (const c of group) {
-      const dup = merged.find(m => _sameConcert(m, c, aggressive));
-      if (!dup) merged.push(c);
-      else Object.assign(dup, _mergeConcertPair(dup, c));
-    }
-    out.push(...merged);
-  }
-  return out.sort((a, b) =>
-    (a.date || '').localeCompare(b.date || '') ||
-    (a.artist || '').localeCompare(b.artist || '') ||
-    (a.city || '').localeCompare(b.city || ''));
+  return deduplicateConcertRecords(list, aggressive);
 }
 
 // ── visibleConcerts() ─────────────────────────────────────────────
@@ -103,7 +28,7 @@ function _deduplicateConcerts(list, aggressive) {
 // slip through the city-level second pass because the sub-venue names differ.
 function visibleConcerts() {
   if (showPossibleDupes) return concerts;
-  return _deduplicateConcerts(concerts, true);
+  return deduplicateConcertRecords(concerts, true);
 }
 
 function togglePossibleDupes() {
