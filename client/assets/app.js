@@ -8209,7 +8209,13 @@ function renderOnboardSpotifyAuth() {
   if (!wrap || !button || !logout || !status) return;
 
   if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
-    wrap.style.display = 'none';
+    wrap.style.display = '';
+    button.disabled = false;
+    button.textContent = 'Open Spotify setup';
+    logout.style.display = 'none';
+    status.textContent = 'Spotify login is not configured on this server yet. Add SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SESSION_SECRET in .env or Vercel, then reload.';
+    status.dataset.tone = 'error';
+    renderSpotifyPlaylistChoices();
     return;
   }
 
@@ -8360,7 +8366,12 @@ function handleSpotifyAuthReturnFlag() {
 }
 
 async function onboardSpotifyAuthAction() {
-  if (!SERVER_MANAGED_SPOTIFY_LOGIN) return;
+  if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
+    setSpotifyAuthFlash('Spotify login is not configured yet. Finish server setup, then reload this page.', 'error');
+    renderOnboardSpotifyAuth();
+    if (typeof openSettings === 'function') openSettings();
+    return;
+  }
   if (!spotifyAccountState.connected) {
     const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     window.location.assign(`/api/auth/spotify/login?returnTo=${encodeURIComponent(returnTo)}`);
