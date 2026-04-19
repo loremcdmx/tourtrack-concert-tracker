@@ -8229,7 +8229,7 @@ function renderSpotifyLocalSetupPanel() {
   }
 
   wrap.style.display = SERVER_MANAGED_SPOTIFY_LOGIN ? 'none' : '';
-  hint.textContent = 'Paste your Spotify app credentials once for this local server, then add the Redirect URI in your Spotify dashboard.';
+  hint.textContent = 'Use the Spotify Dashboard link below, copy Client ID and Client Secret, then add the Redirect URI shown here.';
   saveBtn.disabled = false;
 }
 

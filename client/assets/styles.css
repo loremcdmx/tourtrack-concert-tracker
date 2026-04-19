@@ -1617,6 +1617,36 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
   color:var(--muted2); margin-bottom:5px; display:block;
 }
 .sset-hint { font-size:.58rem; color:var(--muted); line-height:1.6; margin-bottom:8px; }
+.sset-guide {
+  margin-top:10px;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:var(--s1);
+}
+.sset-guide-title {
+  font-size:.52rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--muted2);
+  margin-bottom:8px;
+}
+.sset-guide-list {
+  margin:0;
+  padding-left:18px;
+  display:grid;
+  gap:6px;
+  font-size:.58rem;
+  color:var(--muted);
+  line-height:1.55;
+}
+.sset-guide-list a {
+  color:var(--text);
+  text-decoration:none;
+}
+.sset-guide-list a:hover {
+  color:var(--accent);
+}
 .sset-link { font-size:.55rem; color:var(--muted2); margin-top:6px; line-height:1.6; }
 .sset-link a { color:var(--muted); text-decoration:none; transition:color .12s; }
 .sset-link a:hover { color:var(--accent); }

@@ -771,6 +771,16 @@
         </div>
         <div id="sp-local-setup" style="display:none;margin-top:12px">
           <div class="sset-hint" id="sp-local-setup-hint">Paste your Spotify app credentials once for this local server.</div>
+          <div class="sset-guide">
+            <div class="sset-guide-title">Where to get Spotify keys</div>
+            <ol class="sset-guide-list">
+              <li><a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer">Open Spotify Developer Dashboard</a></li>
+              <li>Create an app or open an existing app</li>
+              <li>Copy <strong>Client ID</strong></li>
+              <li>Open app settings and reveal <strong>Client Secret</strong></li>
+              <li>Add the Redirect URI shown below, save, then paste both values here</li>
+            </ol>
+          </div>
           <div class="sset-link" id="sp-local-redirect-row" style="margin-top:8px">
             Redirect URI: <code id="sp-local-redirect"></code>
           </div>
@@ -787,7 +797,7 @@
         </div>
         <input type="hidden" id="sp-client-id" value="">
         <input type="hidden" id="sp-client-secret" value="">
-        <div class="sset-link"><a href="https://developer.spotify.com/dashboard" target="_blank">developer.spotify.com</a> &#x2192; set Client ID + Secret in the server environment</div>
+        <div class="sset-link"><a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer">Spotify Developer Dashboard</a> &#x2192; App &#x2192; Settings &#x2192; Client ID / View client secret</div>
       </div>
 
       <details id="proxy-details" class="sset-details">
