@@ -947,8 +947,8 @@ function renderCalendar() {
       // Grouped: sort by ARTISTS list order (or alpha), visible ones first
       const trackedSet = new Set(ARTISTS.map(a => a.toLowerCase()));
       const sorted = [...group].sort((a, b) => {
-        const ia = ARTISTS.findIndex(x => x.toLowerCase() === a.artist.toLowerCase());
-        const ib = ARTISTS.findIndex(x => x.toLowerCase() === b.artist.toLowerCase());
+        const ia = artistListPosition(a.artist);
+        const ib = artistListPosition(b.artist);
         return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
       });
       // Deduplicate by artist name (same artist can appear multiple times as featured)
@@ -1000,9 +1000,13 @@ function renderCalendar() {
 
   // Precompute last-show dates per artist (only for tours with ≥3 shows)
   const lastShowByArtist = {};
+  const tourCountsByArtist = {};
   for (const [artist, evs] of Object.entries(allTourData)) {
-    if (evs.length >= 3) lastShowByArtist[artist.toLowerCase()] = evs[evs.length - 1].date;
+    const artistKey = artist.toLowerCase();
+    if (evs.length >= 3) lastShowByArtist[artistKey] = evs[evs.length - 1].date;
+    tourCountsByArtist[artistKey] = evs.filter(x => x.date >= today).length;
   }
+  const trackedArtistKeys = new Set(ARTISTS.map(a => a.toLowerCase()));
 
   const frag = document.createDocumentFragment();
   const primeArtists = new Set();
@@ -1218,7 +1222,7 @@ function createCalendarMonthSeparator(month) {
 }
 
 function buildCalendarEventRow(ev, ctx) {
-  const { today, lastShowByArtist, primeArtists } = ctx;
+  const { today, lastShowByArtist, primeArtists, trackedArtistKeys, tourCountsByArtist } = ctx;
   const d = ev.date.split('-');
   const dayname = new Date(ev.date + 'T12:00:00').toLocaleString('en-US', { weekday: 'short' }).toUpperCase();
   const loc = [ev.city, ev.state && ev.country === 'US' ? ev.state : '', ev.country ? flag(ev.country) : ''].filter(Boolean).join(' ');
@@ -1260,7 +1264,6 @@ function buildCalendarEventRow(ev, ctx) {
 
     const chipsEl = document.createElement('div');
     chipsEl.className = 'ev-artists';
-    const trackedSet = new Set(ARTISTS.map(a => a.toLowerCase()));
     const seenArtists = new Set();
 
     ev.artists.forEach(cc => {
@@ -1269,7 +1272,7 @@ function buildCalendarEventRow(ev, ctx) {
       if (seenArtists.has(key)) return;
       seenArtists.add(key);
       primeArtists.add(cc.artist);
-      const isMine = trackedSet.has(key);
+      const isMine = trackedArtistKeys.has(key);
       const chip = document.createElement('span');
       chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
       appendArtistChipIdentity(chip, cc.artist, isMine ? (ARTIST_PLAYS[key] || 0) : 0);
@@ -1367,7 +1370,7 @@ function buildCalendarEventRow(ev, ctx) {
     const fest = _festForConcert(ev);
     const metaRow = document.createElement('div');
     metaRow.className = 'ev-artists';
-    const artistTourCount = (allTourData[ev.artist] || []).filter(x => x.date >= today).length;
+    const artistTourCount = tourCountsByArtist[(ev.artist || '').toLowerCase()] || 0;
     if (fest) {
       const chip = document.createElement('span');
       chip.className = 'ev-artist-chip mine';
@@ -1472,8 +1475,8 @@ renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
     const group = venueGroups.get(key);
     if (group.length >= IMPLICIT_FEST_THRESHOLD && shouldGroupAsVenueFestival(group)) {
       const sorted = [...group].sort((a, b) => {
-        const ia = ARTISTS.findIndex(x => x.toLowerCase() === a.artist.toLowerCase());
-        const ib = ARTISTS.findIndex(x => x.toLowerCase() === b.artist.toLowerCase());
+        const ia = artistListPosition(a.artist);
+        const ib = artistListPosition(b.artist);
         return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
       });
       const seenNames = new Set();
@@ -1524,9 +1527,13 @@ renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
   }
 
   const lastShowByArtist = {};
+  const tourCountsByArtist = {};
   for (const [artist, evs] of Object.entries(allTourData)) {
-    if (evs.length >= 3) lastShowByArtist[artist.toLowerCase()] = evs[evs.length - 1].date;
+    const artistKey = artist.toLowerCase();
+    if (evs.length >= 3) lastShowByArtist[artistKey] = evs[evs.length - 1].date;
+    tourCountsByArtist[artistKey] = evs.filter(x => x.date >= today).length;
   }
+  const trackedArtistKeys = new Set(ARTISTS.map(a => a.toLowerCase()));
 
   const renderItems = [];
   for (const [month, evs] of Object.entries(byMonth)) {
@@ -1544,7 +1551,7 @@ renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
     for (let i = start; i < end; i++) {
       const item = renderItems[i];
       if (item.type === 'month') frag.appendChild(createCalendarMonthSeparator(item.month));
-      else frag.appendChild(buildCalendarEventRow(item.ev, { today, lastShowByArtist, primeArtists }));
+      else frag.appendChild(buildCalendarEventRow(item.ev, { today, lastShowByArtist, primeArtists, trackedArtistKeys, tourCountsByArtist }));
     }
     body.appendChild(frag);
     if (end < renderItems.length) requestAnimationFrame(() => renderChunk(end));
