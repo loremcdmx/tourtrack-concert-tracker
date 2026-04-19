@@ -132,8 +132,48 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .btn-rescan-fests { color:#ffaa3c; border-color:rgba(255,170,60,.4); }
 .btn-rescan-fests:hover { background:rgba(255,170,60,.08); border-color:#ffaa3c; }
 .btn-rescan-fests:disabled { opacity:.35; pointer-events:none; }
+.btn-spotify-auth { color:#6dff9b; border-color:rgba(109,255,155,.34); }
+.btn-spotify-auth:hover { background:rgba(109,255,155,.08); border-color:#6dff9b; color:#9bffbc; }
+.btn-spotify-auth.setup { color:#ffaa3c; border-color:rgba(255,170,60,.38); }
+.btn-spotify-auth.setup:hover { background:rgba(255,170,60,.08); border-color:#ffaa3c; color:#ffc46f; }
+.btn-spotify-auth.connected { color:var(--text); border-color:rgba(200,255,95,.34); background:rgba(200,255,95,.08); }
+.btn-spotify-auth.connected:hover { color:var(--text); border-color:var(--accent); background:rgba(200,255,95,.12); }
 .btn-reset { color:var(--muted); border-color:var(--border2); }
 .btn-reset:hover { border-color:#ff6060; color:#ff8080; background:rgba(255,60,60,.07); }
+
+@media (max-width: 1180px) {
+  header {
+    height:auto;
+    min-height:3.4rem;
+    flex-wrap:wrap;
+    align-items:center;
+    row-gap:.45rem;
+    padding:.75rem 1rem;
+  }
+  .hd-status {
+    min-width:0;
+    flex:1 1 16rem;
+  }
+  .prof-bar {
+    order:4;
+    width:100%;
+    border-left:none;
+    border-right:none;
+    padding:0;
+  }
+  .hd-right {
+    width:100%;
+    margin-left:0;
+    overflow-x:auto;
+    padding-bottom:2px;
+  }
+  .hd-right::-webkit-scrollbar {
+    height:4px;
+  }
+  .hd-right .btn {
+    flex:0 0 auto;
+  }
+}
 
 /* ── ONBOARDING OVERLAY ── */
 .onboard { position:fixed; inset:0; z-index:8000; background:var(--bg);

@@ -179,9 +179,10 @@ async function serveStatic(req, res, pathname) {
     }
     const body = await fsp.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
+    const shouldBypassCache = ext === '.html' || ext === '.js' || ext === '.css';
     sendText(res, 200, body, {
       'Content-Type': STATIC_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=300',
+      'Cache-Control': shouldBypassCache ? 'no-store' : 'public, max-age=300',
     });
   } catch (error) {
     if (error && error.code === 'ENOENT') {

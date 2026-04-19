@@ -8201,6 +8201,40 @@ function renderSpotifyPlaylistChoices() {
   });
 }
 
+function renderSpotifyAccessButton() {
+  const btn = document.getElementById('spotify-auth-btn');
+  if (!btn) return;
+
+  btn.classList.remove('setup', 'connected');
+  btn.disabled = false;
+
+  if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
+    btn.textContent = 'Spotify Setup';
+    btn.classList.add('setup');
+    btn.title = 'Spotify login is not configured on this server yet.';
+    return;
+  }
+
+  if (spotifyAccountState.loading || spotifyAccountState.playlistsLoading) {
+    btn.textContent = 'Spotify...';
+    btn.disabled = true;
+    btn.title = 'Checking Spotify status...';
+    return;
+  }
+
+  if (spotifyAccountState.connected) {
+    btn.textContent = 'Spotify Ready';
+    btn.classList.add('connected');
+    btn.title = spotifyAccountState.user?.displayName
+      ? `Connected as ${spotifyAccountState.user.displayName}`
+      : 'Spotify is connected.';
+    return;
+  }
+
+  btn.textContent = 'Connect Spotify';
+  btn.title = 'Connect Spotify and pick a playlist.';
+}
+
 function renderOnboardSpotifyAuth() {
   const wrap = document.getElementById('onboard-auth-wrap');
   const button = document.getElementById('onboard-auth-btn');
@@ -8216,6 +8250,7 @@ function renderOnboardSpotifyAuth() {
     status.textContent = 'Spotify login is not configured on this server yet. Add SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SESSION_SECRET in .env or Vercel, then reload.';
     status.dataset.tone = 'error';
     renderSpotifyPlaylistChoices();
+    renderSpotifyAccessButton();
     return;
   }
 
@@ -8255,6 +8290,7 @@ function renderOnboardSpotifyAuth() {
   status.textContent = message;
   status.dataset.tone = tone;
   renderSpotifyPlaylistChoices();
+  renderSpotifyAccessButton();
 }
 
 async function refreshSpotifyAccount(opts = {}) {
@@ -8380,6 +8416,29 @@ async function onboardSpotifyAuthAction() {
   await loadSpotifyAccountPlaylists(true);
 }
 
+function openSpotifyAccess() {
+  if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
+    setSpotifyAuthFlash('Spotify login is not configured yet. Finish server setup, then reload this page.', 'error');
+    showOnboard();
+    showNewImport();
+    if (typeof openSettings === 'function') {
+      openSettings();
+      if (typeof setSettingsTab === 'function') setSettingsTab('advanced');
+    }
+    renderOnboardSpotifyAuth();
+    return;
+  }
+
+  if (spotifyAccountState.connected) {
+    showOnboard();
+    showNewImport();
+    loadSpotifyAccountPlaylists(true).catch(() => {});
+    return;
+  }
+
+  onboardSpotifyAuthAction();
+}
+
 async function spotifyLogout() {
   try {
     await fetch('/api/auth/spotify/logout', {
@@ -8400,6 +8459,7 @@ async function spotifyLogout() {
   spotifyAccountState.error = '';
   setSpotifyAuthFlash('Spotify disconnected. You can still open the sample below.');
   renderOnboardSpotifyAuth();
+  renderSpotifyAccessButton();
 }
 
 function samePlaylistUrl(a, b) {
@@ -9059,6 +9119,7 @@ handleSpotifyAuthReturnFlag();
 restore();
 profInit();       // load active profile snapshot into ARTISTS/ARTIST_PLAYS if non-Main
 restoreProxySettings();
+renderSpotifyAccessButton();
 renderOnboardSpotifyAuth();
 refreshSpotifyAccount({ withPlaylists: !!spotifyAuthFlash }).catch(() => {});
 initMap();
