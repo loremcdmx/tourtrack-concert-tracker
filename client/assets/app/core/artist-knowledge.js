@@ -2,8 +2,10 @@
 
 const ARTIST_KNOWLEDGE_TTL = 14 * 24 * 3600e3;
 const ARTIST_KNOWLEDGE_MISS_TTL = 12 * 3600e3;
-const ARTIST_KNOWLEDGE_VER = 1;
+const ARTIST_KNOWLEDGE_VER = 2;
 
+const artistKnowledgeCache = new Map();
+const artistKnowledgeAliasCache = new Map();
 const artistMediaCache = new Map();
 const artistMediaInflight = new Map();
 const artistMediaPrimed = new Set();
@@ -27,20 +29,86 @@ function artistAvatarAccent(artist, fallbackColor) {
   return 'var(--accent)';
 }
 
-function getCachedArtistMedia(artist) {
-  const key = artistMediaKey(artist);
-  return key && artistMediaCache.has(key) ? artistMediaCache.get(key) : undefined;
+function _knowledgeList(...lists) {
+  return _uniqueCI(lists.flat().filter(Boolean).map(v => String(v).trim()).filter(Boolean));
 }
 
-function artistKnowledgeFresh(record) {
-  if (!record || record.ver !== ARTIST_KNOWLEDGE_VER || !record.fetchedAt) return false;
-  const ttl = record.miss ? ARTIST_KNOWLEDGE_MISS_TTL : ARTIST_KNOWLEDGE_TTL;
-  return (Date.now() - record.fetchedAt) < ttl;
+function _maxTs(...values) {
+  let max = 0;
+  for (const value of values) {
+    const ts = Number(value) || 0;
+    if (ts > max) max = ts;
+  }
+  return max;
+}
+
+function _normalizeKnowledgeMediaNode(node) {
+  if (!node) return null;
+  return {
+    source: node.source || '',
+    matchName: node.matchName || '',
+    fetchedAt: Number(node.fetchedAt || node.ts || 0) || 0,
+    miss: !!node.miss,
+    images: {
+      thumb: node.images?.thumb || node.thumb || '',
+      large: node.images?.large || node.large || '',
+      xl: node.images?.xl || node.xl || '',
+    },
+  };
+}
+
+function normalizeArtistKnowledgeRecord(record, artist = '') {
+  const key = artistMediaKey(record?.artist || artist);
+  const legacyMedia = record && !record.media && (
+    record.images ||
+    Object.prototype.hasOwnProperty.call(record, 'miss') ||
+    record.matchName ||
+    record.source ||
+    record.fetchedAt
+  ) ? {
+    source: record.source || '',
+    matchName: record.matchName || '',
+    fetchedAt: record.fetchedAt || record.updatedAt || 0,
+    miss: !!record.miss,
+    images: record.images || {},
+  } : null;
+
+  const media = _normalizeKnowledgeMediaNode(record?.media || legacyMedia);
+  const ticketmaster = record?.ticketmaster ? { ...record.ticketmaster } : {};
+  const bandsintown = record?.bandsintown ? { ...record.bandsintown } : {};
+  const coverage = record?.coverage ? { ...record.coverage } : {};
+  const aliases = _knowledgeList(
+    record?.artist || artist || '',
+    ...(record?.aliases || []),
+    media?.matchName || '',
+    ticketmaster.attractionName || '',
+    bandsintown.artistName || '',
+    ...(coverage.aliases || []),
+  );
+
+  return {
+    artist: record?.artist || artist || '',
+    normalized: record?.normalized || key,
+    ver: ARTIST_KNOWLEDGE_VER,
+    updatedAt: _maxTs(
+      record?.updatedAt || 0,
+      media?.fetchedAt || 0,
+      ticketmaster.checkedAt || 0,
+      bandsintown.checkedAt || 0,
+      coverage.lastConcertScanAt || 0,
+    ),
+    aliases,
+    media,
+    ticketmaster,
+    bandsintown,
+    coverage,
+  };
 }
 
 function artistKnowledgeToMedia(record) {
-  if (!record || record.miss) return null;
-  const images = record.images || {};
+  const mediaNode = _normalizeKnowledgeMediaNode(record?.media || record);
+  if (!mediaNode || mediaNode.miss) return null;
+  const images = mediaNode.images || {};
   const thumb = images.thumb || images.large || images.xl || '';
   const large = images.large || images.xl || thumb;
   const xl = images.xl || large || thumb;
@@ -49,66 +117,194 @@ function artistKnowledgeToMedia(record) {
     thumb,
     large,
     xl,
-    source: record.source || '',
-    matchName: record.matchName || '',
-    ts: record.fetchedAt || 0,
+    source: mediaNode.source || '',
+    matchName: mediaNode.matchName || '',
+    ts: mediaNode.fetchedAt || 0,
   };
 }
 
-function buildArtistKnowledgeRecord(artist, match) {
-  const key = artistMediaKey(artist);
-  const record = {
-    artist: artist || '',
-    normalized: key,
-    fetchedAt: Date.now(),
-    ver: ARTIST_KNOWLEDGE_VER,
-    source: 'deezer',
-    matchName: match?.name || '',
-    miss: !match,
-    images: {},
-  };
-  if (match) {
-    record.images = {
-      thumb: match.picture_medium || match.picture_big || match.picture_xl || '',
-      large: match.picture_big || match.picture_xl || match.picture_medium || '',
-      xl: match.picture_xl || match.picture_big || match.picture_medium || '',
-    };
-  }
-  return record;
+function artistKnowledgeMediaFresh(record) {
+  const mediaNode = _normalizeKnowledgeMediaNode(record?.media || record);
+  if (!mediaNode || !mediaNode.fetchedAt) return false;
+  const ttl = mediaNode.miss ? ARTIST_KNOWLEDGE_MISS_TTL : ARTIST_KNOWLEDGE_TTL;
+  return (Date.now() - mediaNode.fetchedAt) < ttl;
 }
 
-async function readArtistKnowledge(key) {
-  if (!key || typeof DB === 'undefined') return undefined;
+function artistKnowledgeCoverageFresh(record) {
+  const checkedAt = Number(record?.coverage?.lastConcertScanAt || 0) || 0;
+  if (!checkedAt) return false;
+  const upcomingCount = Number(record?.coverage?.upcomingCount || 0) || 0;
+  const ttl = upcomingCount > 0 ? 18 * 3600e3 : 36 * 3600e3;
+  return (Date.now() - checkedAt) < ttl;
+}
+
+function cacheArtistKnowledgeRecord(key, record) {
+  const normalized = normalizeArtistKnowledgeRecord(record, record?.artist || '');
+  const finalKey = normalized.normalized || key;
+  artistKnowledgeCache.set(finalKey, normalized);
+  artistKnowledgeAliasCache.set(finalKey, (normalized.aliases || []).map(alias => _normText(alias)).filter(Boolean));
+  artistMediaCache.set(finalKey, artistKnowledgeToMedia(normalized));
+  return normalized;
+}
+
+async function readArtistKnowledgeRecord(artistOrKey, opts = {}) {
+  const key = opts.byKey ? artistOrKey : artistMediaKey(artistOrKey);
+  if (!key || typeof DB === 'undefined') return null;
+  if (artistKnowledgeCache.has(key)) return artistKnowledgeCache.get(key);
   try {
     const record = await DB.get('artistKnowledge', key);
-    if (!record) return undefined;
-    if (!artistKnowledgeFresh(record)) {
-      DB.delete('artistKnowledge', key).catch(() => {});
-      return undefined;
-    }
-    const media = artistKnowledgeToMedia(record);
-    artistMediaCache.set(key, media);
-    return media;
+    if (!record) return null;
+    return cacheArtistKnowledgeRecord(key, {
+      ...record,
+      artist: record.artist || (opts.byKey ? '' : artistOrKey),
+    });
   } catch (_) {
-    return undefined;
+    return null;
   }
+}
+
+async function getArtistKnowledgeRecord(artist) {
+  return readArtistKnowledgeRecord(artist);
+}
+
+async function hydrateArtistKnowledge(artists, concurrency = 12) {
+  const queue = _uniqueCI(artists || [])
+    .filter(Boolean)
+    .filter(artist => !artistKnowledgeCache.has(artistMediaKey(artist)));
+  if (!queue.length) return;
+
+  let idx = 0;
+  async function worker() {
+    while (idx < queue.length) {
+      const artist = queue[idx++];
+      await readArtistKnowledgeRecord(artist);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+}
+
+function getArtistKnowledgeAliases(artist) {
+  const key = artistMediaKey(artist);
+  return key && artistKnowledgeAliasCache.has(key) ? artistKnowledgeAliasCache.get(key) : [];
+}
+
+function getArtistCoverageHint(artist) {
+  const key = artistMediaKey(artist);
+  return key && artistKnowledgeCache.has(key) ? artistKnowledgeCache.get(key)?.coverage || null : null;
 }
 
 function persistArtistKnowledge(key, record) {
   if (!key || !record || typeof DB === 'undefined') return;
-  DB.put('artistKnowledge', key, record).catch(() => {});
+  const normalized = cacheArtistKnowledgeRecord(key, record);
+  DB.put('artistKnowledge', key, normalized).catch(() => {});
+}
+
+async function mergeArtistKnowledge(artist, patch = {}) {
+  const key = artistMediaKey(artist);
+  if (!key) return null;
+  const current = await readArtistKnowledgeRecord(key, { byKey: true }) || normalizeArtistKnowledgeRecord({ artist }, artist);
+  const next = normalizeArtistKnowledgeRecord({
+    ...current,
+    ...patch,
+    artist: current.artist || artist,
+    aliases: _knowledgeList(current.aliases || [], patch.aliases || [], patch.artist || '', artist || ''),
+    media: patch.media ? {
+      ...(current.media || {}),
+      ...patch.media,
+      images: {
+        ...((current.media || {}).images || {}),
+        ...((patch.media || {}).images || {}),
+      },
+    } : current.media,
+    ticketmaster: patch.ticketmaster ? {
+      ...(current.ticketmaster || {}),
+      ...patch.ticketmaster,
+    } : current.ticketmaster,
+    bandsintown: patch.bandsintown ? {
+      ...(current.bandsintown || {}),
+      ...patch.bandsintown,
+    } : current.bandsintown,
+    coverage: patch.coverage ? {
+      ...(current.coverage || {}),
+      ...patch.coverage,
+      sources: patch.coverage?.sources
+        ? _knowledgeList(current.coverage?.sources || [], patch.coverage.sources || [])
+        : (current.coverage || {}).sources,
+      aliases: patch.coverage?.aliases
+        ? _knowledgeList(current.coverage?.aliases || [], patch.coverage.aliases || [])
+        : (current.coverage || {}).aliases,
+    } : current.coverage,
+    updatedAt: Date.now(),
+  }, artist);
+  persistArtistKnowledge(key, next);
+  return next;
+}
+
+async function recordTicketmasterKnowledge(artist, patch = {}) {
+  return mergeArtistKnowledge(artist, {
+    aliases: [patch.attractionName || ''],
+    ticketmaster: {
+      ...patch,
+      checkedAt: patch.checkedAt || Date.now(),
+    },
+  });
+}
+
+async function recordBandsintownKnowledge(artist, patch = {}) {
+  return mergeArtistKnowledge(artist, {
+    aliases: [patch.artistName || ''],
+    bandsintown: {
+      ...patch,
+      checkedAt: patch.checkedAt || Date.now(),
+    },
+  });
+}
+
+async function recordConcertCoverageKnowledge(artist, shows, context = '') {
+  const list = Array.isArray(shows) ? shows.slice() : [];
+  const today = new Date().toISOString().split('T')[0];
+  const dates = list.map(show => show?.date).filter(Boolean).sort();
+  return mergeArtistKnowledge(artist, {
+    coverage: {
+      lastConcertScanAt: Date.now(),
+      upcomingCount: list.filter(show => show?.date && show.date >= today).length,
+      totalKnownCount: list.length,
+      firstDate: dates[0] || '',
+      lastDate: dates[dates.length - 1] || '',
+      touring: list.some(show => show?.date && show.date >= today),
+      sources: _knowledgeList(list.map(show => show?._src || '')),
+      aliases: _knowledgeList(list.map(show => show?.artist || '')),
+      context,
+    },
+  });
+}
+
+function getCachedArtistMedia(artist) {
+  const key = artistMediaKey(artist);
+  if (!key || !artistMediaCache.has(key)) return undefined;
+  const record = artistKnowledgeCache.get(key);
+  if (record && !artistKnowledgeMediaFresh(record)) return undefined;
+  return artistMediaCache.get(key);
 }
 
 async function fetchArtistMedia(artist) {
   const key = artistMediaKey(artist);
   if (!key) return null;
-  if (artistMediaCache.has(key)) return artistMediaCache.get(key);
+  if (artistMediaCache.has(key)) {
+    const cachedRecord = artistKnowledgeCache.get(key);
+    if (!cachedRecord || artistKnowledgeMediaFresh(cachedRecord)) {
+      return artistMediaCache.get(key);
+    }
+  }
   if (artistMediaInflight.has(key)) return artistMediaInflight.get(key);
 
   const req = (async () => {
+    let fallbackMedia = null;
     try {
-      const stored = await readArtistKnowledge(key);
-      if (stored !== undefined) return stored;
+      const stored = await readArtistKnowledgeRecord(key, { byKey: true });
+      fallbackMedia = artistKnowledgeToMedia(stored);
+      if (stored && artistKnowledgeMediaFresh(stored)) return fallbackMedia;
+      if (fallbackMedia) artistMediaCache.set(key, fallbackMedia);
 
       const res = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(artist)}&limit=5`);
       if (!res.ok) throw new Error(`deezer:${res.status}`);
@@ -123,15 +319,38 @@ async function fetchArtistMedia(artist) {
         items[0] ||
         null;
 
-      const record = buildArtistKnowledgeRecord(artist, match);
+      const record = await mergeArtistKnowledge(artist, {
+        aliases: [match?.name || ''],
+        media: {
+          source: 'deezer',
+          matchName: match?.name || '',
+          fetchedAt: Date.now(),
+          miss: !match,
+          images: match ? {
+            thumb: match.picture_medium || match.picture_big || match.picture_xl || '',
+            large: match.picture_big || match.picture_xl || match.picture_medium || '',
+            xl: match.picture_xl || match.picture_big || match.picture_medium || '',
+          } : {},
+        },
+      });
       const media = artistKnowledgeToMedia(record);
       artistMediaCache.set(key, media);
-      persistArtistKnowledge(key, record);
       return media;
     } catch (_) {
-      const missRecord = buildArtistKnowledgeRecord(artist, null);
+      if (fallbackMedia) {
+        artistMediaCache.set(key, fallbackMedia);
+        return fallbackMedia;
+      }
+      await mergeArtistKnowledge(artist, {
+        media: {
+          source: 'deezer',
+          matchName: '',
+          fetchedAt: Date.now(),
+          miss: true,
+          images: {},
+        },
+      });
       artistMediaCache.set(key, null);
-      persistArtistKnowledge(key, missRecord);
       return null;
     } finally {
       artistMediaInflight.delete(key);

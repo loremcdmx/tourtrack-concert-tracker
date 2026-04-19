@@ -53,6 +53,14 @@ function _artistAliases(name) {
   const base = _normText(name);
   const aliases = new Set(base ? [base] : []);
   if (base.startsWith('the ')) aliases.add(base.slice(4));
+  if (typeof getArtistKnowledgeAliases === 'function') {
+    for (const alias of getArtistKnowledgeAliases(name)) {
+      const normAlias = _normText(alias);
+      if (!normAlias) continue;
+      aliases.add(normAlias);
+      if (normAlias.startsWith('the ')) aliases.add(normAlias.slice(4));
+    }
+  }
   return [...aliases].filter(Boolean);
 }
 

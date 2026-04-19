@@ -45,9 +45,19 @@ function countryHash() {
   return countryMode + ':' + [...set].sort().join(',');
 }
 
-const TTL_ARTIST = 3 * 24 * 3600e3;  // 3-day per-artist cache for smart scan
+const TTL_ARTIST = 24 * 3600e3;  // base freshness window for artist scan cache
+const TTL_ARTIST_TOURING = 18 * 3600e3; // refresh active tours more often
+const TTL_ARTIST_HOT = 12 * 3600e3;     // very active artists stay especially fresh
+const TTL_ARTIST_DORMANT = 36 * 3600e3; // dormant artists can stay cached longer
 const TTL_FEST   = 48 * 3600e3;  // 48h festival cache
 const FEST_VER   = 3;             // bump to invalidate all festival caches (changed fetch logic)
+
+function artistCacheTTLForRecord(record, today = new Date().toISOString().split('T')[0]) {
+  const shows = Array.isArray(record?.shows) ? record.shows : [];
+  const upcoming = shows.filter(show => show?.date && show.date >= today);
+  if (!upcoming.length) return TTL_ARTIST_DORMANT;
+  return upcoming.length >= 8 ? TTL_ARTIST_HOT : TTL_ARTIST_TOURING;
+}
 
 async function clearArtistCache() {
   try {

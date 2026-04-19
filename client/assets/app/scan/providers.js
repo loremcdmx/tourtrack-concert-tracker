@@ -4,6 +4,9 @@
 const TTL_ATTRACTION    = 30 * 24 * 3600e3; // 30 days — IDs never change, cache aggressively
 const TTL_UPCOMING      = 24 * 3600e3;       // 24h — re-check event count daily
 const TTL_UPCOMING_ZERO = 48 * 3600e3;       // 48h — if 0 today, unlikely to tour overnight
+const TM_EVENTS_PAGE_SIZE = 200;
+const TM_MAX_ATTRACTION_PAGES = 12;
+const TM_MAX_KEYWORD_PAGES = 4;
 
 // ── In-memory L1 cache for attraction info ───────────────────────
 // IDB writes are async and fire-and-forget. Without this, a retry that fires
@@ -47,6 +50,15 @@ async function resolveAttractionInfo(artist) {
         // Both ID and count are fresh — return from cache, no network call
         const result = { id: cached.id, totalUpcoming: cached.totalUpcoming ?? null };
         _attractionL1.set(key, result);
+        if (typeof recordTicketmasterKnowledge === 'function') {
+          recordTicketmasterKnowledge(artist, {
+            attractionId: cached.id || '',
+            attractionName: cached.matchName || cached.name || '',
+            totalUpcoming: cached.totalUpcoming ?? null,
+            checkedAt: cached.tsCounted || cached.ts || now,
+            freshness: 'idb',
+          }).catch(() => {});
+        }
         return result;
       }
 
@@ -67,6 +79,15 @@ async function resolveAttractionInfo(artist) {
               DB.put('attractions', key, updated).catch(() => {});
               const result = { id: cached.id, totalUpcoming };
               _attractionL1.set(key, result);
+              if (typeof recordTicketmasterKnowledge === 'function') {
+                recordTicketmasterKnowledge(artist, {
+                  attractionId: cached.id || '',
+                  attractionName: cached.matchName || cached.name || '',
+                  totalUpcoming,
+                  checkedAt: now,
+                  freshness: 'count-refresh',
+                }).catch(() => {});
+              }
               dblog('ok', `${artist}: count refresh → ${totalUpcoming ?? '?'} upcoming (id cached)`);
               return result;
             }
@@ -85,7 +106,7 @@ async function resolveAttractionInfo(artist) {
 
   // ── Full network fetch (cache miss or ID expired) ─────────────────
   const ambig = artistIsAmbiguous(artist);
-  let id = null, totalUpcoming = null;
+  let id = null, totalUpcoming = null, attractionName = '';
 
   // Normalize diacritics for comparison and fallback search
   // e.g. "Síloé" → "Siloe", "Arda Bogotá" → "Arda Bogota"
@@ -101,7 +122,10 @@ async function resolveAttractionInfo(artist) {
     // 2. Diacritic-normalized match (Síloé == Siloe, Bogotá == Bogota)
     const normMatch = items.find(a => _stripDia(a.name) === artistNorm);
     if (normMatch) return normMatch;
-    // 3. Fallback: first result for unambiguous artists
+    // 3. Alias-aware attraction match using the artist knowledge base
+    const aliasMatch = items.find(a => _attractionMatchesArtist(artist, a.name));
+    if (aliasMatch) return aliasMatch;
+    // 4. Fallback: first result for unambiguous artists
     return (!ambig && items[0]) || null;
   };
 
@@ -129,6 +153,7 @@ async function resolveAttractionInfo(artist) {
 
       if (best) {
         id = best.id;
+        attractionName = best.name || '';
         const ue = best.upcomingEvents;
         totalUpcoming = ue ? (ue._total ?? null) : null;
       } else {
@@ -144,7 +169,16 @@ async function resolveAttractionInfo(artist) {
     dblog('warn', `${artist}: attraction lookup failed — ${e.message}`);
   }
 
-  const record = { id, ts: now, tsCounted: now, name: artist, totalUpcoming };
+  const record = { id, ts: now, tsCounted: now, name: artist, matchName: attractionName, totalUpcoming };
+  if (typeof recordTicketmasterKnowledge === 'function') {
+    recordTicketmasterKnowledge(artist, {
+      attractionId: id || '',
+      attractionName,
+      totalUpcoming,
+      checkedAt: now,
+      freshness: id ? 'network' : 'network-miss',
+    }).catch(() => {});
+  }
   DB.put('attractions', key, record).catch(() => {});
   const result = { id, totalUpcoming };
   _attractionL1.set(key, result); // populate L1 so retries within same session are free
@@ -184,8 +218,9 @@ async function fetchConcerts(artist, today, existingShows = null) {
   }
 
   // ── Step 2: fetch events ─────────────────────────────────────────
-  const TM_MAX = 200;
-  const MAX_PAGE = attractionId ? 5 : 2; // full pages for known attraction, limit for keyword
+  const MAX_PAGE = attractionId
+    ? Math.min(TM_MAX_ATTRACTION_PAGES, Math.max(5, Math.ceil(Math.max(totalUpcoming || 0, 0) / TM_EVENTS_PAGE_SIZE) + 1))
+    : (existingShows ? TM_MAX_KEYWORD_PAGES : 3);
   const shows = [];
 
   // In incremental mode: build a set of already-known event IDs so we can diff
@@ -196,8 +231,8 @@ async function fetchConcerts(artist, today, existingShows = null) {
     await (window._rateLimitedWait?.());  // rate-limit every individual TM request
 
     const url = attractionId
-      ? `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&attractionId=${attractionId}&size=${TM_MAX}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`
-      : `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&keyword=${encodeURIComponent(artist)}&classificationName=music&size=${TM_MAX}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`;
+      ? `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&attractionId=${attractionId}&size=${TM_EVENTS_PAGE_SIZE}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`
+      : `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&keyword=${encodeURIComponent(artist)}&classificationName=music&size=${TM_EVENTS_PAGE_SIZE}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`;
 
     const r = await apiFetch(url);
     if (r.status === 429) throw new Error('429');
@@ -207,7 +242,7 @@ async function fetchConcerts(artist, today, existingShows = null) {
         const ascii = artist.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x00-\x7F]/g, '');
         if (ascii !== artist) {
           dblog('warn', `"${artist}": 413 — retrying with ASCII name "${ascii}"`);
-          const urlAscii = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&keyword=${encodeURIComponent(ascii)}&classificationName=music&size=${TM_MAX}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`;
+          const urlAscii = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&keyword=${encodeURIComponent(ascii)}&classificationName=music&size=${TM_EVENTS_PAGE_SIZE}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`;
           const r2 = await apiFetch(urlAscii);
           if (r2.ok) {
             const d2 = await r2.json();
@@ -227,6 +262,7 @@ async function fetchConcerts(artist, today, existingShows = null) {
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
     const evs = d?._embedded?.events || [];
+    const totalPages = Number.isFinite(d?.page?.totalPages) ? d.page.totalPages : null;
 
     for (const ev of evs) {
       if (!attractionId && !artistMatch(artist, ev, ambig)) continue;
@@ -235,7 +271,8 @@ async function fetchConcerts(artist, today, existingShows = null) {
       shows.push(show);
     }
 
-    if (evs.length < TM_MAX) break; // last page — no need to fetch more
+    if (totalPages != null && page + 1 >= totalPages) break;
+    if (evs.length < TM_EVENTS_PAGE_SIZE) break; // last page — no need to fetch more
 
     // In incremental mode: if page 0 has no new IDs, we're done (no new shows announced)
     if (knownIds && page === 0) {
@@ -302,6 +339,13 @@ async function fetchBIT(artist, today) {
       const show = buildConcertFromBandsintownEvent(artist, ev, today);
       if (!show || !countryAllowed(show.country)) continue;
       shows.push(show);
+    }
+    if (typeof recordBandsintownKnowledge === 'function') {
+      recordBandsintownKnowledge(artist, {
+        artistName: artist,
+        upcomingCount: shows.length,
+        checkedAt: Date.now(),
+      }).catch(() => {});
     }
     if (shows.length) dblog('ok', `${artist}: +${shows.length} shows (Bandsintown fallback)`);
     return shows;

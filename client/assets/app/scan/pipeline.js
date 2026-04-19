@@ -23,6 +23,14 @@ async function fetchAll(forceRefresh = false) {
   // entries are old so they can be stripped once fresh data is in.
 
   try { await DB.get('artists', '__ping__'); } catch (e) {}
+  if (typeof hydrateArtistKnowledge === 'function') {
+    try {
+      setProgress('Loading artist knowledge…', 1);
+      await hydrateArtistKnowledge(ARTISTS);
+    } catch (e) {
+      dblog('warn', `Artist knowledge hydrate failed: ${e.message}`);
+    }
+  }
   // ════════════════════════════════════════════════════════════════
   // PHASE 0: BIT PRE-FLIGHT
   // Run all artists through Bandsintown in parallel before touching TM.
@@ -68,6 +76,9 @@ async function fetchAll(forceRefresh = false) {
           concerts = concerts.filter(s => !(s.artist === artist && s._src === 'bit'));
           concerts.push(...upcoming);
           C.geoSweep++;
+          if (typeof recordConcertCoverageKnowledge === 'function') {
+            recordConcertCoverageKnowledge(artist, upcoming, 'geo-sweep').catch(() => {});
+          }
         }
         geoSweepCovered.add(artist); // mark as covered regardless of result count
       }
@@ -117,7 +128,8 @@ async function fetchAll(forceRefresh = false) {
     if (!forceRefresh) {
       try {
         const cached = await DB.get('artists', idbKey);
-        if (cached && (now - cached.ts) < TTL_ARTIST && cached.cHash === cHash) {
+        const cacheTtl = cached ? artistCacheTTLForRecord(cached, today) : TTL_ARTIST;
+        if (cached && (now - cached.ts) < cacheTtl && cached.cHash === cHash) {
           concerts.push(...cached.shows.filter(s => s.date >= today));
           C.cached++; C.done++;
           if (C.done % 5 === 0) updateProgress(C, total);
@@ -169,6 +181,13 @@ async function fetchAll(forceRefresh = false) {
           concerts.push(...upcomingFresh);
         }
         DB.put('artists', idbKey, { ts: now, cHash, shows: finalShows }).catch(() => {});
+        if (typeof recordConcertCoverageKnowledge === 'function') {
+          recordConcertCoverageKnowledge(
+            artist,
+            finalShows,
+            forceRefresh ? 'concert-scan-force' : 'concert-scan-smart'
+          ).catch(() => {});
+        }
         C.fresh++; C.done++;
         noteArtistScanSuccess(runtime);
         if (fetchErrors[artist]) { delete fetchErrors[artist]; updateErrorTab(); }
@@ -289,6 +308,9 @@ async function fetchAll(forceRefresh = false) {
             concerts.push(...upcomingFresh);
           }
           DB.put('artists', idbKey, { ts: now, cHash, shows: finalShows }).catch(() => {});
+          if (typeof recordConcertCoverageKnowledge === 'function') {
+            recordConcertCoverageKnowledge(artist, finalShows, 'concert-scan-pass2').catch(() => {});
+          }
           C.fresh++;
           delete fetchErrors[artist];
         } catch(e) {

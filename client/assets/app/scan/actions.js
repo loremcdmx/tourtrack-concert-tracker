@@ -100,8 +100,8 @@ async function mergeRescan() {
   dblog('info', `MERGE RESCAN start — ${concerts.length} shows in DB, ${ARTISTS.length} artists to re-fetch`);
 
   // Step 1: expire every per-artist IDB entry by setting ts=0.
-  // The TTL check is:  (now - cached.ts) < TTL_ARTIST
-  // Setting ts=0 makes (now - 0) always exceed TTL_ARTIST (3 days in ms),
+  // The TTL check is:  (now - cached.ts) < artistCacheTTLForRecord(cached)
+  // Setting ts=0 makes any freshness window fail immediately,
   // so processArtist falls through to a live TM fetch for every single artist.
   // We keep the .shows[] in each entry intact — processArtist uses them as
   // the "existingShows" diff base in force-refresh mode, but in smart mode
@@ -910,4 +910,3 @@ function gfShowDone() {
 }
 
 let pickerBuilt = false;
-
