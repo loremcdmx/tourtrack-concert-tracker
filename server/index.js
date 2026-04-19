@@ -861,10 +861,25 @@ async function handleProxy(req, res, requestUrl) {
   }
 }
 
-async function handleSpotifyToken(res) {
+async function handleSpotifyToken(req, res) {
   try {
+    const session = await getSpotifyUserSession(req, res);
+    if (session) {
+      sendJson(res, 200, {
+        access_token: session.accessToken,
+        token_type: 'Bearer',
+        expires_in: Math.max(1, Math.round((session.expiresAt - Date.now()) / 1000)),
+        source: 'user',
+        scope: session.scope,
+      });
+      return;
+    }
+
     const payload = await getSpotifyAppTokenPayload();
-    sendJson(res, 200, payload);
+    sendJson(res, 200, {
+      ...payload,
+      source: 'app',
+    });
   } catch (error) {
     sendJson(res, error.status || 502, {
       error: error.message || 'Failed to get Spotify token from upstream.',
@@ -1188,7 +1203,7 @@ async function handleRequest(req, res) {
       sendJson(res, 405, { error: 'Method not allowed.' }, { Allow: 'POST' });
       return;
     }
-    await handleSpotifyToken(res);
+    await handleSpotifyToken(req, res);
     return;
   }
 

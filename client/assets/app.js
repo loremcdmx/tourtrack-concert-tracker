@@ -1145,10 +1145,35 @@ function buildProxiedUrl(url, mode, customTpl) {
   return fn ? fn(url, customTpl) : url;
 }
 
+function hasSpotifyUserTokenInFlight(options = {}) {
+  try {
+    const headers = new Headers(options.headers || {});
+    return headers.has('Authorization') && spTokenCache?.source === 'user';
+  } catch {
+    return false;
+  }
+}
+
+function isSameOriginSpotifyProxy(mode) {
+  if (mode === 'none' || mode === 'auto') return true;
+  if (mode !== 'custom') return false;
+  try {
+    const sample = buildProxiedUrl('https://api.spotify.com/v1/me', mode, spCustomProxy || INTERNAL_PROXY_TEMPLATE);
+    const resolved = new URL(sample, window.location.origin);
+    return resolved.origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 // Spotify fetch with proxy support + auto-fallback + hard timeout on direct calls
 const SP_FETCH_TIMEOUT = 8000; // ms — if direct hangs, try proxy instead
 
 async function spFetch(url, options = {}) {
+  if (hasSpotifyUserTokenInFlight(options) && !isSameOriginSpotifyProxy(spProxyMode)) {
+    throw new Error('Spotify account login is active. External Spotify proxies are disabled for privacy. Switch Spotify proxy to Direct/Internal and try again.');
+  }
+
   // Direct fetch with a hard timeout so we never hang forever on a blocked connection
   const direct = () => {
     const ctrl = new AbortController();
@@ -1177,6 +1202,10 @@ async function spFetch(url, options = {}) {
   }
 
   // 'auto' — try direct (with timeout), then corsproxy.io, then allorigins.win
+  if (hasSpotifyUserTokenInFlight(options)) {
+    return direct();
+  }
+
   if (spProxyWorking === 'direct')     return direct();
   if (spProxyWorking === 'corsproxy')  return viaProxy('corsproxy');
   if (spProxyWorking === 'allorigins') return viaProxy('allorigins');
@@ -1407,12 +1436,20 @@ async function spGetToken() {
   if (!SERVER_MANAGED_SPOTIFY) {
     throw new Error('Spotify is not configured for this deployment yet.');
   }
-  const serverRes = await fetch('/api/spotify/token', { method: 'POST' });
+  const serverRes = await fetch('/api/spotify/token', {
+    method: 'POST',
+    credentials: 'same-origin',
+  });
   const data = await serverRes.json().catch(() => ({}));
   if (!serverRes.ok) {
     throw new Error(data.error || data.message || `Spotify auth failed (${serverRes.status}).`);
   }
-  spTokenCache = { token: data.access_token, exp: Date.now() + 55 * 60 * 1000 };
+  const expiresIn = Math.max(60, Number(data.expires_in) || 3600);
+  spTokenCache = {
+    token: data.access_token,
+    exp: Date.now() + Math.max(30, expiresIn - 60) * 1000,
+    source: data.source || 'app',
+  };
   return spTokenCache.token;
 }
 
@@ -9277,6 +9314,18 @@ async function runSpotifyImportV2(opts = {}) {
     else if (btn) btn.textContent = '↓ Import & Scan';
     return false;
   }
+}
+
+function onboardSetProgress(done, total) {
+  const fill = document.getElementById('onboard-prog-fill');
+  const lbl = document.getElementById('onboard-prog-label');
+  const pct = total ? Math.round(done / total * 100) : 20;
+  if (fill) fill.style.width = pct + '%';
+  if (lbl) lbl.textContent = total ? `Fetched ${done} / ${total} tracks...` : 'Opening playlist...';
+}
+
+async function runSpotifyImportV2(opts = {}) {
+  return runSpotifyImport(opts);
 }
 
 // Smart entry point: if IDB has cached data, resume instantly; otherwise run full Spotify import
