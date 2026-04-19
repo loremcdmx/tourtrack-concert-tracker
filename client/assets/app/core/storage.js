@@ -6,12 +6,13 @@ const DB = (() => {
   function open() {
     if (_db) return Promise.resolve();
     return new Promise((res, rej) => {
-      const req = indexedDB.open('tourtrack_v1', 2); // v2 adds attractions store
+      const req = indexedDB.open('tourtrack_v1', 3); // v3 adds artist knowledge/media store
       req.onupgradeneeded = e => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains('artists'))     db.createObjectStore('artists');
         if (!db.objectStoreNames.contains('meta'))        db.createObjectStore('meta');
         if (!db.objectStoreNames.contains('attractions')) db.createObjectStore('attractions'); // attractionId cache
+        if (!db.objectStoreNames.contains('artistKnowledge')) db.createObjectStore('artistKnowledge');
       };
       req.onsuccess = e => { _db = e.target.result; res(); };
       req.onerror   = () => rej(req.error);
@@ -51,6 +52,7 @@ const FEST_VER   = 3;             // bump to invalidate all festival caches (cha
 async function clearArtistCache() {
   try {
     await DB.clear('artists');
+    await DB.clear('artistKnowledge');
     await DB.delete('meta', 'festivals');
     softNotice('Cache cleared - next scan will re-fetch everything.', 'ok');
   } catch(e) { softNotice('Could not clear cache: ' + e.message, 'error'); }

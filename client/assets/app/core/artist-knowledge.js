@@ -1,7 +1,12 @@
 'use strict';
 
+const ARTIST_KNOWLEDGE_TTL = 14 * 24 * 3600e3;
+const ARTIST_KNOWLEDGE_MISS_TTL = 12 * 3600e3;
+const ARTIST_KNOWLEDGE_VER = 1;
+
 const artistMediaCache = new Map();
 const artistMediaInflight = new Map();
+const artistMediaPrimed = new Set();
 let artistAvatarObserver = null;
 
 function artistMediaKey(artist) {
@@ -27,6 +32,73 @@ function getCachedArtistMedia(artist) {
   return key && artistMediaCache.has(key) ? artistMediaCache.get(key) : undefined;
 }
 
+function artistKnowledgeFresh(record) {
+  if (!record || record.ver !== ARTIST_KNOWLEDGE_VER || !record.fetchedAt) return false;
+  const ttl = record.miss ? ARTIST_KNOWLEDGE_MISS_TTL : ARTIST_KNOWLEDGE_TTL;
+  return (Date.now() - record.fetchedAt) < ttl;
+}
+
+function artistKnowledgeToMedia(record) {
+  if (!record || record.miss) return null;
+  const images = record.images || {};
+  const thumb = images.thumb || images.large || images.xl || '';
+  const large = images.large || images.xl || thumb;
+  const xl = images.xl || large || thumb;
+  if (!thumb && !large && !xl) return null;
+  return {
+    thumb,
+    large,
+    xl,
+    source: record.source || '',
+    matchName: record.matchName || '',
+    ts: record.fetchedAt || 0,
+  };
+}
+
+function buildArtistKnowledgeRecord(artist, match) {
+  const key = artistMediaKey(artist);
+  const record = {
+    artist: artist || '',
+    normalized: key,
+    fetchedAt: Date.now(),
+    ver: ARTIST_KNOWLEDGE_VER,
+    source: 'deezer',
+    matchName: match?.name || '',
+    miss: !match,
+    images: {},
+  };
+  if (match) {
+    record.images = {
+      thumb: match.picture_medium || match.picture_big || match.picture_xl || '',
+      large: match.picture_big || match.picture_xl || match.picture_medium || '',
+      xl: match.picture_xl || match.picture_big || match.picture_medium || '',
+    };
+  }
+  return record;
+}
+
+async function readArtistKnowledge(key) {
+  if (!key || typeof DB === 'undefined') return undefined;
+  try {
+    const record = await DB.get('artistKnowledge', key);
+    if (!record) return undefined;
+    if (!artistKnowledgeFresh(record)) {
+      DB.delete('artistKnowledge', key).catch(() => {});
+      return undefined;
+    }
+    const media = artistKnowledgeToMedia(record);
+    artistMediaCache.set(key, media);
+    return media;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function persistArtistKnowledge(key, record) {
+  if (!key || !record || typeof DB === 'undefined') return;
+  DB.put('artistKnowledge', key, record).catch(() => {});
+}
+
 async function fetchArtistMedia(artist) {
   const key = artistMediaKey(artist);
   if (!key) return null;
@@ -35,24 +107,31 @@ async function fetchArtistMedia(artist) {
 
   const req = (async () => {
     try {
+      const stored = await readArtistKnowledge(key);
+      if (stored !== undefined) return stored;
+
       const res = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(artist)}&limit=5`);
       if (!res.ok) throw new Error(`deezer:${res.status}`);
       const data = await res.json();
       const items = Array.isArray(data?.data) ? data.data : [];
       const match =
         items.find(item => artistMediaKey(item?.name) === key) ||
-        items.find(item => artistMediaKey(item?.name).includes(key) || key.includes(artistMediaKey(item?.name))) ||
+        items.find(item => {
+          const itemKey = artistMediaKey(item?.name);
+          return itemKey && (itemKey.includes(key) || key.includes(itemKey));
+        }) ||
         items[0] ||
         null;
-      const media = match ? {
-        thumb: match.picture_medium || match.picture_big || match.picture_xl || '',
-        large: match.picture_big || match.picture_xl || match.picture_medium || '',
-        xl: match.picture_xl || match.picture_big || match.picture_medium || '',
-      } : null;
+
+      const record = buildArtistKnowledgeRecord(artist, match);
+      const media = artistKnowledgeToMedia(record);
       artistMediaCache.set(key, media);
+      persistArtistKnowledge(key, record);
       return media;
     } catch (_) {
+      const missRecord = buildArtistKnowledgeRecord(artist, null);
       artistMediaCache.set(key, null);
+      persistArtistKnowledge(key, missRecord);
       return null;
     } finally {
       artistMediaInflight.delete(key);
@@ -159,4 +238,21 @@ function mountArtistPanelPhoto(panel, artist) {
     return;
   }
   fetchArtistMedia(artist).then(insertPhoto);
+}
+
+function primeArtistMediaKnowledge(artists, limit = 24) {
+  if (!Array.isArray(artists) || !artists.length) return;
+  const queue = [];
+  for (const artist of artists) {
+    const key = artistMediaKey(artist);
+    if (!key || artistMediaPrimed.has(key)) continue;
+    artistMediaPrimed.add(key);
+    queue.push(artist);
+    if (queue.length >= limit) break;
+  }
+  queue.forEach((artist, idx) => {
+    window.setTimeout(() => {
+      fetchArtistMedia(artist).catch(() => {});
+    }, idx * 140);
+  });
 }

@@ -184,6 +184,7 @@ function renderMxCalendar() {
   const sortFn = mxSort === 'rank' ? byRank : byDate;
 
   const frag = document.createDocumentFragment();
+  const primeArtists = new Set();
 
   const renderMxSection = (concerts, label, cls) => {
     if (!concerts.length) return;
@@ -199,7 +200,10 @@ function renderMxCalendar() {
 
     if (mxSort === 'rank') {
       // By rank: flat list, show date prominently
-      sorted.forEach(c => frag.appendChild(renderMxRow(c)));
+      sorted.forEach(c => {
+        if (c.artist) primeArtists.add(c.artist);
+        frag.appendChild(renderMxRow(c));
+      });
     } else {
       // By date: grouped by month
       const byMonth = {};
@@ -212,7 +216,10 @@ function renderMxCalendar() {
         sep.className = 'month-sep';
         sep.textContent = new Date(month + '-02').toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase();
         frag.appendChild(sep);
-        evs.forEach(c => frag.appendChild(renderMxRow(c)));
+        evs.forEach(c => {
+          if (c.artist) primeArtists.add(c.artist);
+          frag.appendChild(renderMxRow(c));
+        });
       }
     }
   };
@@ -255,6 +262,7 @@ function renderMxCalendar() {
 
   body.innerHTML = '';
   body.appendChild(frag);
+  primeArtistMediaKnowledge([...primeArtists], 24);
 }
 
 function renderMxRow(c) {
@@ -922,6 +930,7 @@ function renderCalendar() {
   }
 
   const frag = document.createDocumentFragment();
+  const primeArtists = new Set();
   for (const [month, evs] of Object.entries(byMonth)) {
     const sep = document.createElement('div');
     sep.className = 'month-sep';
@@ -1078,6 +1087,7 @@ function renderCalendar() {
 
       } else {
         // ── Single concert ─────────────────────────────────────────
+        if (ev.artist) primeArtists.add(ev.artist);
         const nameEl = document.createElement('div');
         nameEl.className = 'ev-name';
         nameEl.textContent = ev.artist;
@@ -1156,6 +1166,7 @@ function renderCalendar() {
   }
   body.innerHTML = '';
   body.appendChild(frag);
+  primeArtistMediaKnowledge([...primeArtists], 24);
   _updateTally();
 }
 
