@@ -11,3 +11,5 @@ server.log
 server.err
 Thumbs.db
 .DS_Store
+
+.vercel
