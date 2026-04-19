@@ -159,6 +159,14 @@
         </div>
         <hr class="onboard-divider onboard-auth-divider">
       </div>
+      <div class="onboard-auth-wrap" id="onboard-setup-note" style="display:none">
+        <div class="onboard-history-label">Live scan setup</div>
+        <div class="onboard-auth-status" id="onboard-setup-status"></div>
+        <div class="onboard-auth-row" style="margin-top:10px">
+          <button class="onboard-auth-link" id="onboard-tm-setup-btn" onclick="openTicketmasterSetup()">Add Ticketmaster key</button>
+        </div>
+        <hr class="onboard-divider onboard-auth-divider">
+      </div>
       <div class="onboard-input-wrap">
         <input class="onboard-input" id="onboard-url" placeholder="https://open.spotify.com/playlist/…"
           spellcheck="false" autocomplete="off"
@@ -770,8 +778,8 @@
           Playlist import and top tracks use server environment variables. Browser secrets are not stored in this build.
         </div>
         <div id="sp-local-setup" style="display:none;margin-top:12px">
-          <div class="sset-hint" id="sp-local-setup-hint">Paste your Spotify app credentials once for this local server.</div>
-          <div class="sset-guide">
+          <div class="sset-hint" id="sp-local-setup-hint">Save provider keys locally for this server.</div>
+          <div class="sset-guide" id="sp-local-spotify-guide">
             <div class="sset-guide-title">Where to get Spotify keys</div>
             <ol class="sset-guide-list">
               <li><a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer">Open Spotify Developer Dashboard</a></li>
@@ -784,14 +792,30 @@
           <div class="sset-link" id="sp-local-redirect-row" style="margin-top:8px">
             Redirect URI: <code id="sp-local-redirect"></code>
           </div>
-          <div class="sset-row" style="margin-top:10px">
-            <input class="sset-input" id="sp-local-client-id" placeholder="Spotify Client ID" spellcheck="false" autocomplete="off">
+          <div id="sp-local-spotify-fields">
+            <div class="sset-row" style="margin-top:10px">
+              <input class="sset-input" id="sp-local-client-id" placeholder="Spotify Client ID" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="sset-row" style="margin-top:8px">
+              <input class="sset-input" id="sp-local-client-secret" placeholder="Spotify Client Secret" spellcheck="false" autocomplete="off">
+            </div>
+          </div>
+          <div id="sp-local-tm-fields" style="margin-top:12px">
+            <div class="sset-guide">
+              <div class="sset-guide-title">Where to get Ticketmaster keys</div>
+              <ol class="sset-guide-list">
+                <li><a href="https://developer.ticketmaster.com/products-and-docs/apis/getting-started/" target="_blank" rel="noreferrer">Open Ticketmaster Developer</a></li>
+                <li>Create an app in <strong>My Apps</strong></li>
+                <li>Copy the consumer key</li>
+                <li>Paste one key per line if you want rotation across multiple keys</li>
+              </ol>
+            </div>
+            <div class="sset-row" style="margin-top:10px">
+              <textarea class="sset-input" id="sp-local-ticketmaster-keys" placeholder="Ticketmaster API key&#10;another key (optional)" spellcheck="false" autocomplete="off" style="min-height:84px;resize:vertical;padding-top:10px;padding-bottom:10px;line-height:1.45"></textarea>
+            </div>
           </div>
           <div class="sset-row" style="margin-top:8px">
-            <input class="sset-input" id="sp-local-client-secret" placeholder="Spotify Client Secret" spellcheck="false" autocomplete="off">
-          </div>
-          <div class="sset-row" style="margin-top:8px">
-            <button class="sset-btn-primary" id="sp-local-save-btn" onclick="saveSpotifyLocalSetup()">Save locally &amp; enable login</button>
+            <button class="sset-btn-primary" id="sp-local-save-btn" onclick="saveSpotifyLocalSetup()">Save local setup</button>
           </div>
           <div class="sset-status" id="sp-local-setup-status"></div>
         </div>

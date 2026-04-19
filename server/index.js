@@ -166,7 +166,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.27.0000',
+    appVersion: '2.28.0000',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -1049,32 +1049,51 @@ async function handleLocalSetup(req, res) {
   const spotifyClientId = String(payload.spotifyClientId || '').trim();
   const spotifyClientSecret = String(payload.spotifyClientSecret || '').trim();
   const ticketmasterApiKeys = String(payload.ticketmasterApiKeys || '').trim();
+  const currentSpotify = getSpotifyCredentials();
+  const hasIncomingSpotify = Boolean(spotifyClientId || spotifyClientSecret);
+  const hasIncomingTicketmaster = Boolean(ticketmasterApiKeys);
+  const finalSpotifyClientId = spotifyClientId || currentSpotify.clientId;
+  const finalSpotifyClientSecret = spotifyClientSecret || currentSpotify.clientSecret;
+  const hasFinalSpotify = Boolean(finalSpotifyClientId && finalSpotifyClientSecret);
 
-  if (!spotifyClientId || !spotifyClientSecret) {
-    sendJson(res, 400, { error: 'Spotify Client ID and Client Secret are required.' });
+  if (!hasIncomingSpotify && !hasIncomingTicketmaster) {
+    sendJson(res, 400, { error: 'Paste Spotify credentials and/or at least one Ticketmaster API key.' });
+    return;
+  }
+
+  if (hasIncomingSpotify && (!spotifyClientId || !spotifyClientSecret)) {
+    sendJson(res, 400, { error: 'Spotify Client ID and Client Secret must both be provided together.' });
     return;
   }
 
   const redirectUri = `${getExternalBaseUrl(req)}/api/auth/spotify/callback`;
-  const sessionSecret = process.env.SESSION_SECRET
-    ? String(process.env.SESSION_SECRET).trim()
-    : crypto.randomBytes(32).toString('hex');
 
   try {
-    const updates = {
-      PORT: String(PORT),
-      SPOTIFY_CLIENT_ID: spotifyClientId,
-      SPOTIFY_CLIENT_SECRET: spotifyClientSecret,
-      SPOTIFY_REDIRECT_URI: redirectUri,
-      SESSION_SECRET: sessionSecret,
-    };
-    if (ticketmasterApiKeys) updates.TICKETMASTER_API_KEYS = ticketmasterApiKeys;
+    const updates = { PORT: String(PORT) };
+    const savedParts = [];
+
+    if (hasFinalSpotify) {
+      const sessionSecret = process.env.SESSION_SECRET
+        ? String(process.env.SESSION_SECRET).trim()
+        : crypto.randomBytes(32).toString('hex');
+      updates.SPOTIFY_CLIENT_ID = finalSpotifyClientId;
+      updates.SPOTIFY_CLIENT_SECRET = finalSpotifyClientSecret;
+      updates.SPOTIFY_REDIRECT_URI = redirectUri;
+      updates.SESSION_SECRET = sessionSecret;
+      savedParts.push(hasIncomingSpotify ? 'Spotify login is enabled.' : 'Spotify login stays enabled.');
+    }
+
+    if (hasIncomingTicketmaster) {
+      updates.TICKETMASTER_API_KEYS = ticketmasterApiKeys;
+      savedParts.push('Ticketmaster keys were saved locally.');
+    }
+
     await writeLocalEnv(updates);
     sendJson(res, 200, {
       ok: true,
       redirectUri,
       config: appConfig(req),
-      message: 'Spotify keys saved locally. Reloading will enable Spotify login.',
+      message: savedParts.join(' '),
     });
   } catch (error) {
     console.error('Local setup error:', error);

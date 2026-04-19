@@ -8214,11 +8214,31 @@ function setSpotifyLocalSetupStatus(message, tone = '') {
       : '';
 }
 
+function hasTicketmasterSetup() {
+  if (SERVER_MANAGED_TICKETMASTER) return true;
+  if ((API_KEY || '').trim()) return true;
+  if (Array.isArray(TM_KEYS) && TM_KEYS.some(item => item?.key && item.key !== SERVER_TM_PLACEHOLDER)) {
+    return true;
+  }
+  try {
+    return Boolean(
+      (localStorage.getItem('tt_key') || '').trim() ||
+      (localStorage.getItem('tt3_key') || '').trim(),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function renderSpotifyLocalSetupPanel() {
   const wrap = document.getElementById('sp-local-setup');
   const redirect = document.getElementById('sp-local-redirect');
   const hint = document.getElementById('sp-local-setup-hint');
   const saveBtn = document.getElementById('sp-local-save-btn');
+  const spotifyGuide = document.getElementById('sp-local-spotify-guide');
+  const spotifyFields = document.getElementById('sp-local-spotify-fields');
+  const redirectRow = document.getElementById('sp-local-redirect-row');
+  const tmFields = document.getElementById('sp-local-tm-fields');
   if (!wrap || !redirect || !hint || !saveBtn) return;
 
   redirect.textContent = SPOTIFY_REDIRECT_URI_HINT;
@@ -8228,22 +8248,71 @@ function renderSpotifyLocalSetupPanel() {
     return;
   }
 
-  wrap.style.display = SERVER_MANAGED_SPOTIFY_LOGIN ? 'none' : '';
-  hint.textContent = 'Use the Spotify Dashboard link below, copy Client ID and Client Secret, then add the Redirect URI shown here.';
+  const needsSpotify = !SERVER_MANAGED_SPOTIFY_LOGIN;
+  const needsTicketmaster = !hasTicketmasterSetup();
+
+  if (!needsSpotify && !needsTicketmaster) {
+    wrap.style.display = 'none';
+    return;
+  }
+
+  wrap.style.display = '';
+  if (spotifyGuide) spotifyGuide.style.display = needsSpotify ? '' : 'none';
+  if (spotifyFields) spotifyFields.style.display = needsSpotify ? '' : 'none';
+  if (redirectRow) redirectRow.style.display = needsSpotify ? '' : 'none';
+  if (tmFields) tmFields.style.display = needsTicketmaster ? '' : 'none';
+
+  if (needsSpotify && needsTicketmaster) {
+    hint.textContent = 'Finish Spotify login setup and add at least one Ticketmaster key so playlist scans can immediately fetch concerts.';
+    saveBtn.textContent = 'Save Spotify + Ticketmaster locally';
+  } else if (needsSpotify) {
+    hint.textContent = 'Use the Spotify Dashboard link below, copy Client ID and Client Secret, then add the Redirect URI shown here.';
+    saveBtn.textContent = 'Save Spotify locally & enable login';
+  } else {
+    hint.textContent = 'Spotify is already configured on this local server. Add a Ticketmaster key once to enable live concert and festival scans.';
+    saveBtn.textContent = 'Save Ticketmaster key locally';
+  }
   saveBtn.disabled = false;
 }
 
 function focusSpotifyLocalSetup() {
-  const input = document.getElementById('sp-local-client-id');
+  const input = !SERVER_MANAGED_SPOTIFY_LOGIN
+    ? document.getElementById('sp-local-client-id')
+    : document.getElementById('sp-local-ticketmaster-keys');
   if (input) input.focus();
+}
+
+function openTicketmasterSetup() {
+  showOnboard();
+  showNewImport();
+  if (typeof openSettings === 'function') {
+    openSettings();
+    if (typeof setSettingsTab === 'function') setSettingsTab('advanced');
+  }
+  renderSpotifyLocalSetupPanel();
+  setTimeout(() => {
+    const input = document.getElementById('sp-local-ticketmaster-keys')
+      || document.getElementById('api-input');
+    if (input) input.focus();
+  }, 60);
 }
 
 async function saveSpotifyLocalSetup() {
   const clientId = (document.getElementById('sp-local-client-id')?.value || '').trim();
   const clientSecret = (document.getElementById('sp-local-client-secret')?.value || '').trim();
+  const ticketmasterApiKeys = (document.getElementById('sp-local-ticketmaster-keys')?.value || '').trim();
   const saveBtn = document.getElementById('sp-local-save-btn');
+  const needsSpotify = !SERVER_MANAGED_SPOTIFY_LOGIN;
+  const savingSpotify = needsSpotify || clientId || clientSecret;
+  const savingTicketmaster = !!ticketmasterApiKeys;
 
-  if (!clientId || !clientSecret) {
+  if (!savingSpotify && !savingTicketmaster) {
+    setSpotifyLocalSetupStatus('Paste Spotify credentials or at least one Ticketmaster API key.', 'error');
+    focusSpotifyLocalSetup();
+    return;
+  }
+
+  if (savingSpotify && (!clientId || !clientSecret)) {
     setSpotifyLocalSetupStatus('Paste both Spotify Client ID and Client Secret.', 'error');
     if (!clientId) document.getElementById('sp-local-client-id')?.focus();
     else document.getElementById('sp-local-client-secret')?.focus();
@@ -8251,28 +8320,43 @@ async function saveSpotifyLocalSetup() {
   }
 
   if (saveBtn) saveBtn.disabled = true;
-  setSpotifyLocalSetupStatus('Saving Spotify keys locally...', '');
+  setSpotifyLocalSetupStatus(
+    savingSpotify && savingTicketmaster
+      ? 'Saving Spotify and Ticketmaster setup locally...'
+      : savingSpotify
+        ? 'Saving Spotify setup locally...'
+        : 'Saving Ticketmaster keys locally...',
+    '',
+  );
 
   try {
+    const body = {};
+    if (savingSpotify) {
+      body.spotifyClientId = clientId;
+      body.spotifyClientSecret = clientSecret;
+    }
+    if (savingTicketmaster) {
+      body.ticketmasterApiKeys = ticketmasterApiKeys;
+    }
     const res = await fetch('/api/local/setup', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        spotifyClientId: clientId,
-        spotifyClientSecret: clientSecret,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || `Local setup failed (${res.status}).`);
     }
 
-    setSpotifyLocalSetupStatus('Saved. Reloading with Spotify login enabled...', 'ok');
-    setSpotifyAuthFlash('Spotify keys saved locally. Continue with Spotify after reload.', 'ok');
+    setSpotifyLocalSetupStatus('Saved. Reloading local setup...', 'ok');
+    setSpotifyAuthFlash(
+      data.message || 'Local provider setup saved. Reloading now.',
+      'ok',
+    );
     setTimeout(() => window.location.reload(), 900);
   } catch (e) {
-    setSpotifyLocalSetupStatus(e.message || 'Could not save Spotify keys locally.', 'error');
+    setSpotifyLocalSetupStatus(e.message || 'Could not save local provider setup.', 'error');
     if (saveBtn) saveBtn.disabled = false;
   }
 }
@@ -8330,6 +8414,7 @@ function renderOnboardSpotifyAuth() {
     status.dataset.tone = 'error';
     renderSpotifyPlaylistChoices();
     renderSpotifyAccessButton();
+    renderOnboardSetupNotice();
     return;
   }
 
@@ -8370,6 +8455,25 @@ function renderOnboardSpotifyAuth() {
   status.dataset.tone = tone;
   renderSpotifyPlaylistChoices();
   renderSpotifyAccessButton();
+  renderOnboardSetupNotice();
+}
+
+function renderOnboardSetupNotice() {
+  const wrap = document.getElementById('onboard-setup-note');
+  const status = document.getElementById('onboard-setup-status');
+  const btn = document.getElementById('onboard-tm-setup-btn');
+  if (!wrap || !status || !btn) return;
+
+  if (hasTicketmasterSetup()) {
+    wrap.style.display = 'none';
+    return;
+  }
+
+  wrap.style.display = '';
+  status.textContent = SERVER_MANAGED_SPOTIFY_LOGIN
+    ? 'Spotify is ready. Add one free Ticketmaster key to unlock live concert and festival scans for your playlists.'
+    : 'After Spotify setup, you will still need one Ticketmaster key for live concert and festival scans.';
+  btn.textContent = 'Add Ticketmaster key';
 }
 
 async function refreshSpotifyAccount(opts = {}) {
