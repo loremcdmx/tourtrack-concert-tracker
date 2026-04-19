@@ -769,6 +769,22 @@
         <div style="font-size:12px;color:var(--muted2);line-height:1.5;margin-top:8px">
           Playlist import and top tracks use server environment variables. Browser secrets are not stored in this build.
         </div>
+        <div id="sp-local-setup" style="display:none;margin-top:12px">
+          <div class="sset-hint" id="sp-local-setup-hint">Paste your Spotify app credentials once for this local server.</div>
+          <div class="sset-link" id="sp-local-redirect-row" style="margin-top:8px">
+            Redirect URI: <code id="sp-local-redirect"></code>
+          </div>
+          <div class="sset-row" style="margin-top:10px">
+            <input class="sset-input" id="sp-local-client-id" placeholder="Spotify Client ID" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="sset-row" style="margin-top:8px">
+            <input class="sset-input" id="sp-local-client-secret" placeholder="Spotify Client Secret" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="sset-row" style="margin-top:8px">
+            <button class="sset-btn-primary" id="sp-local-save-btn" onclick="saveSpotifyLocalSetup()">Save locally &amp; enable login</button>
+          </div>
+          <div class="sset-status" id="sp-local-setup-status"></div>
+        </div>
         <input type="hidden" id="sp-client-id" value="">
         <input type="hidden" id="sp-client-secret" value="">
         <div class="sset-link"><a href="https://developer.spotify.com/dashboard" target="_blank">developer.spotify.com</a> &#x2192; set Client ID + Secret in the server environment</div>

@@ -9,7 +9,8 @@ const { URL, URLSearchParams } = require('node:url');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const CLIENT_DIR = path.join(ROOT_DIR, 'client');
-loadDotEnv(path.join(ROOT_DIR, '.env'));
+const ENV_FILE = path.join(ROOT_DIR, '.env');
+loadDotEnv(ENV_FILE);
 
 const PORT = Number(process.env.PORT || 3000);
 const TICKETMASTER_PLACEHOLDER = '__SERVER__';
@@ -94,21 +95,85 @@ function getSpotifySessionSecret() {
   ).trim();
 }
 
+function parseDotEnvText(text) {
+  const out = {};
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim();
+    let value = line.slice(separator + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function serializeEnvValue(value) {
+  const text = String(value == null ? '' : value);
+  if (!text) return '';
+  if (/^[A-Za-z0-9_./:@,\-]+$/.test(text)) return text;
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function writeLocalEnv(updates) {
+  let envMap = {};
+  try {
+    envMap = parseDotEnvText(await fsp.readFile(ENV_FILE, 'utf8'));
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') throw error;
+  }
+
+  for (const [key, value] of Object.entries(updates)) {
+    envMap[key] = String(value == null ? '' : value);
+    process.env[key] = envMap[key];
+  }
+
+  const orderedKeys = [
+    'PORT',
+    'TICKETMASTER_API_KEYS',
+    'SPOTIFY_CLIENT_ID',
+    'SPOTIFY_CLIENT_SECRET',
+    'SPOTIFY_REDIRECT_URI',
+    'SESSION_SECRET',
+  ];
+  const finalKeys = [
+    ...orderedKeys.filter(key => key in envMap),
+    ...Object.keys(envMap).filter(key => !orderedKeys.includes(key)).sort(),
+  ];
+  const body = finalKeys
+    .map(key => `${key}=${serializeEnvValue(envMap[key])}`)
+    .join('\n') + '\n';
+
+  await fsp.writeFile(ENV_FILE, body, 'utf8');
+  spotifyAppTokenCache = null;
+  cachedSessionSecret = '';
+  cachedSessionKey = null;
+}
+
 function spotifyConfigured() {
   const { clientId, clientSecret } = getSpotifyCredentials();
   return Boolean(clientId && clientSecret);
 }
 
-function appConfig() {
+function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.26.0000',
+    appVersion: '2.27.0000',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
     spotifyManaged: spotifyReady,
     spotifyLoginManaged: spotifyReady,
+    localSetupAllowed: !!req && isLocalRequest(req),
+    spotifyRedirectUri: req ? getSpotifyRedirectUri(req) : '',
   };
 }
 
@@ -242,6 +307,28 @@ function getRequestHost(req) {
 
 function getExternalBaseUrl(req) {
   return `${getRequestProtocol(req)}://${getRequestHost(req)}`;
+}
+
+function normalizeHostname(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .split(':')[0]
+    .toLowerCase();
+}
+
+function isLoopbackHost(value) {
+  const host = normalizeHostname(value);
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+function isLocalRequest(req) {
+  const host = normalizeHostname(getRequestHost(req));
+  const remote = String(req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : '')
+    .replace(/^::ffff:/, '')
+    .toLowerCase();
+  return isLoopbackHost(host) && (remote === '127.0.0.1' || remote === '::1');
 }
 
 function sanitizeReturnTo(rawValue) {
@@ -944,6 +1031,57 @@ async function handleSpotifyPlaylistImport(req, res, playlistId) {
   }
 }
 
+async function handleLocalSetup(req, res) {
+  if (!isLocalRequest(req)) {
+    sendJson(res, 403, { error: 'Local setup is only available on localhost.' });
+    return;
+  }
+
+  let payload = {};
+  try {
+    const rawBody = await readRequestBody(req);
+    payload = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {};
+  } catch (error) {
+    sendJson(res, 400, { error: 'Setup payload must be valid JSON.' });
+    return;
+  }
+
+  const spotifyClientId = String(payload.spotifyClientId || '').trim();
+  const spotifyClientSecret = String(payload.spotifyClientSecret || '').trim();
+  const ticketmasterApiKeys = String(payload.ticketmasterApiKeys || '').trim();
+
+  if (!spotifyClientId || !spotifyClientSecret) {
+    sendJson(res, 400, { error: 'Spotify Client ID and Client Secret are required.' });
+    return;
+  }
+
+  const redirectUri = `${getExternalBaseUrl(req)}/api/auth/spotify/callback`;
+  const sessionSecret = process.env.SESSION_SECRET
+    ? String(process.env.SESSION_SECRET).trim()
+    : crypto.randomBytes(32).toString('hex');
+
+  try {
+    const updates = {
+      PORT: String(PORT),
+      SPOTIFY_CLIENT_ID: spotifyClientId,
+      SPOTIFY_CLIENT_SECRET: spotifyClientSecret,
+      SPOTIFY_REDIRECT_URI: redirectUri,
+      SESSION_SECRET: sessionSecret,
+    };
+    if (ticketmasterApiKeys) updates.TICKETMASTER_API_KEYS = ticketmasterApiKeys;
+    await writeLocalEnv(updates);
+    sendJson(res, 200, {
+      ok: true,
+      redirectUri,
+      config: appConfig(req),
+      message: 'Spotify keys saved locally. Reloading will enable Spotify login.',
+    });
+  } catch (error) {
+    console.error('Local setup error:', error);
+    sendJson(res, 500, { error: 'Failed to save local setup.' });
+  }
+}
+
 async function handleRequest(req, res) {
   const requestUrl = new URL(req.url, `${getRequestProtocol(req)}://${getRequestHost(req)}`);
   const pathname = requestUrl.pathname;
@@ -959,7 +1097,7 @@ async function handleRequest(req, res) {
     sendText(
       res,
       200,
-      `window.__SERVER_CONFIG__ = ${JSON.stringify(appConfig(), null, 2)};\n`,
+      `window.__SERVER_CONFIG__ = ${JSON.stringify(appConfig(req), null, 2)};\n`,
       {
         'Content-Type': 'application/javascript; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -969,12 +1107,24 @@ async function handleRequest(req, res) {
   }
 
   if (pathname === '/api/health') {
+    const config = appConfig(req);
     sendJson(res, 200, {
       ok: true,
-      ticketmasterManaged: appConfig().ticketmasterManaged,
-      spotifyManaged: appConfig().spotifyManaged,
-      spotifyLoginManaged: appConfig().spotifyLoginManaged,
+      ticketmasterManaged: config.ticketmasterManaged,
+      spotifyManaged: config.spotifyManaged,
+      spotifyLoginManaged: config.spotifyLoginManaged,
+      localSetupAllowed: config.localSetupAllowed,
+      spotifyRedirectUri: config.spotifyRedirectUri,
     });
+    return;
+  }
+
+  if (pathname === '/api/local/setup') {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { error: 'Method not allowed.' }, { Allow: 'POST' });
+      return;
+    }
+    await handleLocalSetup(req, res);
     return;
   }
 

@@ -1620,6 +1620,16 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 .sset-link { font-size:.55rem; color:var(--muted2); margin-top:6px; line-height:1.6; }
 .sset-link a { color:var(--muted); text-decoration:none; transition:color .12s; }
 .sset-link a:hover { color:var(--accent); }
+.sset-link code {
+  font-family:'DM Mono',monospace;
+  font-size:.92em;
+  color:var(--text);
+  background:var(--s2);
+  border:1px solid var(--border2);
+  border-radius:6px;
+  padding:3px 6px;
+  word-break:break-all;
+}
 .sset-row { display:flex; gap:8px; align-items:stretch; }
 .sset-input {
   flex:1; font-family:'DM Mono',monospace; font-size:.78rem;

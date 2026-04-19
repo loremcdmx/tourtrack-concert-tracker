@@ -8,6 +8,8 @@ const SERVER_TM_PLACEHOLDER = SERVER_CONFIG.ticketmasterPlaceholder || '__SERVER
 const SERVER_MANAGED_TICKETMASTER = !!SERVER_CONFIG.ticketmasterManaged;
 const SERVER_MANAGED_SPOTIFY = !!SERVER_CONFIG.spotifyManaged;
 const SERVER_MANAGED_SPOTIFY_LOGIN = !!SERVER_CONFIG.spotifyLoginManaged;
+const LOCAL_SETUP_ALLOWED = !!SERVER_CONFIG.localSetupAllowed;
+const SPOTIFY_REDIRECT_URI_HINT = SERVER_CONFIG.spotifyRedirectUri || `${window.location.origin}/api/auth/spotify/callback`;
 const INTERNAL_PROXY_HOSTS = new Set([
   'app.ticketmaster.com',
   'ticketmaster.com',
@@ -8201,6 +8203,80 @@ function renderSpotifyPlaylistChoices() {
   });
 }
 
+function setSpotifyLocalSetupStatus(message, tone = '') {
+  const el = document.getElementById('sp-local-setup-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = tone === 'error'
+    ? '#ff7070'
+    : tone === 'ok'
+      ? 'var(--accent)'
+      : '';
+}
+
+function renderSpotifyLocalSetupPanel() {
+  const wrap = document.getElementById('sp-local-setup');
+  const redirect = document.getElementById('sp-local-redirect');
+  const hint = document.getElementById('sp-local-setup-hint');
+  const saveBtn = document.getElementById('sp-local-save-btn');
+  if (!wrap || !redirect || !hint || !saveBtn) return;
+
+  redirect.textContent = SPOTIFY_REDIRECT_URI_HINT;
+
+  if (!LOCAL_SETUP_ALLOWED) {
+    wrap.style.display = 'none';
+    return;
+  }
+
+  wrap.style.display = SERVER_MANAGED_SPOTIFY_LOGIN ? 'none' : '';
+  hint.textContent = 'Paste your Spotify app credentials once for this local server, then add the Redirect URI in your Spotify dashboard.';
+  saveBtn.disabled = false;
+}
+
+function focusSpotifyLocalSetup() {
+  const input = document.getElementById('sp-local-client-id');
+  if (input) input.focus();
+}
+
+async function saveSpotifyLocalSetup() {
+  const clientId = (document.getElementById('sp-local-client-id')?.value || '').trim();
+  const clientSecret = (document.getElementById('sp-local-client-secret')?.value || '').trim();
+  const saveBtn = document.getElementById('sp-local-save-btn');
+
+  if (!clientId || !clientSecret) {
+    setSpotifyLocalSetupStatus('Paste both Spotify Client ID and Client Secret.', 'error');
+    if (!clientId) document.getElementById('sp-local-client-id')?.focus();
+    else document.getElementById('sp-local-client-secret')?.focus();
+    return;
+  }
+
+  if (saveBtn) saveBtn.disabled = true;
+  setSpotifyLocalSetupStatus('Saving Spotify keys locally...', '');
+
+  try {
+    const res = await fetch('/api/local/setup', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spotifyClientId: clientId,
+        spotifyClientSecret: clientSecret,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Local setup failed (${res.status}).`);
+    }
+
+    setSpotifyLocalSetupStatus('Saved. Reloading with Spotify login enabled...', 'ok');
+    setSpotifyAuthFlash('Spotify keys saved locally. Continue with Spotify after reload.', 'ok');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (e) {
+    setSpotifyLocalSetupStatus(e.message || 'Could not save Spotify keys locally.', 'error');
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
 function renderSpotifyAccessButton() {
   const btn = document.getElementById('spotify-auth-btn');
   if (!btn) return;
@@ -8241,13 +8317,16 @@ function renderOnboardSpotifyAuth() {
   const logout = document.getElementById('onboard-auth-logout');
   const status = document.getElementById('onboard-auth-status');
   if (!wrap || !button || !logout || !status) return;
+  renderSpotifyLocalSetupPanel();
 
   if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
     wrap.style.display = '';
     button.disabled = false;
     button.textContent = 'Open Spotify setup';
     logout.style.display = 'none';
-    status.textContent = 'Spotify login is not configured on this server yet. Add SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SESSION_SECRET in .env or Vercel, then reload.';
+    status.textContent = LOCAL_SETUP_ALLOWED
+      ? `Spotify login is not configured yet. Open setup and add your Spotify Client ID + Client Secret. Redirect URI: ${SPOTIFY_REDIRECT_URI_HINT}`
+      : 'Spotify login is not configured on this server yet. Add SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SESSION_SECRET in .env or Vercel, then reload.';
     status.dataset.tone = 'error';
     renderSpotifyPlaylistChoices();
     renderSpotifyAccessButton();
@@ -8405,7 +8484,11 @@ async function onboardSpotifyAuthAction() {
   if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
     setSpotifyAuthFlash('Spotify login is not configured yet. Finish server setup, then reload this page.', 'error');
     renderOnboardSpotifyAuth();
-    if (typeof openSettings === 'function') openSettings();
+    if (typeof openSettings === 'function') {
+      openSettings();
+      if (typeof setSettingsTab === 'function') setSettingsTab('advanced');
+    }
+    setTimeout(focusSpotifyLocalSetup, 60);
     return;
   }
   if (!spotifyAccountState.connected) {
@@ -8426,6 +8509,7 @@ function openSpotifyAccess() {
       if (typeof setSettingsTab === 'function') setSettingsTab('advanced');
     }
     renderOnboardSpotifyAuth();
+    setTimeout(focusSpotifyLocalSetup, 60);
     return;
   }
 
