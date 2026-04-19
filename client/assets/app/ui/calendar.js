@@ -684,6 +684,8 @@ function withMapSpinner(workFn) {
 
 let _scheduledUiRefreshRaf = 0;
 let _scheduledUiRefreshPending = false;
+const CALENDAR_RENDER_BATCH_SIZE = 60;
+let _calendarRenderToken = 0;
 
 function flushScheduledUiRefresh() {
   _scheduledUiRefreshRaf = 0;
@@ -873,6 +875,7 @@ function isHidden(a) { if (!(a in hiddenArtists)) return false; const u = hidden
 
 function renderCalendar() {
   expireHidden();
+  const renderToken = ++_calendarRenderToken;
 
   // Show score-filter row only when there's play count data
   const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
@@ -1207,6 +1210,353 @@ function renderCalendar() {
 }
 
 // ── SNOOZE ──────────────────────────────────────────────────────
+function createCalendarMonthSeparator(month) {
+  const sep = document.createElement('div');
+  sep.className = 'month-sep';
+  sep.textContent = new Date(month + '-02').toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase();
+  return sep;
+}
+
+function buildCalendarEventRow(ev, ctx) {
+  const { today, lastShowByArtist, primeArtists } = ctx;
+  const d = ev.date.split('-');
+  const dayname = new Date(ev.date + 'T12:00:00').toLocaleString('en-US', { weekday: 'short' }).toUpperCase();
+  const loc = [ev.city, ev.state && ev.country === 'US' ? ev.state : '', ev.country ? flag(ev.country) : ''].filter(Boolean).join(' ');
+
+  const row = document.createElement('div');
+  const dim = ev.type === 'concert' && isHidden(ev.artist);
+  row.className = 'ev-row' + (dim ? ' faded' : '');
+
+  const dayblock = document.createElement('div');
+  dayblock.innerHTML = `<span class="ev-daynum">${d[2]}</span><span class="ev-dayname">${dayname}</span>`;
+
+  const main = document.createElement('div');
+  main.className = 'ev-main';
+  const actions = document.createElement('div');
+  actions.className = 'ev-actions';
+
+  if (ev.type === 'venue-fest') {
+    row.classList.add('ev-implicit-fest');
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ev-name' + (ev.url ? ' tkt' : '');
+    nameEl.textContent = ev.venue || 'Multi-artist show';
+    if (ev.url) nameEl.onclick = () => window.open(ev.url, '_blank');
+
+    const badgeWrap = document.createElement('span');
+    const festBadge = document.createElement('span');
+    festBadge.className = 'fest-badge';
+    festBadge.textContent = 'Festival';
+    const cntBadge = document.createElement('span');
+    cntBadge.className = 'fest-badge';
+    cntBadge.style.cssText = 'background:rgba(255,170,60,.15);border-color:rgba(255,170,60,.5);color:#ffaa3c';
+    cntBadge.textContent = `★ ${ev.artists.length}`;
+    badgeWrap.appendChild(festBadge);
+    badgeWrap.appendChild(cntBadge);
+    nameEl.appendChild(badgeWrap);
+
+    const sub = document.createElement('div');
+    sub.className = 'ev-sub';
+    sub.innerHTML = `<strong>${ev.venue}</strong>${loc ? ' · ' + loc : ''}`;
+
+    const chipsEl = document.createElement('div');
+    chipsEl.className = 'ev-artists';
+    const trackedSet = new Set(ARTISTS.map(a => a.toLowerCase()));
+    const seenArtists = new Set();
+
+    ev.artists.forEach(cc => {
+      if (!cc.artist) return;
+      const key = cc.artist.toLowerCase();
+      if (seenArtists.has(key)) return;
+      seenArtists.add(key);
+      primeArtists.add(cc.artist);
+      const isMine = trackedSet.has(key);
+      const chip = document.createElement('span');
+      chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
+      appendArtistChipIdentity(chip, cc.artist, isMine ? (ARTIST_PLAYS[key] || 0) : 0);
+      chip.style.cursor = 'pointer';
+      chip.onclick = () => { focusArtist(cc.artist); setTab('tours'); };
+      chipsEl.appendChild(chip);
+    });
+
+    main.appendChild(nameEl);
+    main.appendChild(sub);
+    main.appendChild(chipsEl);
+  } else if (ev.type === 'festival') {
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ev-name' + (ev.url ? ' tkt' : '');
+    nameEl.textContent = ev.name;
+    const badge = document.createElement('span');
+    badge.className = 'fest-badge';
+    badge.textContent = 'Festival';
+    nameEl.appendChild(badge);
+    if (ev.url) nameEl.onclick = () => window.open(ev.url, '_blank');
+
+    const sub = document.createElement('div');
+    sub.className = 'ev-sub';
+    const dateStr = fmtDateRange(ev._fest ? ev : { date: ev.date, endDate: ev.endDate });
+    sub.innerHTML = `<strong>${ev.venue || ''}</strong>${loc ? ' · ' + loc : ''}${ev.endDate ? ' · ' + dateStr : ''}`;
+    main.appendChild(nameEl);
+    main.appendChild(sub);
+
+    const matched = ev.matched || [];
+    if (matched.length) {
+      matched.forEach(m => m.artist && primeArtists.add(m.artist));
+      const chipsEl = document.createElement('div');
+      chipsEl.className = 'ev-artists';
+      matched.slice(0, 6).forEach(m => {
+        const chip = document.createElement('span');
+        chip.className = 'ev-artist-chip mine';
+        appendArtistChipIdentity(chip, m.artist, m.plays || 0);
+        chip.onclick = () => focusArtist(m.artist);
+        chipsEl.appendChild(chip);
+      });
+      if (matched.length > 6) {
+        const more = document.createElement('span');
+        more.className = 'ev-artist-chip ev-more-chip';
+        more.textContent = `+${matched.length - 6} more`;
+        more.title = 'Click to show all';
+        more.onclick = () => {
+          more.remove();
+          matched.slice(6).forEach(m => {
+            const chip = document.createElement('span');
+            chip.className = 'ev-artist-chip mine';
+            appendArtistChipIdentity(chip, m.artist, m.plays || 0);
+            chip.onclick = () => focusArtist(m.artist);
+            chipsEl.appendChild(chip);
+          });
+        };
+        chipsEl.appendChild(more);
+      }
+      main.appendChild(chipsEl);
+    }
+  } else {
+    if (ev.artist) primeArtists.add(ev.artist);
+    const nameEl = document.createElement('div');
+    nameEl.className = 'ev-name';
+    nameEl.textContent = ev.artist;
+
+    const artistKey = (ev.artist || '').toLowerCase();
+    if (lastShowByArtist[artistKey] && ev.date === lastShowByArtist[artistKey]) {
+      const badge = document.createElement('span');
+      badge.style.cssText = 'font-size:.44rem;padding:1px 6px;border-radius:100px;border:1px solid #ff8080;color:#ff8080;background:rgba(255,80,80,.07);margin-left:6px;vertical-align:middle;letter-spacing:.04em';
+      badge.textContent = 'LAST SHOW';
+      nameEl.appendChild(badge);
+    }
+
+    const headline = document.createElement('div');
+    headline.className = 'ev-headline';
+    headline.appendChild(createArtistAvatar(ev.artist, { size: 'feed', color: getColor(ev.artist) }));
+    headline.appendChild(nameEl);
+
+    const sub = document.createElement('div');
+    sub.className = 'ev-sub';
+    if (ev.url && ev.venue) {
+      const vLink = document.createElement('strong');
+      vLink.textContent = ev.venue;
+      vLink.style.cssText = 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;';
+      vLink.title = 'Open ticket page';
+      vLink.onclick = e => { e.stopPropagation(); window.open(ev.url, '_blank'); };
+      sub.appendChild(vLink);
+      if (loc) sub.appendChild(document.createTextNode(' · ' + loc));
+    } else {
+      sub.innerHTML = `<strong>${ev.venue}</strong>${loc ? ' · ' + loc : ''}`;
+    }
+    main.appendChild(headline);
+    main.appendChild(sub);
+
+    const fest = _festForConcert(ev);
+    const metaRow = document.createElement('div');
+    metaRow.className = 'ev-artists';
+    const artistTourCount = (allTourData[ev.artist] || []).filter(x => x.date >= today).length;
+    if (fest) {
+      const chip = document.createElement('span');
+      chip.className = 'ev-artist-chip mine';
+      chip.textContent = `Festival · ${fest.name}`;
+      chip.onclick = e => { e.stopPropagation(); openFestDetail(fest.id); };
+      metaRow.appendChild(chip);
+    }
+    if (artistTourCount > 1) {
+      const chip = document.createElement('span');
+      chip.className = 'ev-artist-chip';
+      chip.textContent = `${artistTourCount} tour dates`;
+      metaRow.appendChild(chip);
+    }
+    if (ev.eventName && _normText(ev.eventName) !== _normText(ev.artist)) {
+      const chip = document.createElement('span');
+      chip.className = 'ev-artist-chip';
+      chip.textContent = ev.eventName;
+      metaRow.appendChild(chip);
+    }
+    if (metaRow.childNodes.length) main.appendChild(metaRow);
+
+    row.classList.add('is-clickable');
+    row.title = 'Open on map';
+    row.onclick = e => {
+      if (e.target.closest('.hide-btn,.ev-sub strong')) return;
+      focusConcert(ev);
+    };
+
+    const btn = document.createElement('button');
+    btn.className = 'hide-btn' + (dim ? ' rst' : '');
+    btn.textContent = dim ? 'Restore' : 'Hide';
+    btn.onclick = dim ? () => restoreArtist(ev.artist) : () => openSnooze(ev.artist);
+    actions.appendChild(btn);
+  }
+
+  row.appendChild(dayblock);
+  row.appendChild(main);
+  row.appendChild(actions);
+  return row;
+}
+
+renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
+  expireHidden();
+  const renderToken = ++_calendarRenderToken;
+
+  const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
+  const scoreRow = document.getElementById('score-filter-row');
+  if (scoreRow) scoreRow.style.display = hasPlays || festivals.some(f => f.score > 0) ? '' : 'none';
+
+  if (calView === 'mx') { renderMxCalendar(); return; }
+
+  const scoreFilterOk = ev => {
+    if (!ev.artist) return scoreOkFest(ev);
+    return scoreOkArtist(ev.artist);
+  };
+  const geoOk = ev => geoDisplayOk(ev.country || '');
+
+  const con = showShows ? dateFilter_(visibleConcerts()).filter(e => !isHidden(e.artist) && geoOk(e) && scoreFilterOk(e)) : [];
+  const fst = showFests ? dateFilter_(festivals).filter(e => geoOk(e) && (e.score || 0) > 0 && scoreOkFest(e)) : [];
+
+  const hidList = Object.keys(hiddenArtists).filter(isHidden);
+  const bar = document.getElementById('hidden-bar');
+  if (hidList.length) {
+    bar.style.display = 'flex';
+    const frag = document.createDocumentFragment();
+    const lbl = document.createElement('span');
+    lbl.className = 'hidden-lbl';
+    lbl.textContent = 'Hidden';
+    frag.appendChild(lbl);
+    hidList.forEach(a => {
+      const u = hiddenArtists[a];
+      const lbl2 = u === 0 ? '∞' : new Date(u).toLocaleDateString('en', { month: 'short', day: 'numeric' });
+      const pill = document.createElement('span');
+      pill.className = 'hidden-pill';
+      pill.innerHTML = `${a} <span class="hidden-lbl" style="font-size:.5rem">${lbl2}</span>`;
+      const x = document.createElement('span');
+      x.className = 'hidden-pill-x';
+      x.textContent = '×';
+      x.onclick = () => restoreArtist(a);
+      pill.appendChild(x);
+      frag.appendChild(pill);
+    });
+    bar.innerHTML = '';
+    bar.appendChild(frag);
+  } else bar.style.display = 'none';
+
+  const IMPLICIT_FEST_THRESHOLD = 3;
+  const venueGroups = new Map();
+  const venueKey = c => `${c.date}|${(c.venue || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 30)}|${(c.city || '').toLowerCase().slice(0, 15)}`;
+  for (const c of con) {
+    const key = venueKey(c);
+    if (!venueGroups.has(key)) venueGroups.set(key, []);
+    venueGroups.get(key).push(c);
+  }
+
+  const displayItems = [];
+  const usedKeys = new Set();
+  for (const c of con) {
+    const key = venueKey(c);
+    if (usedKeys.has(key)) continue;
+    usedKeys.add(key);
+    const group = venueGroups.get(key);
+    if (group.length >= IMPLICIT_FEST_THRESHOLD && shouldGroupAsVenueFestival(group)) {
+      const sorted = [...group].sort((a, b) => {
+        const ia = ARTISTS.findIndex(x => x.toLowerCase() === a.artist.toLowerCase());
+        const ib = ARTISTS.findIndex(x => x.toLowerCase() === b.artist.toLowerCase());
+        return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
+      });
+      const seenNames = new Set();
+      const dedupSorted = sorted.filter(a => {
+        const artistKey = a.artist.toLowerCase();
+        if (seenNames.has(artistKey)) return false;
+        seenNames.add(artistKey);
+        return true;
+      });
+      displayItems.push({
+        type: 'venue-fest',
+        date: c.date,
+        venue: c.venue,
+        city: c.city,
+        country: c.country,
+        state: c.state,
+        artists: dedupSorted,
+        url: dedupSorted.find(x => x.url)?.url || null,
+      });
+    } else {
+      group.forEach(cc => displayItems.push({ type: 'concert', ...cc }));
+    }
+  }
+
+  fst.forEach(f => displayItems.push({ type: 'festival', _fest: true, ...f }));
+  displayItems.sort((a, b) => a.date.localeCompare(b.date));
+
+  const el = document.getElementById('ev-tally');
+  if (el) el.textContent = (concerts.length || festivals.length) ? `${con.length} shows · ${fst.length} festivals` : '';
+
+  const body = document.getElementById('cal-body');
+  if (!displayItems.length) {
+    if (concerts.length || festivals.length) {
+      body.innerHTML = `<div class="empty"><div class="empty-icon">📭</div><div class="empty-msg">No events match current filters.</div></div>`;
+    } else if (window._scanActive) {
+      body.innerHTML = `<div class="empty"><div class="empty-icon" style="animation:breathe 1.5s ease-in-out infinite">🔍</div><div class="empty-msg">Scanning for concerts…<br><span style="font-size:.62rem;color:var(--muted2)">Results will appear here as artists are checked.</span></div></div>`;
+    } else {
+      body.innerHTML = '';
+      showOnboard();
+    }
+    return;
+  }
+
+  const byMonth = {};
+  for (const ev of displayItems) {
+    const month = ev.date.slice(0, 7);
+    (byMonth[month] = byMonth[month] || []).push(ev);
+  }
+
+  const lastShowByArtist = {};
+  for (const [artist, evs] of Object.entries(allTourData)) {
+    if (evs.length >= 3) lastShowByArtist[artist.toLowerCase()] = evs[evs.length - 1].date;
+  }
+
+  const renderItems = [];
+  for (const [month, evs] of Object.entries(byMonth)) {
+    renderItems.push({ type: 'month', month });
+    for (const ev of evs) renderItems.push({ type: 'event', ev });
+  }
+
+  const primeArtists = new Set();
+  body.innerHTML = '';
+
+  const renderChunk = start => {
+    if (_calendarRenderToken !== renderToken) return;
+    const frag = document.createDocumentFragment();
+    const end = Math.min(start + CALENDAR_RENDER_BATCH_SIZE, renderItems.length);
+    for (let i = start; i < end; i++) {
+      const item = renderItems[i];
+      if (item.type === 'month') frag.appendChild(createCalendarMonthSeparator(item.month));
+      else frag.appendChild(buildCalendarEventRow(item.ev, { today, lastShowByArtist, primeArtists }));
+    }
+    body.appendChild(frag);
+    if (end < renderItems.length) requestAnimationFrame(() => renderChunk(end));
+    else {
+      primeArtistMediaKnowledge([...primeArtists], 24);
+      _updateTally();
+    }
+  };
+
+  renderChunk(0);
+};
+
 function openSnooze(artist) {
   snoozeTarget = artist;
   document.getElementById('snooze-sub').textContent = `Hide upcoming events for "${artist}"`;
