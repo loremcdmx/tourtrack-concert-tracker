@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tourtrack</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&family=Bebas+Neue&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<header>
+  <div class="logo">Tour<span>track</span></div>
+  <div class="hd-status">
+    <div class="pulse" id="pulse"></div>
+    <span class="hd-msg" id="hd-msg">Not loaded yet</span>
+    <span style="font-family:'DM Mono',monospace;font-size:.46rem;color:var(--muted2);flex-shrink:0;margin-left:4px" id="app-ver-badge"></span>
+  </div>
+
+  <!-- ── Profile switcher ── -->
+  <div class="prof-bar">
+    <select id="prof-select" onchange="profSwitch(this.value)" title="Switch music taste profile"></select>
+    <button class="prof-btn" id="prof-reload-btn" onclick="profReload()" title="Reload this profile">&#x21BB;</button>
+    <button class="prof-btn" onclick="profOpenDialog()" title="New profile">＋</button>
+    <button class="prof-btn del" id="prof-del-btn" onclick="profDelete()" title="Delete this profile" disabled>&#x2715;</button>
+  </div>
+  <!-- Profile switch toast -->
+  <div id="prof-toast" class="prof-toast"></div>
+
+  <div class="hd-right">
+    <span class="hd-progress" id="hd-progress" style="display:none"></span>
+    <button class="btn btn-stop" id="stop-btn" onclick="stopScan()" style="display:none">■ Stop</button>
+    <button class="btn btn-rescan" id="merge-rescan-btn" onclick="mergeRescan()" title="Re-fetch concerts for all artists from Ticketmaster">&#x21BB; Rescan</button>
+    <button class="btn btn-rescan-fests" id="fest-rescan-btn" onclick="rescanFestsOnly()" title="Re-fetch festival data only — fast, keeps all concerts">&#x1F3AA; Fests</button>
+    <button class="btn btn-primary" onclick="openSettings()">⚙ Settings</button>
+  </div>
+</header>
+
+<!-- ── Profile create dialog ── -->
+<div id="prof-dialog-bg" onclick="if(event.target===this)profCloseDialog()">
+  <div id="prof-dialog">
+    <div id="prof-dialog-title">New profile</div>
+    <div id="prof-dialog-sub">
+      A profile saves a separate set of artists &amp; play counts.<br>
+      The current artist list will be copied as the starting point.<br>
+      Concerts &amp; festivals database is shared across all profiles.
+    </div>
+    <input id="prof-name-inp" placeholder="Profile name…" maxlength="40" spellcheck="false"
+           oninput="this.classList.remove('err')"
+           onkeydown="if(event.key==='Enter')profConfirm();if(event.key==='Escape')profCloseDialog()">
+    <div class="prof-dialog-row">
+      <button id="prof-dialog-ok" onclick="profConfirm()">Create profile</button>
+      <button id="prof-dialog-cancel" onclick="profCloseDialog()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- SAVE / LOAD PANEL -->
+<div class="sl-panel" id="sl-panel" onclick="if(event.target===this)closeSaveLoad()">
+  <div class="sl-card">
+    <div class="sl-title">Tour<span>track</span> · Save Slots</div>
+    <div class="sl-sub">Save your current scan to a file and reload it anytime — no re-scanning needed.<br>
+      All data: concerts, festivals, playlist, favorites, settings.</div>
+    <div class="sl-slots" id="sl-slots-list"><!-- rendered by JS --></div>
+    <hr class="sl-divider">
+    <div class="sl-actions">
+      <button class="sl-close" onclick="closeSaveLoad()">← Close</button>
+      <button class="sl-btn primary" onclick="saveGame()" id="sl-save-btn">💾 Save current state</button>
+      <div class="sl-actions-right">
+        <button class="sl-btn danger" onclick="purgePastConcerts()" title="Remove all concerts that have already happened">🗑 Delete past concerts</button>
+        <button class="sl-new-game" onclick="mergeRescan()" title="Rescan all artists from TM but keep existing concert data — only adds new shows, never removes" style="border-color:rgba(200,255,95,.3);color:var(--accent)">↻ Merge rescan</button>
+
+      </div>
+    </div>
+  </div>
+</div>
+<input type="file" id="sl-file-input" accept=".tt,.json" style="display:none" onchange="loadGameFile(event)">
+
+<!-- GO-THRU FESTIVALS MODAL -->
+<div class="gf-overlay" id="gf-overlay" onclick="if(event.target===this)closeGoThru()">
+  <div class="gf-modal">
+    <div class="gf-header">
+      <div class="gf-progress-wrap"><div class="gf-progress-fill" id="gf-progress-fill"></div></div>
+      <div class="gf-counter" id="gf-counter">1 / 47</div>
+      <button class="gf-close" onclick="closeGoThru()">✕</button>
+    </div>
+    <div class="gf-body" id="gf-body"><!-- filled by JS --></div>
+    <div class="gf-actions" id="gf-actions">
+      <button class="gf-btn-skip" onclick="gfNext()">Skip →</button>
+      <button class="gf-btn-star" id="gf-star-btn" onclick="gfToggleSave()">☆ Save</button>
+      <button class="gf-btn-next" onclick="gfNext()">Next →</button>
+    </div>
+    <div class="gf-shortcut-hint">← → arrow keys to navigate · S to save · Esc to close</div>
+  </div>
+</div>
+
+<!-- FESTIVAL DETAIL MODAL -->
+<div class="fd-overlay" id="fd-overlay" onclick="if(event.target===this)closeFestDetail()">
+  <div class="fd-sheet" id="fd-sheet">
+    <div class="fd-hero" id="fd-hero"><!-- filled by JS --></div>
+    <div class="fd-body" id="fd-body"><!-- filled by JS --></div>
+  </div>
+</div>
+
+<div class="loadbar" id="loadbar" style="display:none"><div class="loadbar-fill" id="loadbar-fill"></div></div>
+
+<!-- ONBOARDING OVERLAY -->
+<div class="onboard" id="onboard">
+  <div class="onboard-card">
+    <div class="onboard-logo">Tour<span>track</span></div>
+
+    <!-- ▸ RESUME PANEL — shown when IDB has cached data -->
+    <div class="onboard-resume" id="onboard-resume" style="display:none">
+      <div class="onboard-resume-head" id="onboard-resume-head">
+        <div class="onboard-resume-title" id="onboard-resume-title">Welcome back</div>
+        <div class="onboard-resume-meta" id="onboard-resume-meta"></div>
+      </div>
+      <div class="onboard-resume-stats" id="onboard-resume-stats"></div>
+
+      <!-- Embedded filters -->
+      <div class="onboard-filters-label">Filters</div>
+      <div class="onboard-filter-row">
+        <span class="onboard-filter-hint">Geo</span>
+        <button class="obf-btn on"   id="obfq-all"   onclick="obSetGeo('all')">&#x1F30D; World</button>
+        <button class="obf-btn nousa" id="obfq-nousa" onclick="obSetGeo('nousa')">&#x1F6AB;&#x1F1FA;&#x1F1F8; No USA</button>
+        <button class="obf-btn noca"  id="obfq-noca"  onclick="obSetGeo('noca')">&#x1F6AB;&#x1F1E8;&#x1F1E6; No Canada</button>
+        <button class="obf-btn nousa" id="obfq-nousacanada" onclick="obSetGeo('nousacanada')">&#x1F6AB; No US+CA</button>
+      </div>
+      <div class="onboard-filter-row" style="margin-top:4px">
+        <span class="onboard-filter-hint">Score</span>
+        <button class="obf-btn on" data-os="0" onclick="obSetScore(0)">All</button>
+        <button class="obf-btn"   data-os="1" onclick="obSetScore(1)">low+</button>
+        <button class="obf-btn"   data-os="2" onclick="obSetScore(2)">mid+</button>
+        <button class="obf-btn"   data-os="3" onclick="obSetScore(3)">high+</button>
+        <button class="obf-btn"   data-os="4" onclick="obSetScore(4)">top+</button>
+      </div>
+
+      <button class="onboard-resume-btn" id="onboard-resume-btn" onclick="instantResume({manual:true})">▶ Resume session</button>
+      <div class="onboard-resume-fresh">
+        or <a onclick="showNewImport()">start a new import →</a>
+      </div>
+    </div>
+
+    <!-- ▸ NEW IMPORT PANEL — default state or when no IDB data -->
+    <div id="onboard-import-panel">
+      <div class="onboard-title" id="onboard-main-title">Paste your Spotify<br>playlist link</div>
+      <div class="onboard-sub" id="onboard-sub-text">We'll find upcoming concerts and festivals for every artist you listen to. Takes ~1 min.</div>
+      <div class="onboard-input-wrap">
+        <input class="onboard-input" id="onboard-url" placeholder="https://open.spotify.com/playlist/…"
+          spellcheck="false" autocomplete="off"
+          onkeydown="if(event.key==='Enter')onboardImport()">
+        <button class="onboard-btn" id="onboard-btn" onclick="onboardImport()">→ Start</button>
+      </div>
+      <!-- Min tracks filter -->
+      <div class="onboard-mintracks-row">
+        <span class="onboard-mintracks-label">Min tracks in playlist:</span>
+        <div class="onboard-mintracks-chips" id="onboard-mintracks-chips">
+          <button class="onboard-mt-chip on" data-v="1" onclick="setMinTracks(1)">≥1</button>
+          <button class="onboard-mt-chip" data-v="2" onclick="setMinTracks(2)">≥2</button>
+          <button class="onboard-mt-chip" data-v="3" onclick="setMinTracks(3)">≥3</button>
+          <button class="onboard-mt-chip" data-v="5" onclick="setMinTracks(5)">≥5</button>
+          <button class="onboard-mt-chip" data-v="10" onclick="setMinTracks(10)">≥10</button>
+        </div>
+        <span class="onboard-mintracks-hint" id="onboard-mintracks-hint">all artists</span>
+      </div>
+      <div class="onboard-status" id="onboard-status">
+        <span id="onboard-status-text"></span>
+      </div>
+      <!-- Progress bar (shown during import) -->
+      <div class="onboard-prog-wrap" id="onboard-prog-wrap">
+        <div class="onboard-prog-bar">
+          <div class="onboard-prog-fill" id="onboard-prog-fill" style="width:0%"></div>
+        </div>
+        <div class="onboard-prog-info">
+          <span class="onboard-prog-label" id="onboard-prog-label">Connecting…</span>
+          <span class="onboard-prog-timer" id="onboard-prog-timer"></span>
+          <button class="onboard-cancel" onclick="onboardCancel()">✕ Cancel</button>
+        </div>
+        <!-- Mini log — shown after 4s of waiting -->
+        <div id="onboard-minilog-wrap" style="display:none;margin-top:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <span style="font-size:.5rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted2)">📡 Log</span>
+            <button onclick="document.getElementById('onboard-minilog-wrap').style.display='none'"
+              style="background:none;border:none;color:var(--muted2);font-size:.65rem;cursor:pointer;padding:0 2px">✕</button>
+          </div>
+          <div id="onboard-minilog" style="font-family:'DM Mono',monospace;font-size:.54rem;line-height:1.7;
+            color:var(--muted);background:var(--s1);border:1px solid var(--border);border-radius:6px;
+            padding:8px 10px;max-height:120px;overflow-y:auto;word-break:break-all"></div>
+        </div>
+      </div>
+      <!-- keep legacy element so old code doesn't crash -->
+      <div id="onboard-prog" style="display:none"><div id="onboard-prog-fill-legacy"></div></div>
+      <!-- Proxy row -->
+      <div id="onboard-history-wrap" style="display:none">
+        <hr class="onboard-divider">
+        <div class="onboard-history-label">Previously imported</div>
+        <div class="onboard-history" id="onboard-history"></div>
+      </div>
+      <!-- Quick shortcut — always visible -->
+      <div class="onboard-quickload" id="onboard-quickload">
+        <hr class="onboard-divider">
+        <div class="onboard-history-label">Quick load</div>
+        <div class="onboard-pl onboard-pl--pinned"
+          onclick="document.getElementById('onboard-url').value='https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ';resumeOrImport()">
+          <canvas class="onboard-pl-mosaic" id="ql-pinned-mosaic" width="68" height="68"
+            style="width:68px;height:68px;flex-shrink:0;display:block"></canvas>
+          <div class="onboard-pl-body">
+            <div class="onboard-pl-name">loremcdmx twitch playlist</div>
+            <div class="onboard-pl-meta">2449 artists &middot; 5569 tracks</div>
+            <div class="onboard-pl-chips">
+              <span class="onboard-pl-chip">Fall Out Boy</span>
+              <span class="onboard-pl-chip">The Maine</span>
+              <span class="onboard-pl-chip">Anacondaz</span>
+              <span class="onboard-pl-chip">Panic! At The Disco</span>
+            </div>
+          </div>
+          <div class="onboard-pl-arrow">&#x2192;</div>
+        </div>
+      </div>
+      <div class="onboard-skip" id="onboard-skip" style="display:none">
+        <a onclick="hideOnboard()">← Back to last session</a>
+      </div>
+    </div><!-- /onboard-import-panel -->
+
+    <!-- Load save shortcut -->
+    <div class="onboard-load-save">
+      <span>Have a save file?</span>
+      <a onclick="document.getElementById('sl-file-input').click()">📂 Load .tt save</a>
+      <span style="color:var(--border2)">·</span>
+      <a onclick="openSaveLoad()">Browse slots</a>
+    </div>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- CALENDAR -->
+  <div class="cal-panel" id="cal-panel">
+    <div class="cal-toolbar">
+    <div class="cal-view-row">
+      <button class="cal-view-btn on" id="calview-all" onclick="setCalView('all')">🌍 All</button>
+      <button class="cal-view-btn" id="calview-mx"  onclick="setCalView('mx')">🇲🇽 México</button>
+    </div>
+
+    <!-- Date filter row -->
+    <div class="date-row" id="cal-date-row">
+      <button class="chip on" data-d="all"    onclick="setDateFilter('all')">All</button>
+      <button class="chip"    data-d="7"      onclick="setDateFilter('7')">7d</button>
+      <button class="chip"    data-d="14"     onclick="setDateFilter('14')">14d</button>
+      <button class="chip"    data-d="30"     onclick="setDateFilter('30')">30d</button>
+      <button class="chip"    data-d="90"     onclick="setDateFilter('90')">3mo</button>
+      <button class="chip"    data-d="180"    onclick="setDateFilter('180')">6mo</button>
+      <button class="chip"    data-d="year"   onclick="setDateFilter('year')">Year</button>
+      <div id="drp-wrap">
+        <button class="chip" data-d="range" id="drp-chip" onclick="drpToggle(event)">📅</button>
+        <div id="drp-popover">
+          <div class="drp-nav">
+            <button class="drp-nav-btn" onclick="drpNavMonth(-1,event)">‹</button>
+            <span class="drp-month-lbl" id="drp-month-lbl"></span>
+            <button class="drp-nav-btn" onclick="drpNavMonth(1,event)">›</button>
+          </div>
+          <div class="drp-grid" id="drp-grid"></div>
+          <div class="drp-hint" id="drp-hint">Click a date to select</div>
+          <div class="drp-actions">
+            <button class="drp-clear-btn" onclick="drpClear(event)">Clear</button>
+            <button class="drp-apply-btn" onclick="drpApply(event)">Apply</button>
+          </div>
+        </div>
+      </div>
+      <div class="type-row" id="cal-type-row">
+        <button class="chip on" data-t="shows" onclick="toggleType('shows')" title="Shows">🎸</button>
+        <button class="chip on" data-t="fests" onclick="toggleType('fests')" title="Festivals">🎪</button>
+      </div>
+    </div>
+    <div class="date-row secondary" id="cal-date-row-extra">
+      <button class="chip" data-d="thismonth" onclick="setDateFilter('thismonth')">This mo</button>
+      <button class="chip" data-d="nextmonth" onclick="setDateFilter('nextmonth')">Next mo</button>
+      <button class="chip" data-d="spring" onclick="setDateFilter('spring')">🌸</button>
+      <button class="chip" data-d="summer" onclick="setDateFilter('summer')">☀️</button>
+      <button class="chip" data-d="autumn" onclick="setDateFilter('autumn')">🍂</button>
+      <button class="chip" data-d="winter" onclick="setDateFilter('winter')">❄️</button>
+    </div>
+    <div class="date-row secondary" id="geo-preset-row">
+      <span class="toolbar-chip-label">Places</span>
+      <button class="chip on" data-gp="all" onclick="setGeoPreset('all')">All</button>
+      <button class="chip" data-gp="eu" onclick="setGeoPreset('eu')">EU</button>
+      <button class="chip" data-gp="americas" onclick="setGeoPreset('americas')">Americas</button>
+      <button class="chip" data-gp="latam" onclick="setGeoPreset('latam')">LatAm</button>
+      <button class="chip" data-gp="mx" onclick="setGeoPreset('mx')">Mexico</button>
+      <button class="chip" data-gp="apac" onclick="setGeoPreset('apac')">APAC</button>
+      <button class="chip" data-gp="ukie" onclick="setGeoPreset('ukie')">UK / IE</button>
+    </div>
+
+    <!-- Combined filter bar -->
+    <div class="cal-filter-bar" id="score-filter-row" style="display:none">
+      <button class="plays-chip on" data-s="0" onclick="setScoreFilter(0)">All</button>
+      <button class="plays-chip"    data-s="1" onclick="setScoreFilter(1)">low+</button>
+      <button class="plays-chip"    data-s="2" onclick="setScoreFilter(2)">mid+</button>
+      <button class="plays-chip"    data-s="3" onclick="setScoreFilter(3)">high+</button>
+      <div class="cal-filter-sep"></div>
+      <button class="geo-qbtn nousa" id="geoq-nousa" onclick="toggleGeoExclude('US')">&#x1F6AB;&#x1F1FA;&#x1F1F8;</button>
+      <button class="geo-qbtn noca"  id="geoq-noca"  onclick="toggleGeoExclude('CA')">&#x1F6AB;&#x1F1E8;&#x1F1E6;</button>
+      <button class="geo-qbtn noca"  id="geoq-nouk"  onclick="toggleGeoExclude('GB')">&#x1F6AB;&#x1F1EC;&#x1F1E7;</button>
+      <span class="tally" id="ev-tally" style="margin-left:auto"></span>
+    </div>
+    <!-- Keep geo-quick-row id for legacy restore code -->
+    <div id="geo-quick-row" style="display:none"></div>
+
+    <!-- Mexico sort row — only shown in MX view -->
+    <div class="mx-sort-row" id="mx-sort-row" style="display:none">
+      <span class="fest-sort-lbl">Sort</span>
+      <button class="fsort-btn on" id="mxsort-date" onclick="setMxSort('date')">By date</button>
+      <button class="fsort-btn"    id="mxsort-rank" onclick="setMxSort('rank')">By ranking</button>
+      <span class="mx-tally" id="mx-tally"></span>
+    </div>
+    </div>
+    <div class="hidden-bar" id="hidden-bar" style="display:none"></div>
+    <div class="cal-body" id="cal-body"></div>
+  </div>
+
+  <div class="rhandle" id="rhandle"></div>
+
+  <!-- MAP -->
+  <div class="map-panel">
+    <div class="map-sidebar collapsed" id="map-sidebar">
+      <div class="msb-head">
+        <div class="msb-title">Map
+          <button onclick="toggleMapSidebar()" style="float:right;background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;padding:0 2px" title="Collapse sidebar">✕</button>
+        </div>
+        <div class="msb-layers">
+          <button class="mlayer on-t" id="lt-t" onclick="toggleLayer('t')" style="display:none">🎸</button>
+          <button class="mlayer on-f" id="lt-f" onclick="toggleLayer('f')" style="display:none">🎪</button>
+          <button class="mlayer" id="lt-fav" onclick="toggleFavOnly()" title="Show favorites only" style="display:none">★</button>
+          <button class="mlayer" id="dupes-toggle" onclick="togglePossibleDupes()" title="Possible duplicate entries hidden — click to show" style="display:none">⧉</button>
+          <button class="mlayer" id="map-reset" onclick="focusArtist(null)" style="display:none">⊙</button>
+        </div>
+      </div>
+      <div class="msb-stats" id="msb-stats" style="display:none"></div>
+      <!-- MAP FILTER BAR — shown when data loaded -->
+      <div class="msb-filters" id="msb-filters" style="display:none">
+        <!-- Type -->
+        <div class="mfilt-row">
+          <span class="mfilt-label">Type</span>
+          <button class="mfilt-chip on" id="mft-both"  onclick="setMapType('both')">🎸+🎪 Both</button>
+          <button class="mfilt-chip"    id="mft-tours" onclick="setMapType('tours')">🎸 Tours</button>
+          <button class="mfilt-chip"    id="mft-fests" onclick="setMapType('fests')">🎪 Fests</button>
+        </div>
+        <!-- Score — now driven by calendar score chips -->
+        <div class="mfilt-row" id="mfilt-score-row" style="display:none">
+          <span class="mfilt-label">Score</span>
+          <button class="mfilt-chip on" data-ms="0" onclick="setMapScore(0)">All</button>
+          <button class="mfilt-chip"    data-ms="1" onclick="setMapScore(1)">Low+</button>
+          <button class="mfilt-chip"    data-ms="2" onclick="setMapScore(2)">Mid+</button>
+          <button class="mfilt-chip"    data-ms="3" onclick="setMapScore(3)">High+</button>
+        </div>
+        <!-- Date window — now driven by calendar date chips -->
+        <div class="mfilt-row" style="display:none">
+          <span class="mfilt-label">Date</span>
+          <button class="mfilt-chip on" data-md="all"   onclick="setMapDate('all')">All</button>
+          <button class="mfilt-chip"    data-md="week"  onclick="setMapDate('week')">Week</button>
+          <button class="mfilt-chip"    data-md="month" onclick="setMapDate('month')">Month</button>
+          <button class="mfilt-chip"    data-md="range" onclick="setMapDate('range')">Range</button>
+        </div>
+        <!-- Range pickers — only visible when Range selected -->
+        <div class="mfilt-range" id="mfilt-range-row" style="display:none">
+          <input type="date" class="mfilt-date-input" id="mfilt-from" onchange="applyMapRange()">
+          <span class="mfilt-sep">–</span>
+          <input type="date" class="mfilt-date-input" id="mfilt-to"   onchange="applyMapRange()">
+        </div>
+        <!-- Top-N cap control -->
+        <div class="mfilt-row">
+          <span class="mfilt-label">Top</span>
+          <div class="mfilt-stepper">
+            <button class="mfilt-step-btn" onclick="setMapMaxArtists(MAP_MAX_ARTISTS - 5)">−</button>
+            <span class="mfilt-step-val" id="mfilt-max-val">30</span>
+            <button class="mfilt-step-btn" onclick="setMapMaxArtists(MAP_MAX_ARTISTS + 5)">+</button>
+          </div>
+          <span style="font-family:'DM Mono',monospace;font-size:.48rem;color:var(--muted2);margin-left:5px">on map</span>
+        </div>
+      </div>
+
+      <div class="msb-tabs">
+        <button class="msb-tab t-on" id="tab-tours"   onclick="setTab('tours')">🎸 Tours</button>
+        <button class="msb-tab"      id="tab-fests"   onclick="setTab('fests')">🎪 Festivals</button>
+        <button class="msb-tab"      id="tab-match"   onclick="setTab('match')">💑 Match</button>
+        <button class="msb-tab"      id="tab-errors"  onclick="setTab('errors')" style="display:none">⚡ Errors</button>
+        <button class="msb-tab"      id="tab-honest"  onclick="setTab('honest')">🧐 Honesty</button>
+      </div>
+
+      <!-- TOURS PANE -->
+      <div class="msb-pane on" id="pane-tours">
+        <div class="msb-search-wrap">
+          <input class="msb-search" id="msb-search" placeholder="Search artists…" oninput="filterArtists()">
+        </div>
+        <div class="fest-sort-row">
+          <span class="fest-sort-lbl">Sort</span>
+          <button class="fsort-btn on" id="asort-list"  onclick="setArtistSort('list')">My list</button>
+          <button class="fsort-btn"    id="asort-alpha" onclick="setArtistSort('alpha')">A–Z</button>
+          <button class="fsort-btn"    id="asort-shows" onclick="setArtistSort('shows')">Shows</button>
+        </div>
+        <div class="artist-preset-row">
+          <span class="fest-sort-lbl">Filter</span>
+          <button class="fsort-btn on" data-ap="all" onclick="setArtistPreset('all')">All</button>
+          <button class="fsort-btn" data-ap="top" onclick="setArtistPreset('top')">Top</button>
+          <button class="fsort-btn" data-ap="soon" onclick="setArtistPreset('soon')">Soon</button>
+          <button class="fsort-btn" data-ap="dense" onclick="setArtistPreset('dense')">Dense</button>
+          <button class="fsort-btn" data-ap="ending" onclick="setArtistPreset('ending')">Ending</button>
+          <button class="fsort-btn" data-ap="fav" onclick="setArtistPreset('fav')">Fav</button>
+        </div>
+        <button class="msb-all on" id="msb-all" onclick="focusArtist(null)">
+          <span class="msb-all-dot"></span>
+          <span class="msb-all-lbl">All artists</span>
+          <span class="msb-all-cnt" id="msb-all-cnt"></span>
+        </button>
+        <div id="map-cap-notice" style="display:none;margin:0 10px 4px;padding:5px 8px;
+          font-family:'DM Mono',monospace;font-size:.52rem;color:#ffaa3c;
+          background:rgba(255,170,60,.07);border:1px solid rgba(255,170,60,.2);
+          border-radius:6px;line-height:1.5;"></div>
+        <!-- Visible-now panel — shows what's rendered in the current viewport -->
+        <div class="msb-visible" id="msb-visible" style="display:none">
+          <div class="msb-visible-hd" onclick="toggleVisiblePanel()">
+            <span class="msb-visible-title">On screen</span>
+            <span class="msb-visible-count" id="msb-visible-count">0</span>
+            <span class="msb-visible-arr">▾</span>
+          </div>
+          <!-- Quick date filter for ON SCREEN list — mirrors mapDateMode -->
+          <div id="msb-date-row" style="display:none;padding:3px 8px 4px;gap:3px;flex-wrap:wrap;border-bottom:1px solid var(--border)">
+            <button class="mfilt-chip on" data-md2="all"   onclick="setMapDate('all');event.stopPropagation()">All</button>
+            <button class="mfilt-chip"    data-md2="week"  onclick="setMapDate('week');event.stopPropagation()">Week</button>
+            <button class="mfilt-chip"    data-md2="month" onclick="setMapDate('month');event.stopPropagation()">Month</button>
+            <button class="mfilt-chip"    data-md2="range" onclick="setMapDate('range');event.stopPropagation()">Range</button>
+          </div>
+          <div class="msb-visible-list" id="msb-visible-list"></div>
+        </div>
+        <div class="msb-list" id="msb-list">
+          <div style="padding:16px;font-size:.62rem;color:var(--muted2)">Load data to see artists</div>
+        </div>
+      </div>
+
+      <!-- FESTIVALS PANE -->
+      <div class="msb-pane" id="pane-fests">
+        <div class="fest-import-row">
+          <button class="fest-import-btn" id="fest-import-btn" onclick="importFestivalsOnly()">⬇ Import festivals</button>
+          <button class="fest-goto-btn" id="fest-goto-btn" onclick="openGoThru()" title="Go through festivals one by one and rate them">🎪 Go thru</button>
+        </div>
+        <div class="fest-sort-row">
+          <span class="fest-sort-lbl">Sort</span>
+          <button class="fsort-btn on" id="fsort-score" onclick="setFestSort('score')">Relevance</button>
+          <button class="fsort-btn"    id="fsort-date"  onclick="setFestSort('date')">Date</button>
+          <label class="fest-unranked-toggle" title="Unranked = score 0 / no tracked artists">
+            <input type="checkbox" id="show-unranked-cb" checked onchange="toggleUnrankedFests(this.checked)">
+            <span>unranked</span>
+          </label>
+        </div>
+        <div class="msb-list" id="fest-cards">
+          <div style="padding:16px;font-size:.62rem;color:var(--muted2)">Load data to see festivals</div>
+        </div>
+      </div>
+
+      <!-- ERRORS PANE -->
+      <div class="msb-pane" id="pane-errors">
+        <div class="err-pane-head">
+          <div class="err-pane-title">Failed fetches</div>
+          <div class="err-pane-sub" id="err-pane-sub">Artists that couldn't be fetched after all retries</div>
+          <button class="err-retry-all" id="err-retry-all-btn" onclick="retryAllErrors()">↺ Retry all</button>
+        </div>
+        <div class="msb-list" id="err-list"></div>
+      </div>
+
+      <!-- HONESTY PANE -->
+      <div class="msb-pane" id="pane-honest">
+        <div class="honest-body" id="honest-body"></div>
+      </div>
+
+      <!-- MATCH PANE -->
+      <div class="msb-pane" id="pane-match">
+        <div class="match-input-row">
+          <div class="match-label">Her Spotify playlist</div>
+          <div class="match-url-row">
+            <input class="match-url-input" id="match-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false">
+            <button class="match-btn" id="match-btn" onclick="runMatch()">▶ Match</button>
+          </div>
+          <div class="match-progress" id="match-progress" style="display:none">
+            <div class="match-progress-fill" id="match-prog-fill" style="width:5%"></div>
+          </div>
+          <div class="match-status" id="match-status"></div>
+        </div>
+        <div class="match-pane-body" id="match-body">
+          <div style="padding:24px 14px;font-size:.6rem;color:var(--muted2);text-align:center;line-height:1.8">
+            Paste her playlist above.<br>See concerts of artists you both listen to,<br>and festivals ranked by your combined taste.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="map" style="flex:1;position:relative;z-index:0">
+      <!-- Floating sidebar tabs — visible when sidebar is collapsed -->
+      <div id="sidebar-open-tabs" style="position:absolute;left:0;top:50%;transform:translateY(-50%);z-index:810;display:flex;flex-direction:column;gap:4px;pointer-events:none;opacity:0;transition:opacity .2s">
+        <button class="msb-float-tab" onclick="toggleMapSidebar('tours')">🎸 Tours</button>
+        <button class="msb-float-tab" onclick="toggleMapSidebar('fests')">🎪 Fests</button>
+        <button class="msb-float-tab" onclick="toggleMapSidebar('match')">💑 Match</button>
+        <button class="msb-float-tab" onclick="toggleMapSidebar('honest')">🧐 Honesty</button>
+      </div>
+    </div>
+    <div class="map-loading-overlay" id="map-loading-overlay">
+      <div class="map-spinner"></div>
+    </div>
+
+    <!-- HONESTY FLOAT BUTTON -->
+    <button id="honesty-float-btn" onclick="toggleMapSidebar('honest')" title="About this app — known limitations & live diagnostics"
+      style="position:absolute;bottom:48px;left:12px;z-index:820;
+        background:rgba(8,8,10,.92);border:1px solid rgba(114,114,122,.35);
+        border-radius:50%;width:28px;height:28px;cursor:pointer;
+        font-size:.65rem;color:var(--muted2);display:flex;align-items:center;
+        justify-content:center;transition:border-color .15s,color .15s;
+        backdrop-filter:blur(4px)"
+      onmouseenter="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
+      onmouseleave="this.style.borderColor='rgba(114,114,122,.35)';this.style.color='var(--muted2)'">?</button>
+
+    <!-- MAP LEGEND -->
+    <div id="map-legend" style="position:absolute;bottom:42px;right:12px;z-index:10;
+      background:rgba(8,8,10,.92);border:1px solid rgba(255,255,255,.08);border-radius:8px;
+      padding:8px 10px;font-family:'DM Mono',monospace;font-size:.5rem;
+      color:var(--muted);line-height:1.8;pointer-events:none;
+      backdrop-filter:blur(4px);transition:opacity .2s">
+      <div style="letter-spacing:.08em;text-transform:uppercase;font-size:.42rem;color:var(--muted2);margin-bottom:4px">Legend</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:32px;height:14px;border-radius:100px;border:1.5px solid #c8ff5f;background:rgba(8,8,10,.9);display:flex;align-items:center;padding:0 5px;gap:3px">
+          <div style="width:5px;height:5px;border-radius:50%;background:#c8ff5f;flex-shrink:0"></div>
+          <div style="width:12px;height:3px;background:#c8ff5f;border-radius:1px;opacity:.5"></div>
+        </div>
+        <span>20+ plays</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:32px;height:12px;border-radius:100px;border:1px solid var(--accent);background:rgba(8,8,10,.9);display:flex;align-items:center;padding:0 5px;gap:3px">
+          <div style="width:4px;height:4px;border-radius:50%;background:var(--accent);flex-shrink:0"></div>
+          <div style="width:10px;height:2px;background:var(--accent);border-radius:1px;opacity:.5"></div>
+        </div>
+        <span>5–19 plays</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:7px;height:7px;border-radius:50%;background:var(--accent);opacity:.6"></div>
+        <span>tracked artist</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+        <div style="width:8px;height:8px;border:1.5px solid #ffaa3c;transform:rotate(45deg);background:rgba(255,170,60,.12)"></div>
+        <span style="padding-left:2px">festival</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div style="width:22px;height:22px;border-radius:50%;border:2px solid #c8ff5f;background:rgba(8,8,10,.96);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.48rem;color:#c8ff5f">3</div>
+        <span>city cluster</span>
+      </div>
+      <div style="margin-top:4px;border-top:1px solid rgba(255,255,255,.06);padding-top:4px;font-size:.44rem;color:var(--muted2)">
+        Pulse = show in 7 days<br>Glow = show in 30 days
+      </div>
+    </div>
+      <div class="focus-overlay" id="focus-overlay" style="display:none">
+      <div class="focus-card">
+        <div class="focus-top">
+          <div>
+            <div class="focus-name" id="focus-name"></div>
+            <div class="focus-sub" id="focus-sub"></div>
+          </div>
+          <button class="focus-close" onclick="focusArtist(null)">✕</button>
+        </div>
+        <div class="focus-list" id="focus-list"></div>
+      </div>
+      </div><!-- /focus-overlay -->
+    </div>
+  </div>
+</div>
+
+<!-- QUOTA EXHAUSTED MODAL -->
+<div class="quota-bg" id="quota-bg">
+  <div class="quota-box">
+      <div class="quota-top">
+      <div class="quota-icon">⛔</div>
+        <div class="quota-title" id="quota-title">API Key Quota Exhausted</div>
+        <div class="quota-subtitle" id="quota-subtitle">
+        Ticketmaster is rejecting every request instantly (&lt;15ms), which means
+        the daily hard quota for this API key has been reached. Waiting and retrying
+        won't help — the counter resets at <strong>midnight UTC</strong>.
+      </div>
+      <div class="quota-reset">🕐 Resets <strong id="quota-reset-str">calculating…</strong></div>
+    </div>
+    <div class="quota-body">
+      <div class="quota-found">
+        Already found <strong id="quota-found-count">0</strong> concerts and festivals —
+        you can browse everything discovered so far while waiting for the quota reset.
+      </div>
+      <div class="quota-new-key" id="quota-new-key-block">
+        <div class="quota-new-key-label">Or use a different API key to continue now</div>
+        <div class="quota-key-row">
+          <input class="quota-key-input" id="quota-key-input" type="password"
+            placeholder="Paste new Consumer Key…" autocomplete="off" spellcheck="false"
+            oninput="document.getElementById('quota-key-apply').disabled=!this.value.trim()">
+          <button class="quota-key-btn" id="quota-key-apply" disabled
+            onclick="quotaApplyNewKey()">▶ Continue</button>
+        </div>
+      </div>
+      <div class="quota-get-link" id="quota-get-link">
+        Don't have another key? <a href="https://developer.ticketmaster.com/products-and-docs/apis/getting-started/" target="_blank">Get a free key at developer.ticketmaster.com →</a>
+        <br>Free tier: 5,000 API calls/day · takes ~2 minutes to register
+      </div>
+    </div>
+    <div class="quota-browse">
+      <span class="quota-browse-txt">Come back after midnight UTC to scan again with this key</span>
+      <button class="quota-browse-btn" onclick="closeQuotaModal()">Browse results →</button>
+    </div>
+  </div>
+</div>
+
+<!-- DEBUG PANEL -->
+<div class="dbg-panel off" id="dbg-panel">
+  <div class="dbg-hd">
+    <span class="dbg-title">🔍 Debug Log</span>
+    <div class="dbg-filters">
+      <button class="dbg-filter on" data-f="all"     onclick="dbgSetFilter('all')">All</button>
+      <button class="dbg-filter ok"  data-f="ok"     onclick="dbgSetFilter('ok')">✓ OK</button>
+      <button class="dbg-filter err" data-f="error"  onclick="dbgSetFilter('error')">✗ Error</button>
+      <button class="dbg-filter net" data-f="net"    onclick="dbgSetFilter('net')">📡 Network</button>
+      <button class="dbg-filter warn" data-f="warn"  onclick="dbgSetFilter('warn')">⚠ Warn</button>
+      <button class="dbg-filter info" data-f="info"  onclick="dbgSetFilter('info')">ℹ Info</button>
+    </div>
+    <div class="dbg-actions">
+      <span class="dbg-summary" id="dbg-summary"></span>
+      <button class="dbg-btn" onclick="dbgRunDiagnose()">🩺 Diagnose</button>
+      <button class="dbg-btn" onclick="copyDbg()">📋 Copy</button>
+      <button class="dbg-btn" onclick="dbgClear()">🗑 Clear</button>
+      <button class="dbg-btn" onclick="toggleDbg()">✕</button>
+    </div>
+  </div>
+  <div class="dbg-body">
+    <div class="dbg-banner" id="dbg-banner">
+      <span class="dbg-banner-icon">🔴</span>
+      <div class="dbg-banner-text" id="dbg-banner-text"></div>
+      <button class="dbg-banner-action" onclick="dbgRunDiagnose()">🩺 Diagnose now</button>
+      <button class="dbg-banner-dismiss" onclick="dbgDismissBanner()">✕</button>
+    </div>
+    <div class="dbg-log" id="dbg-log"></div>
+  </div>
+</div>
+
+<!-- SNOOZE -->
+<div class="snooze-bg off" id="snooze-bg">
+  <div class="snooze-box">
+    <div class="snooze-title">Hide artist</div>
+    <div class="snooze-sub" id="snooze-sub"></div>
+    <div class="snooze-opts">
+      <button class="snooze-opt" onclick="doSnooze(7)">⏱ For 7 days</button>
+      <button class="snooze-opt" onclick="doSnooze(30)">📅 For 30 days</button>
+      <button class="snooze-opt" onclick="doSnooze(90)">❄️ For 3 months</button>
+      <button class="snooze-opt" onclick="doSnooze(0)">🚫 Permanently</button>
+      <button class="snooze-opt cancel" onclick="closeSnooze()">✕ Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS -->
+<div class="modal-bg off" id="settings-bg" onclick="settingsBgClick(event)">
+<div class="smodal">
+  <div class="smodal-hd">
+    <div class="smodal-logo">Tour<span>track</span></div>
+    <button class="smodal-close" onclick="closeSettings()">&#x2715;</button>
+  </div>
+  <nav class="smodal-nav">
+    <button class="smodal-tab active" id="stab-import"   onclick="setSettingsTab('import')">Playlist</button>
+    <button class="smodal-tab"        id="stab-database" onclick="setSettingsTab('database')" style="display:none">Library</button>
+    <button class="smodal-tab"        id="stab-advanced" onclick="setSettingsTab('advanced')">Settings</button>
+  </nav>
+  <div class="smodal-body">
+
+    <!-- PLAYLIST TAB -->
+    <div class="smodal-pane active" id="stab-pane-import">
+      <div class="sset-block" style="border:none">
+        <div class="sset-label">Spotify playlist URL</div>
+        <div class="sset-row">
+          <input class="sset-input" id="sp-playlist-url"
+            placeholder="https://open.spotify.com/playlist/&#x2026;" spellcheck="false"
+            onkeydown="if(event.key==='Enter')spotifyImport()">
+          <button class="sset-btn-primary" id="sp-import-btn" onclick="spotifyImport()">&#x2193; Import</button>
+        </div>
+        <div class="sset-status" id="hero-status">
+          <span id="hero-status-text" style="flex:1"></span>
+          <div class="settings-hero-progress" id="hero-progress">
+            <div class="settings-hero-progress-fill" id="hero-prog-fill" style="width:5%"></div>
+          </div>
+        </div>
+      </div>
+      <div id="settings-history-wrap" style="display:none;padding:12px 20px 16px">
+        <div style="font-size:.5rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted2);margin-bottom:8px">Previously imported</div>
+        <div id="settings-history" style="display:flex;flex-direction:column;gap:5px"></div>
+      </div>
+    </div>
+
+    <!-- LIBRARY TAB -->
+    <div class="smodal-pane" id="stab-pane-database">
+      <div id="db-tab-content"></div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div class="smodal-pane" id="stab-pane-advanced">
+
+      <div class="sset-block">
+        <div class="sset-label">Search scope</div>
+        <div class="sset-hint">Which countries Ticketmaster scans for concerts. Worldwide is recommended.</div>
+        <div class="sset-scope-tabs">
+          <button class="sset-scope-btn" id="scm-world"   onclick="setScopeMode('world')">&#x1F30D; Worldwide</button>
+          <button class="sset-scope-btn" id="scm-include" onclick="setScopeMode('include')">&#x2713; Include only</button>
+          <button class="sset-scope-btn" id="scm-exclude" onclick="setScopeMode('exclude')">&#x2715; Exclude</button>
+        </div>
+        <div id="scope-regions" style="display:none;margin-top:10px">
+          <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">
+            <button class="scope-preset" onclick="scopePreset('eu')">&#x1F1EA;&#x1F1FA; EU</button>
+            <button class="scope-preset" onclick="scopePreset('eu+na')">EU + Americas</button>
+            <button class="scope-preset" onclick="scopePreset('all')">All</button>
+            <button class="scope-preset" onclick="scopePreset('none')">Clear</button>
+          </div>
+          <div id="rcard-list"></div>
+        </div>
+        <div class="sset-scope-summary" id="scope-summary"></div>
+      </div>
+
+      <div class="sset-block">
+        <div class="sset-label">Artist list <span id="artist-count-badge" style="font-size:.7em;color:var(--accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px"></span></div>
+        <div class="sset-hint">One per line. Optional play count: <code style="background:var(--s3);padding:1px 5px;border-radius:3px">Radiohead 142</code></div>
+        <div class="artists-wrap">
+          <textarea class="artists-ta" id="artists-ta"
+            placeholder="Radiohead 142&#10;Portishead 89&#10;Nick Cave 67&#10;..." style="height:110px"></textarea>
+          <div class="artists-side">
+            <button class="btn" onclick="clearArtists()" style="font-size:.58rem;padding:5px 10px">Clear</button>
+            <div class="artist-count" id="artist-count">0 artists</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">
+          <span style="font-size:.54rem;color:var(--muted2)">Remove artists with &#x2264;</span>
+          <button class="artist-trim-btn" onclick="trimArtistsByTracks(2)">1 track</button>
+          <button class="artist-trim-btn" onclick="trimArtistsByTracks(3)">2 tracks</button>
+          <button class="artist-trim-btn" onclick="trimArtistsByTracks(4)">3 tracks</button>
+          <button class="artist-trim-btn" onclick="trimArtistsByTracks(6)">5 tracks</button>
+          <span class="artist-trim-hint" id="artist-trim-hint"></span>
+        </div>
+      </div>
+
+      <div class="sset-block">
+        <div class="sset-label">Ticketmaster API keys</div>
+        <div class="sset-hint" id="tm-key-hint">Keys rotate when quota is hit (5,000 req/day). <span style="color:var(--green)">&#x25cf;</span> Active &#xb7; <span style="color:var(--red)">&#x25cf;</span> Exhausted (resets midnight UTC)</div>
+        <div id="key-pool-list" style="margin-top:8px"></div>
+        <input type="hidden" id="api-input">
+        <div class="sset-link"><a href="https://developer.ticketmaster.com" target="_blank">developer.ticketmaster.com</a> &#x2192; My Apps &#x2192; Create App</div>
+      </div>
+
+      <div class="sset-block">
+        <div class="sset-label">Spotify access <span id="sp-cred-note" style="font-size:.65em;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted2)">&#x2014; server managed</span></div>
+        <div style="font-size:12px;color:var(--muted2);line-height:1.5;margin-top:8px">
+          Playlist import and top tracks use server environment variables. Browser secrets are not stored in this build.
+        </div>
+        <input type="hidden" id="sp-client-id" value="">
+        <input type="hidden" id="sp-client-secret" value="">
+        <div class="sset-link"><a href="https://developer.spotify.com/dashboard" target="_blank">developer.spotify.com</a> &#x2192; set Client ID + Secret in the server environment</div>
+      </div>
+
+      <details id="proxy-details" class="sset-details">
+        <summary class="sset-details-summary"
+          onclick="this.parentElement.open ? this.querySelector('.prx-arr').textContent='&#x25b8;' : this.querySelector('.prx-arr').textContent='&#x25be;'">
+          <span>Proxy</span>
+          <span style="font-size:.8em;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0">&#x2014; only if IP is blocked</span>
+          <span class="prx-arr" style="margin-left:auto;font-size:.7rem;color:var(--muted2)">&#x25b8;</span>
+        </summary>
+        <div class="sset-details-body">
+          <div style="font-size:.55rem;color:var(--muted2);letter-spacing:.07em;text-transform:uppercase">Spotify</div>
+          <div class="proxy-row" id="proxy-opts">
+            <button class="proxy-opt" data-p="none"      onclick="setSpProxy('none')">Direct</button>
+            <button class="proxy-opt" data-p="auto"      onclick="setSpProxy('auto')">Auto</button>
+            <button class="proxy-opt" data-p="corsproxy" onclick="setSpProxy('corsproxy')">corsproxy.io</button>
+            <button class="proxy-opt" data-p="custom"    onclick="setSpProxy('custom')">Custom</button>
+          </div>
+          <div id="proxy-custom-row" class="proxy-custom-row" style="display:none">
+            <input class="proxy-custom-input" id="proxy-custom-url" placeholder="https://proxy/?url={url}" spellcheck="false">
+            <button class="proxy-test-btn" onclick="testSpProxy()">&#x25b6; Test</button>
+          </div>
+          <div class="adv-hint" id="proxy-hint">Direct &#x2014; default.</div>
+          <div class="proxy-status" id="proxy-status" style="display:none"></div>
+          <div style="font-size:.55rem;color:var(--muted2);letter-spacing:.07em;text-transform:uppercase;margin-top:8px">Ticketmaster</div>
+          <div class="proxy-row" id="tm-proxy-opts">
+            <button class="proxy-opt" data-p="none"       onclick="setTmProxy('none')">Direct</button>
+            <button class="proxy-opt" data-p="auto"       onclick="setTmProxy('auto')">Auto</button>
+            <button class="proxy-opt" data-p="corsproxy"  onclick="setTmProxy('corsproxy')">corsproxy.io</button>
+            <button class="proxy-opt" data-p="allorigins" onclick="setTmProxy('allorigins')">allorigins</button>
+            <button class="proxy-opt" data-p="custom"     onclick="setTmProxy('custom')">Custom</button>
+          </div>
+          <div id="tm-proxy-custom-row" class="proxy-custom-row" style="display:none">
+            <input class="proxy-custom-input" id="tm-proxy-custom-url" placeholder="https://proxy/?url={url}" spellcheck="false">
+            <button class="proxy-test-btn" onclick="testTmProxy()">&#x25b6; Test</button>
+          </div>
+          <div class="adv-hint" id="tm-proxy-hint">Direct &#x2014; default.</div>
+          <div class="proxy-status" id="tm-proxy-status" style="display:none"></div>
+        </div>
+      </details>
+
+      <div class="sset-block sset-block-last">
+        <div class="sset-label">Utilities</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          <button class="adv-badge" id="use-cached-btn" onclick="useCached()" style="display:none">&#x1F4E6; Use cached</button>
+          <button class="adv-badge danger" onclick="clearArtistCache()">&#x1F5D1; Clear cache</button>
+        </div>
+      </div>
+
+    </div><!-- /settings tab -->
+  </div><!-- /smodal-body -->
+  <div class="smodal-foot">
+    <button class="sset-btn-ghost" onclick="closeSettings()">Cancel</button>
+    <button class="sset-btn-primary" onclick="saveAndFetch(false)">&#x25b6; Smart scan</button>
+  </div>
+</div>
+</div>
+<script src="/config.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

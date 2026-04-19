@@ -1,0 +1,13 @@
+.env
+.env.local
+.env.*.local
+node_modules/
+legacy/
+*.backup.html
+concert-tracker.png
+concert-tracker-after.png
+concert-tracker-after-2.png
+server.log
+server.err
+Thumbs.db
+.DS_Store

@@ -1,0 +1,14 @@
+{
+  "name": "tourtrack-concert-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Concert tracker with server-side API proxying for Ticketmaster, Bandsintown, Spotify, and Deezer.",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "check": "node --check server/index.js && node --check api/index.js && node -e \"new Function(require('fs').readFileSync('client/assets/app.js', 'utf8')); console.log('syntax ok')\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
