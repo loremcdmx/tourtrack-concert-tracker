@@ -393,17 +393,15 @@ function _drawPlaylistMosaic(canvas, topArtists) {
 function _paintPinnedMosaic() {
   const canvas = document.getElementById('ql-pinned-mosaic');
   if (!canvas) return;
-  const artists = ['Fall Out Boy','The Maine','Anacondaz','Panic! At The Disco'];
-  _drawPlaylistMosaic(canvas, artists);
+  _drawPlaylistMosaic(canvas, PINNED_PLAYLIST.topArtists);
 }
 
 // Reset onboard text and close the overlay after a successful import.
 function profHideEmpty() {
   const title = document.getElementById('onboard-main-title');
   const sub   = document.getElementById('onboard-sub-text');
-  if (title) title.innerHTML = 'Paste your Spotify<br>playlist link';
-  if (sub)   sub.textContent =
-    "We'll find upcoming concerts and festivals for every artist you listen to. Takes ~1 min.";
+  if (title) title.innerHTML = DEFAULT_ONBOARD_TITLE;
+  if (sub)   sub.textContent = DEFAULT_ONBOARD_SUB;
   hideOnboard();
 }
 
@@ -8013,6 +8011,79 @@ async function testUrl(url, label) {
 // ─────────────────────────────────────────────────────────────────
 
 // State mirrored from onboard filter panel (applied before entering app)
+const PINNED_PLAYLIST = Object.freeze({
+  id: '0lXmCRl0wc26aSdwfgIAwQ',
+  url: 'https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ',
+  name: 'loremcdmx twitch playlist',
+  artistCount: 2449,
+  trackCount: 5569,
+  topArtists: ['Fall Out Boy', 'The Maine', 'Anacondaz', 'Panic! At The Disco'],
+});
+const DEFAULT_ONBOARD_TITLE = 'Open a playlist<br>and jump into results';
+const DEFAULT_ONBOARD_SUB =
+  'The loremcdmx twitch playlist is ready to go. Open cached results when they exist, or start a fresh scan from the same link.';
+
+function samePlaylistUrl(a, b) {
+  const aId = spExtractId(a || '');
+  const bId = spExtractId(b || '');
+  return !!aId && aId === bId;
+}
+
+function getDefaultOnboardPlaylistUrl() {
+  return getOnboardHistory()[0]?.url || PINNED_PLAYLIST.url;
+}
+
+function syncOnboardPrimaryAction() {
+  const inp = document.getElementById('onboard-url');
+  const btn = document.getElementById('onboard-btn');
+  if (!btn) return;
+  const raw = (inp?.value || '').trim();
+  const latestUrl = getOnboardHistory()[0]?.url || '';
+  if (samePlaylistUrl(raw, latestUrl)) {
+    btn.textContent = '→ Open last';
+  } else if (samePlaylistUrl(raw, PINNED_PLAYLIST.url)) {
+    btn.textContent = '→ Open sample';
+  } else {
+    btn.textContent = '→ Start scan';
+  }
+}
+
+function primeOnboardPlaylistInput() {
+  const inp = document.getElementById('onboard-url');
+  if (!inp) return;
+  if (!inp.value.trim()) inp.value = getDefaultOnboardPlaylistUrl();
+  syncOnboardPrimaryAction();
+}
+
+function focusOnboardPlaylistInput(selectText = false) {
+  const inp = document.getElementById('onboard-url');
+  if (!inp) return;
+  inp.focus();
+  if (selectText) inp.select();
+}
+
+function usePinnedPlaylist(opts = {}) {
+  const inp = document.getElementById('onboard-url');
+  if (inp) inp.value = PINNED_PLAYLIST.url;
+  syncOnboardPrimaryAction();
+  if (opts.start) return handleOnboardPrimaryAction();
+  focusOnboardPlaylistInput();
+  return Promise.resolve(false);
+}
+
+function canInstantResumeFor(rawValue, info) {
+  if (!info || info.artistCount <= 0) return false;
+  const latestUrl = getOnboardHistory()[0]?.url || '';
+  if (!rawValue) return true;
+  if (!latestUrl) return true;
+  return samePlaylistUrl(rawValue, latestUrl);
+}
+
+async function handleOnboardPrimaryAction() {
+  primeOnboardPlaylistInput();
+  return resumeOrImport();
+}
+
 let _obGeo   = 'nousa';  // mirrors geoQuick
 let _obScore = 0;        // mirrors calScoreFilter
 
@@ -8142,9 +8213,9 @@ async function instantResume(opts = {}) {
 function showNewImport() {
   document.getElementById('onboard-resume').style.display = 'none';
   document.getElementById('onboard-import-panel').style.display = '';
+  primeOnboardPlaylistInput();
   setTimeout(() => {
-    const inp = document.getElementById('onboard-url');
-    if (inp) inp.focus();
+    focusOnboardPlaylistInput();
   }, 80);
 }
 
@@ -8153,14 +8224,14 @@ function showOnboard() {
   if (!el) return;
   el.classList.remove('hidden');
   renderOnboardHistory();
+  primeOnboardPlaylistInput();
   setTimeout(_paintPinnedMosaic, 0);
   // Show "back to last session" only if there's cached data
   const skip = document.getElementById('onboard-skip');
   if (skip) skip.style.display = (concerts.length || festivals.length) ? '' : 'none';
   // Focus the input after a brief delay
   setTimeout(() => {
-    const inp = document.getElementById('onboard-url');
-    if (inp) inp.focus();
+    focusOnboardPlaylistInput();
   }, 150);
 }
 
@@ -8221,14 +8292,14 @@ function renderOnboardHistory() {
       el.onclick = e => {
         if (e.target.classList.contains('onboard-pl-del')) return;
         document.getElementById('onboard-url').value = p.url;
-        resumeOrImport();
+        syncOnboardPrimaryAction();
+        handleOnboardPrimaryAction();
       };
       hist.appendChild(el);
     });
   }
   // Hide quick-load card if this playlist is already in history (avoid duplication)
-  const PINNED_ID = '0lXmCRl0wc26aSdwfgIAwQ';
-  const alreadyInHistory = list.some(p => (p.url || '').includes(PINNED_ID));
+  const alreadyInHistory = list.some(p => samePlaylistUrl(p.url || '', PINNED_PLAYLIST.url));
   const ql = document.getElementById('onboard-quickload');
   if (ql) ql.style.display = alreadyInHistory ? 'none' : '';
 }
@@ -8368,7 +8439,8 @@ function onboardCancel() {
   onboardSetStatus('Cancelled.');
   spTokenCache = null; // force fresh token next attempt
   const btn = document.getElementById('onboard-btn');
-  if (btn) { btn.disabled = false; btn.textContent = '→ Start'; }
+  if (btn) btn.disabled = false;
+  syncOnboardPrimaryAction();
 }
 
 
@@ -8383,7 +8455,7 @@ async function runSpotifyImport(opts = {}) {
   const urlInputId = isOnboard ? 'onboard-url' : 'sp-playlist-url';
   const btnId      = isOnboard ? 'onboard-btn'  : 'sp-import-btn';
 
-  const raw = (document.getElementById(urlInputId)?.value || '').trim();
+  const raw = ((document.getElementById(urlInputId)?.value || '').trim()) || (isOnboard ? getDefaultOnboardPlaylistUrl() : '');
   const pid = spExtractId(raw);
 
   if (!pid) {
@@ -8476,15 +8548,18 @@ async function runSpotifyImport(opts = {}) {
       ? ' → Попробуй ⚡ Auto-fallback proxy ниже.' : '';
     const msg = '⚠ ' + (e.message || 'Something went wrong') + proxyHint;
     setStatus(msg, '#ff7070');
-    if (btn) { btn.disabled = false; btn.textContent = isOnboard ? '→ Start' : '↓ Import & Scan'; }
+    if (btn) btn.disabled = false;
+    if (isOnboard) syncOnboardPrimaryAction();
+    else if (btn) btn.textContent = '↓ Import & Scan';
     return false;
   }
 }
 
 // Smart entry point: if IDB has cached data, resume instantly; otherwise run full Spotify import
 async function resumeOrImport() {
+  const raw = (document.getElementById('onboard-url')?.value || '').trim();
   const info = await checkIDBCache().catch(() => null);
-  if (info && info.artistCount > 0) {
+  if (canInstantResumeFor(raw, info)) {
     instantResume();
   } else {
     onboardImport();
@@ -8500,6 +8575,10 @@ async function spotifyImport()  { return runSpotifyImport({ mode: 'settings' });
 // ═══════════════════════════════════════════════════════════════
 const _vbadge = document.getElementById('app-ver-badge');
 if (_vbadge) _vbadge.textContent = 'v' + APP_VERSION;
+const _onboardUrlInput = document.getElementById('onboard-url');
+if (_onboardUrlInput) {
+  _onboardUrlInput.addEventListener('input', syncOnboardPrimaryAction);
+}
 restore();
 profInit();       // load active profile snapshot into ARTISTS/ARTIST_PLAYS if non-Main
 restoreProxySettings();

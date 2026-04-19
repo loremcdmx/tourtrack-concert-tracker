@@ -144,13 +144,13 @@
 
     <!-- ▸ NEW IMPORT PANEL — default state or when no IDB data -->
     <div id="onboard-import-panel">
-      <div class="onboard-title" id="onboard-main-title">Paste your Spotify<br>playlist link</div>
-      <div class="onboard-sub" id="onboard-sub-text">We'll find upcoming concerts and festivals for every artist you listen to. Takes ~1 min.</div>
+      <div class="onboard-title" id="onboard-main-title">Open a playlist<br>and jump into results</div>
+      <div class="onboard-sub" id="onboard-sub-text">The loremcdmx twitch playlist is ready to go. Open cached results when they exist, or start a fresh scan from the same link.</div>
       <div class="onboard-input-wrap">
         <input class="onboard-input" id="onboard-url" placeholder="https://open.spotify.com/playlist/…"
           spellcheck="false" autocomplete="off"
-          onkeydown="if(event.key==='Enter')onboardImport()">
-        <button class="onboard-btn" id="onboard-btn" onclick="onboardImport()">→ Start</button>
+          onkeydown="if(event.key==='Enter')handleOnboardPrimaryAction()">
+        <button class="onboard-btn" id="onboard-btn" onclick="handleOnboardPrimaryAction()">→ Open sample</button>
       </div>
       <!-- Min tracks filter -->
       <div class="onboard-mintracks-row">
@@ -200,9 +200,9 @@
       <!-- Quick shortcut — always visible -->
       <div class="onboard-quickload" id="onboard-quickload">
         <hr class="onboard-divider">
-        <div class="onboard-history-label">Quick load</div>
+        <div class="onboard-history-label">Ready to open</div>
         <div class="onboard-pl onboard-pl--pinned"
-          onclick="document.getElementById('onboard-url').value='https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ';resumeOrImport()">
+          onclick="usePinnedPlaylist({start:true})">
           <canvas class="onboard-pl-mosaic" id="ql-pinned-mosaic" width="68" height="68"
             style="width:68px;height:68px;flex-shrink:0;display:block"></canvas>
           <div class="onboard-pl-body">
