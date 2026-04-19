@@ -483,6 +483,9 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   letter-spacing:.06em; text-transform:uppercase; color:var(--text); opacity:.88; pointer-events:none; }
 .artist-avatar--mx { width:30px; height:30px; }
 .artist-avatar--mx .artist-avatar-fallback { font-size:.56rem; }
+.artist-avatar--chip { width:18px; height:18px; border-color:rgba(255,255,255,.08); box-shadow:none; }
+.artist-avatar--chip::after { right:1px; bottom:1px; width:5px; height:5px; box-shadow:none; }
+.artist-avatar--chip .artist-avatar-fallback { font-size:.44rem; letter-spacing:0; }
 .ev-name { font-family:'Syne',sans-serif; font-weight:700; font-size:.82rem; line-height:1.25;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
 .ev-name.tkt { cursor:pointer; }
@@ -500,9 +503,10 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .ev-artist-chip { display:inline-flex; align-items:center; gap:4px; font-size:.58rem;
   padding:2px 8px; border-radius:100px; background:var(--s3); border:1px solid var(--border2);
   color:var(--text); white-space:nowrap; cursor:pointer; transition:all .12s; }
+.ev-artist-chip.has-avatar { padding-left:4px; }
 .ev-artist-chip:hover { border-color:var(--accent); color:var(--accent); }
 .ev-artist-chip.mine { border-color:rgba(200,255,95,.35); background:rgba(200,255,95,.07); color:var(--accent); }
-.ev-artist-chip .chip-dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
+.ev-artist-chip .artist-avatar { flex-shrink:0; }
 
 /* ── FAVORITES ── */
 .msb-star { background:none; border:none; cursor:pointer; padding:2px 4px; font-size:.85rem;

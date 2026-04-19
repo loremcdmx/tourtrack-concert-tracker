@@ -412,7 +412,12 @@ function queueArtistAvatarLoad(el, artist) {
 function createArtistAvatar(artist, opts = {}) {
   const el = document.createElement('div');
   el.className = 'artist-avatar';
-  el.classList.add(opts.size === 'mx' ? 'artist-avatar--mx' : 'artist-avatar--feed');
+  const sizeClass = opts.size === 'mx'
+    ? 'artist-avatar--mx'
+    : opts.size === 'chip'
+      ? 'artist-avatar--chip'
+      : 'artist-avatar--feed';
+  el.classList.add(sizeClass);
   el.dataset.artist = artist || '';
   el.dataset.artistKey = artistMediaKey(artist);
   el.style.setProperty('--artist-avatar-accent', artistAvatarAccent(artist, opts.color));

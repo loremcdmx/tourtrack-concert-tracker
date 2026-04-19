@@ -1,5 +1,22 @@
 'use strict';
 
+function appendArtistChipIdentity(chip, artist, plays = 0) {
+  if (!chip || !artist) return;
+  chip.classList.add('has-avatar');
+  chip.appendChild(createArtistAvatar(artist, { size:'chip', color:getColor(artist) }));
+
+  const label = document.createElement('span');
+  label.textContent = artist;
+  chip.appendChild(label);
+
+  if (plays > 0) {
+    const playCount = document.createElement('span');
+    playCount.style.cssText = 'opacity:.55;font-size:.8em;margin-left:2px';
+    playCount.textContent = plays;
+    chip.appendChild(playCount);
+  }
+}
+
 function buildCalChips() {
   // Count events per country
   const ccCount = new Map();
@@ -984,30 +1001,15 @@ function renderCalendar() {
         const seenArtists = new Set();
 
         ev.artists.forEach(cc => {
+          if (!cc.artist) return;
           const key = cc.artist.toLowerCase();
           if (seenArtists.has(key)) return;
           seenArtists.add(key);
+          primeArtists.add(cc.artist);
           const isMine = trackedSet.has(key);
           const chip = document.createElement('span');
           chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
-          if (isMine) {
-            const dot = document.createElement('span');
-            dot.className = 'chip-dot';
-            dot.style.background = getColor(cc.artist);
-            chip.appendChild(dot);
-            const plays = ARTIST_PLAYS[key] || 0;
-            if (plays > 0) {
-              const pl = document.createElement('span');
-              pl.style.cssText = 'opacity:.55;font-size:.8em;margin-left:2px';
-              pl.textContent = plays;
-              chip.appendChild(document.createTextNode(cc.artist));
-              chip.appendChild(pl);
-            } else {
-              chip.appendChild(document.createTextNode(cc.artist));
-            }
-          } else {
-            chip.appendChild(document.createTextNode(cc.artist));
-          }
+          appendArtistChipIdentity(chip, cc.artist, isMine ? (ARTIST_PLAYS[key] || 0) : 0);
           chip.style.cursor = 'pointer';
           chip.onclick = () => { focusArtist(cc.artist); setTab('tours'); };
           chipsEl.appendChild(chip);
@@ -1033,23 +1035,13 @@ function renderCalendar() {
         // Show matched artists (what triggered this festival to appear)
         const matched = ev.matched || [];
         if (matched.length) {
+          matched.forEach(m => m.artist && primeArtists.add(m.artist));
           const chipsEl = document.createElement('div');
           chipsEl.className = 'ev-artists';
           matched.slice(0, 6).forEach(m => {
             const chip = document.createElement('span');
             chip.className = 'ev-artist-chip mine';
-            const dot = document.createElement('span');
-            dot.className = 'chip-dot';
-            dot.style.background = getColor(m.artist);
-            chip.appendChild(dot);
-            const plays = m.plays || 0;
-            chip.appendChild(document.createTextNode(m.artist));
-            if (plays > 0) {
-              const pl = document.createElement('span');
-              pl.style.cssText = 'opacity:.5;font-size:.5rem;margin-left:2px';
-              pl.textContent = plays;
-              chip.appendChild(pl);
-            }
+            appendArtistChipIdentity(chip, m.artist, m.plays || 0);
             chip.onclick = () => focusArtist(m.artist);
             chipsEl.appendChild(chip);
           });
@@ -1064,18 +1056,7 @@ function renderCalendar() {
               matched.slice(6).forEach(m => {
                 const chip = document.createElement('span');
                 chip.className = 'ev-artist-chip mine';
-                const dot = document.createElement('span');
-                dot.className = 'chip-dot';
-                dot.style.background = getColor(m.artist);
-                chip.appendChild(dot);
-                chip.appendChild(document.createTextNode(m.artist));
-                const plays = m.plays || 0;
-                if (plays > 0) {
-                  const pl = document.createElement('span');
-                  pl.style.cssText = 'opacity:.5;font-size:.5rem;margin-left:2px';
-                  pl.textContent = plays;
-                  chip.appendChild(pl);
-                }
+                appendArtistChipIdentity(chip, m.artist, m.plays || 0);
                 chip.onclick = () => focusArtist(m.artist);
                 chipsEl.appendChild(chip);
               });
