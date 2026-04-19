@@ -1,5 +1,57 @@
 'use strict';
 
+let _zRenderTimer = null;
+let _moveTimer = null;
+let _mapResizeObserver = null;
+let _mapResizeTimer = null;
+let _mapResizeRaf = null;
+let _mapResizeQueued = false;
+
+function scheduleMapResize(delay = 0) {
+  if (!lmap) return;
+  _mapResizeQueued = true;
+  if (_mapResizeTimer) {
+    clearTimeout(_mapResizeTimer);
+    _mapResizeTimer = null;
+  }
+  const run = () => {
+    _mapResizeTimer = null;
+    if (_mapResizeRaf) return;
+    _mapResizeRaf = requestAnimationFrame(() => {
+      _mapResizeRaf = null;
+      if (!lmap || !_mapResizeQueued) return;
+      _mapResizeQueued = false;
+      try {
+        lmap.invalidateSize({ pan: false, debounceMoveend: true, animate: false });
+      } catch (err) {
+        console.error('[map resize]', err);
+      }
+    });
+  };
+  if (delay > 0) _mapResizeTimer = setTimeout(run, delay);
+  else run();
+}
+
+function clearTourMarkers() {
+  tourMarkers.forEach(m => m.remove());
+  tourMarkers = [];
+}
+
+function clearFestMarkers() {
+  festMarkers.forEach(m => m.remove());
+  festMarkers = [];
+}
+
+function clearRouteLines() {
+  routeLines.forEach(l => l.remove());
+  routeLines = [];
+}
+
+function clearOverviewDynamicLayers() {
+  clearTourMarkers();
+  clearFestMarkers();
+}
+
 function initMap() {
   if (lmap) return;
   // Show floating tab buttons since sidebar starts collapsed
@@ -9,7 +61,11 @@ function initMap() {
   // actual data on first render, so this is just a placeholder while tiles load.
   // minZoom:2 + worldCopyJump:true prevents the "world repeats 3 times" artifact.
   lmap = L.map('map', {
+    preferCanvas: true,
     zoomControl: false,
+    zoomAnimation: false,
+    markerZoomAnimation: false,
+    fadeAnimation: false,
     minZoom: 2,
     worldCopyJump: true,
   }).setView([30, 10], 3);
@@ -19,7 +75,6 @@ function initMap() {
   }).addTo(lmap);
 
   // Zoom-responsive re-render (overview only, not focus mode)
-  let _zRenderTimer = null;
   lmap.on('zoomend', () => {
     // Always clear any pending timer first — even in focus mode.
     // If we return early without clearing, a prior-queued timer would
@@ -28,22 +83,31 @@ function initMap() {
     if (focusedArtist || focusedFest) return;
     _zRenderTimer = setTimeout(() => {
       if (focusedArtist || focusedFest) return; // user may have entered focus during debounce
-      try { clearMapLayers(); renderOverview(); }
+      try {
+        clearOverviewDynamicLayers();
+        renderOverview({ preserveRoutes: true });
+      }
       catch(e) { console.error('[zoomend render]', e); }
-    }, 180);
+    }, 90);
   });
   // Pan: don't re-render markers, just update the visible list
-  let _moveTimer = null;
   lmap.on('moveend', () => {
     clearTimeout(_moveTimer);
     _moveTimer = setTimeout(updateVisiblePanel, 150);
   });
+
+  const mapEl = document.getElementById('map');
+  if (typeof ResizeObserver === 'function' && mapEl) {
+    _mapResizeObserver = new ResizeObserver(() => scheduleMapResize(24));
+    _mapResizeObserver.observe(mapEl);
+  }
+  window.addEventListener('resize', () => scheduleMapResize(40), { passive: true });
+  scheduleMapResize(0);
 }
 
 function clearMapLayers() {
-  tourMarkers.forEach(m => m.remove()); tourMarkers = [];
-  festMarkers.forEach(m => m.remove()); festMarkers = [];
-  routeLines.forEach(l => l.remove()); routeLines = [];
+  clearOverviewDynamicLayers();
+  clearRouteLines();
 }
 
 function toggleLayer(type) {
@@ -93,6 +157,11 @@ function updateVisiblePanel() {
   const today  = new Date().toISOString().split('T')[0];
   const in7    = dateOffset(7);
   const in30   = dateOffset(30);
+  const rankCache = new Map();
+  const rankOf = artist => {
+    if (!rankCache.has(artist)) rankCache.set(artist, _rankScore(artist));
+    return rankCache.get(artist);
+  };
 
   // Collect visible tours — apply ALL active map filters (geo, score, date, hidden)
   const visibleTours = [];
@@ -116,7 +185,7 @@ function updateVisiblePanel() {
   const urgOrder = { urgent:0, soon:1, far:2 };
   visibleTours.sort((a, b) =>
     (urgOrder[a.urgency] - urgOrder[b.urgency]) ||
-    (_rankScore(b.artist) - _rankScore(a.artist)));
+    (rankOf(b.artist) - rankOf(a.artist)));
 
   // Collect visible festivals
   const visibleFests = [];
@@ -246,4 +315,5 @@ function toggleMapSidebar(tab) {
     sidebar.classList.add('collapsed');
     if (tabs) { tabs.style.opacity = '1'; tabs.style.pointerEvents = 'auto'; }
   }
+  scheduleMapResize(40);
 }

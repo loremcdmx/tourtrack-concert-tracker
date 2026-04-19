@@ -85,7 +85,7 @@ function _buildFestPopup(f) {
 function _renderFestLabels() {
   if (!lmap) return;
   // Remove existing fest markers only
-  festMarkers.forEach(m => m.remove()); festMarkers = [];
+  clearFestMarkers();
 
   const today = new Date().toISOString().split('T')[0];
   const skipFests = mapTypeFilter === 'tours';
@@ -176,15 +176,21 @@ function _renderFestLabels() {
     festMarkers.push(mk);
   });
 
-  if (!showMapFests) festMarkers.forEach(m => m.remove());
+  if (!showMapFests) clearFestMarkers();
 }
 
-function renderOverview() {
+function renderOverview(opts = {}) {
+  const preserveRoutes = !!opts.preserveRoutes;
   const today = new Date().toISOString().split('T')[0];
   const in7   = dateOffset(7);
   const in30  = dateOffset(30);
   const in90  = dateOffset(90);
   const zoom  = lmap ? lmap.getZoom() : 3;
+  const rankCache = new Map();
+  const rankOf = artist => {
+    if (!rankCache.has(artist)) rankCache.set(artist, _rankScore(artist));
+    return rankCache.get(artist);
+  };
 
   // Fav filter applied to full entry set
   let tourEntries = Object.entries(allTourData).filter(([a]) =>
@@ -199,7 +205,7 @@ function renderOverview() {
   if (totalPassing > MAP_MAX_ARTISTS) {
     // Sort descending by rank
     const ranked = tourEntries
-      .map(([a, evs]) => ({ artist: a, evs, rank: _rankScore(a) }))
+      .map(([a, evs]) => ({ artist: a, evs, rank: rankOf(a) }))
       .sort((a, b) => b.rank - a.rank);
 
     // Take top N
@@ -241,7 +247,9 @@ function renderOverview() {
   // We clip each artist's route to only include points that are within
   // the viewport (padded 80%) so zooming into a region doesn't show
   // dangling lines flying off to distant continents.
-  const bounds = lmap.getBounds().pad(0.8);
+  if (!preserveRoutes) {
+    clearRouteLines();
+    const bounds = lmap.getBounds().pad(0.8);
   tourEntries.forEach(([artist, evs]) => {
     const pts = evs.filter(e => e.lat && e.date >= today);
     if (pts.length < 2) return;
@@ -271,7 +279,7 @@ function renderOverview() {
 
     if (!segments.length) return;
     const isFav = favoriteArtists.has(artist.toLowerCase());
-    const rank  = _rankScore(artist);
+    const rank  = rankOf(artist);
     const col   = getColor(artist);
     segments.forEach(segPts => {
       if (segPts.length < 2) return;
@@ -283,8 +291,10 @@ function renderOverview() {
       }).addTo(lmap));
     });
   });
+  }
 
   // ── 2. FUTURE SHOW DOTS at zoom > 7 (tiny, along route) ───────
+  clearTourMarkers();
   if (zoom > 7) {
     tourEntries.forEach(([artist, evs]) => {
       const col = getColor(artist);
@@ -312,7 +322,7 @@ function renderOverview() {
     // Prefer first in-viewport show; fall back to globally first
     const inViewport = futureGeo.find(e => vpBounds.contains([e.lat, e.lng]));
     const nextGeo = inViewport || futureGeo[0];
-    const rank = _rankScore(artist);
+    const rank = rankOf(artist);
     const cityKey = `${(nextGeo.city||'?').toLowerCase().trim().slice(0,13)}|${nextGeo.country||''}`;
     if (!cityMap.has(cityKey)) cityMap.set(cityKey, {
       lat: nextGeo.lat, lng: nextGeo.lng,
@@ -356,8 +366,8 @@ function renderOverview() {
   // ── 4. FESTIVALS — rendered via standalone function (also called on zoom) ─
   _renderFestLabels();
 
-  if (!showMapTours) { tourMarkers.forEach(m=>m.remove()); routeLines.forEach(l=>l.remove()); }
-  if (!showMapFests) festMarkers.forEach(m=>m.remove());
+  if (!showMapTours) { clearTourMarkers(); clearRouteLines(); }
+  if (!showMapFests) clearFestMarkers();
 
   updateVisiblePanel();
 

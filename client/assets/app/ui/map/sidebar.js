@@ -14,6 +14,7 @@ function setTab(tab) {
   document.getElementById('pane-errors').classList.toggle('on',  tab === 'errors');
   document.getElementById('pane-honest').classList.toggle('on',  tab === 'honest');
   document.getElementById('map-sidebar').classList.toggle('fests-mode', tab === 'fests');
+  if (typeof scheduleMapResize === 'function') scheduleMapResize(40);
 
   { const _lt = document.getElementById('lt-t'); if (_lt) _lt.style.display = (tab === 'fests' || tab === 'match') ? 'none' : ''; }
   { const _lf = document.getElementById('lt-f'); if (_lf) _lf.style.display = (tab === 'fests' || tab === 'match') ? 'none' : ''; }

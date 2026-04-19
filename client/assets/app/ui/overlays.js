@@ -475,13 +475,14 @@ async function testUrl(url, label) {
       raf = null;
       const minW = parseFloat(getComputedStyle(document.documentElement).fontSize) * 18;
       panel.style.width = Math.max(minW, Math.min(sw + (e.clientX - sx), window.innerWidth - 400)) + 'px';
-      lmap?.invalidateSize();
+      if (typeof scheduleMapResize === 'function') scheduleMapResize(24);
     });
   });
   document.addEventListener('mouseup', () => {
     if (!drag) return;
     drag = false; handle.classList.remove('dragging');
     document.body.style.cssText = '';
+    if (typeof scheduleMapResize === 'function') scheduleMapResize(0);
   });
 })();
 
@@ -765,4 +766,3 @@ async function saveSpotifyLocalSetup() {
     if (saveBtn) saveBtn.disabled = false;
   }
 }
-
