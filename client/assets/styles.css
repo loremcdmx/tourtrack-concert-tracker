@@ -1232,6 +1232,65 @@ details.adv-open > summary .settings-adv-summary-arrow { transform:rotate(180deg
 
 .db-section { padding:14px 24px 0; }
 .db-section-title { font-size:.55rem; letter-spacing:.1em; text-transform:uppercase; color:var(--muted2); margin-bottom:8px; }
+.db-scan-section { padding-top:18px; }
+.scan-action-note,
+.scan-action-meta {
+  font-size:.58rem;
+  color:var(--muted);
+  line-height:1.6;
+}
+.scan-action-meta {
+  margin-top:10px;
+  color:var(--muted2);
+}
+.scan-action-grid {
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:8px;
+  margin-top:10px;
+}
+.scan-action-grid.compact {
+  margin-top:8px;
+}
+.scan-action-btn {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:4px;
+  width:100%;
+  padding:11px 12px;
+  border-radius:8px;
+  border:1px solid var(--border2);
+  background:var(--s2);
+  color:var(--text);
+  text-align:left;
+  cursor:pointer;
+  transition:border-color .14s ease, background .14s ease, transform .14s ease;
+}
+.scan-action-btn:hover {
+  border-color:var(--accent);
+  background:rgba(200,255,95,.06);
+}
+.scan-action-btn.primary {
+  border-color:rgba(200,255,95,.35);
+  background:rgba(200,255,95,.08);
+}
+.scan-action-title {
+  font-family:'Syne',sans-serif;
+  font-size:.9rem;
+  font-weight:700;
+  color:var(--text);
+}
+.scan-action-copy {
+  font-size:.58rem;
+  color:var(--muted);
+  line-height:1.55;
+}
+@media (max-width: 900px) {
+  .scan-action-grid {
+    grid-template-columns:1fr;
+  }
+}
 .db-artists-grid { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:14px; }
 .db-artist-chip { font-family:'DM Mono',monospace; font-size:.58rem; padding:3px 9px; border-radius:100px;
   border:1px solid var(--border2); color:var(--muted); background:var(--s2); white-space:nowrap; }

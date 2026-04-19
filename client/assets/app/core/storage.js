@@ -1,0 +1,307 @@
+'use strict';
+
+const DB = (() => {
+  let _db = null;
+
+  function open() {
+    if (_db) return Promise.resolve();
+    return new Promise((res, rej) => {
+      const req = indexedDB.open('tourtrack_v1', 2); // v2 adds attractions store
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('artists'))     db.createObjectStore('artists');
+        if (!db.objectStoreNames.contains('meta'))        db.createObjectStore('meta');
+        if (!db.objectStoreNames.contains('attractions')) db.createObjectStore('attractions'); // attractionId cache
+      };
+      req.onsuccess = e => { _db = e.target.result; res(); };
+      req.onerror   = () => rej(req.error);
+    });
+  }
+
+  function tx(store, mode, fn) {
+    return open().then(() => new Promise((res, rej) => {
+      const t = _db.transaction(store, mode);
+      const req = fn(t.objectStore(store));
+      req.onsuccess = () => res(req.result);
+      req.onerror   = () => rej(req.error);
+    }));
+  }
+
+  return {
+    get:     (store, key)      => tx(store, 'readonly',  s => s.get(key)),
+    put:     (store, key, val) => tx(store, 'readwrite', s => s.put(val, key)),
+    delete:  (store, key)      => tx(store, 'readwrite', s => s.delete(key)),
+    keys:    (store)           => tx(store, 'readonly',  s => s.getAllKeys()),
+    getAll:  (store)           => tx(store, 'readonly',  s => s.getAll()),
+    clear:   (store)           => tx(store, 'readwrite', s => s.clear()),
+  };
+})();
+
+// Fingerprint of the active country filter — cache miss when this changes
+function countryHash() {
+  if (countryMode === 'world') return 'world';
+  const set = countryMode === 'include' ? includeCountries : excludeCountries;
+  return countryMode + ':' + [...set].sort().join(',');
+}
+
+const TTL_ARTIST = 3 * 24 * 3600e3;  // 3-day per-artist cache for smart scan
+const TTL_FEST   = 48 * 3600e3;  // 48h festival cache
+const FEST_VER   = 3;             // bump to invalidate all festival caches (changed fetch logic)
+
+async function clearArtistCache() {
+  try {
+    await DB.clear('artists');
+    await DB.delete('meta', 'festivals');
+    softNotice('Cache cleared - next scan will re-fetch everything.', 'ok');
+  } catch(e) { softNotice('Could not clear cache: ' + e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STORAGE — localStorage for settings + display data
+// ═══════════════════════════════════════════════════════════════
+function persistSettings() {
+  try {
+    localStorage.setItem('tt_key',     API_KEY);
+    localStorage.setItem('tt_keys_pool', JSON.stringify(TM_KEYS.map(k => ({ key: k.key, label: k.label }))));
+    localStorage.setItem('tt_cmode',   countryMode);
+    localStorage.setItem('tt_inc',     JSON.stringify([...includeCountries]));
+    localStorage.setItem('tt_exc',     JSON.stringify([...excludeCountries]));
+    localStorage.setItem('tt_hidden',  JSON.stringify(hiddenArtists));
+    localStorage.setItem('tt_cachets', String(cacheTimestamp));
+    localStorage.setItem('tt_favs',    JSON.stringify([...favoriteArtists]));
+    localStorage.setItem('tt_geo_preset', geoPreset);
+    localStorage.setItem('tt_artist_preset', artistPreset);
+
+    if (activeProf === PROF_MAIN) {
+      // Only write the canonical artist keys when Main is active.
+      // These keys ARE the Main profile's data — no other profile
+      // should ever overwrite them.
+      localStorage.setItem('tt_artists', JSON.stringify(ARTISTS));
+      localStorage.setItem('tt_plays',   JSON.stringify(ARTIST_PLAYS));
+      // Also keep a dedicated Main backup so restore() can always
+      // distinguish "true Main data" from "last non-Main data".
+      localStorage.setItem('tt_main_artists', JSON.stringify(ARTISTS));
+      localStorage.setItem('tt_main_plays',   JSON.stringify(ARTIST_PLAYS));
+    }
+    // Non-Main profiles never touch tt_artists / tt_plays — their data
+    // lives exclusively in the tt_profiles[name] snapshot (updated below).
+  } catch(e) {}
+
+  // For non-Main profiles, keep the profile snapshot in sync.
+  profPersistCurrent();
+}
+
+function persistData() {
+  persistSettings();
+  try {
+    localStorage.setItem('tt_concerts',  JSON.stringify(concerts));
+    localStorage.setItem('tt_festivals', JSON.stringify(festivals));
+  } catch(e) {}
+}
+
+function restore() {
+  try {
+    const storedPool = (JSON.parse(localStorage.getItem('tt_keys_pool') || 'null') || [])
+      .filter(k => k && k.key && (SERVER_MANAGED_TICKETMASTER || k.key !== SERVER_TM_PLACEHOLDER));
+    if (SERVER_MANAGED_TICKETMASTER) {
+      TM_KEYS = [{ key: SERVER_TM_PLACEHOLDER, label: 'Server managed', exhausted: false }];
+      API_KEY = SERVER_TM_PLACEHOLDER;
+    } else if (storedPool && storedPool.length) {
+      TM_KEYS = storedPool.map(k => ({ key: k.key, label: k.label, exhausted: false }));
+      API_KEY = localStorage.getItem('tt_key') || TM_KEYS[0]?.key || '';
+    } else {
+      API_KEY = localStorage.getItem('tt_key') || '';
+      TM_KEYS = API_KEY ? [{ key: API_KEY, label: 'Key 1', exhausted: false }] : [];
+    }
+    if (!SERVER_MANAGED_TICKETMASTER && API_KEY === SERVER_TM_PLACEHOLDER) {
+      API_KEY = '';
+      TM_KEYS = [];
+    }
+    if (!API_KEY && !SERVER_MANAGED_TICKETMASTER) API_KEY = localStorage.getItem('tt3_key') || '';
+    if (!TM_KEYS.length && API_KEY) TM_KEYS = [{ key: API_KEY, label: 'Key 1', exhausted: false }];
+    _activeKeyIdx = Math.max(TM_KEYS.findIndex(k => k.key === API_KEY), 0);
+    // Prefer tt_main_artists/tt_main_plays — written ONLY when Main is active.
+    // tt_artists may be stale with a non-Main profile's data from before this fix.
+    const _mainArtRaw  = localStorage.getItem('tt_main_artists');
+    const _mainPlayRaw = localStorage.getItem('tt_main_plays');
+    if (_mainArtRaw) {
+      ARTISTS      = JSON.parse(_mainArtRaw);
+      ARTIST_PLAYS = _mainPlayRaw ? JSON.parse(_mainPlayRaw) : {};
+    } else {
+      // No backup yet (first run after update) — fall back to tt_artists
+      ARTISTS      = JSON.parse(localStorage.getItem('tt_artists') || '[]');
+      ARTIST_PLAYS = JSON.parse(localStorage.getItem('tt_plays')   || '{}');
+    }
+    countryMode      = localStorage.getItem('tt_cmode') || 'world'; // default: worldwide
+    includeCountries = new Set(JSON.parse(localStorage.getItem('tt_inc') || '["GB","DE","FR","NL","BE","ES","IT","SE","DK","NO","FI","PL","CZ","AT","CH","PT","IE","HU","RO","GR","HR","SK","BG","RS","LT","LV","EE","IS","LU","UA","TR"]'));
+    excludeCountries = new Set(JSON.parse(localStorage.getItem('tt_exc') || '[]'));
+    hiddenArtists    = JSON.parse(localStorage.getItem('tt_hidden') || '{}');
+    concerts         = JSON.parse(localStorage.getItem('tt_concerts') || '[]');
+    festivals        = JSON.parse(localStorage.getItem('tt_festivals') || '[]');
+    cacheTimestamp   = parseInt(localStorage.getItem('tt_cachets') || '0', 10);
+    geoPreset        = localStorage.getItem('tt_geo_preset') || 'all';
+    artistPreset     = localStorage.getItem('tt_artist_preset') || 'all';
+    // Migrate from old keys
+    if (!ARTISTS.length)    ARTISTS   = JSON.parse(localStorage.getItem('tt3_artists') || '[]');
+    if (!concerts.length)   concerts  = JSON.parse(localStorage.getItem('tt3_concerts') || '[]');
+    if (!festivals.length)  festivals = JSON.parse(localStorage.getItem('tt3_festivals') || '[]');
+    if (!cacheTimestamp)    cacheTimestamp = parseInt(localStorage.getItem('tt3_cachets') || '0', 10);
+    // Migrate old exclude-mode default (US,JP,AU excluded) → include EU by default
+    const oldExc = localStorage.getItem('tt3_exc') || localStorage.getItem('tt_exc_legacy');
+    if (!hiddenArtists || typeof hiddenArtists !== 'object') hiddenArtists = {};
+    if (!ARTIST_PLAYS  || typeof ARTIST_PLAYS  !== 'object') ARTIST_PLAYS  = {};
+    favoriteArtists = new Set(JSON.parse(localStorage.getItem('tt_favs') || '[]'));
+    // Re-apply dedup to cached data (catches duplicates from old scans)
+    if (concerts.length) concerts = deduplicateConcerts(concerts);
+  } catch(e) { hiddenArtists = {}; ARTIST_PLAYS = {}; favoriteArtists = new Set(); geoPreset = 'all'; artistPreset = 'all'; }
+}
+
+function cacheAge() {
+  if (!cacheTimestamp) return null;
+  const m = Math.round((Date.now() - cacheTimestamp) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h/24)}d ago`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SAVE / LOAD / NEW GAME
+// ═══════════════════════════════════════════════════════════════
+const SAVE_VER = 1;
+
+function buildSavePayload(label) {
+  // Grab playlist info from history if available
+  const hist = getOnboardHistory();
+  const pl = hist[0] || {};
+  return {
+    _tt: true, _ver: SAVE_VER,
+    label: label || 'Save',
+    savedAt: Date.now(),
+    artists: ARTISTS,
+    plays: ARTIST_PLAYS,
+    concerts, festivals,
+    cacheTimestamp,
+    countryMode,
+    includeCountries: [...includeCountries],
+    excludeCountries: [...excludeCountries],
+    geoPreset,
+    hiddenArtists,
+    favoriteArtists: [...favoriteArtists],
+    artistPreset,
+    // Playlist metadata for future load-without-rescan
+    playlistName: pl.name || '',
+    playlistUrl:  pl.url  || '',
+    coverUrl:     pl.coverUrl || '',
+    topArtists:   pl.topArtists || ARTISTS.slice(0, 4),
+    trackCount:   pl.trackCount || ARTISTS.length,
+  };
+}
+
+function saveGame() {
+  if (!concerts.length && !festivals.length) {
+    softNotice('Nothing to save - run a scan first.');
+    return;
+  }
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+  const timeStr = now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const artistCount = ARTISTS.length;
+  const label = `${artistCount} artists · ${concerts.length} shows · ${festivals.length} festivals — ${dateStr} ${timeStr}`;
+
+  const payload = buildSavePayload(label);
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type:'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const filename = `concerttracker_${now.toISOString().slice(0,10)}_${now.getHours()}h${String(now.getMinutes()).padStart(2,'0')}.tt`;
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Remember save in localStorage (metadata only, not full data)
+  const saves = getSaveIndex();
+  saves.unshift({ label, savedAt: Date.now(), filename });
+  localStorage.setItem('tt_saves', JSON.stringify(saves.slice(0, 10)));
+  renderSaveSlots();
+  setStatus(`Saved → ${filename}`, true);
+}
+
+function getSaveIndex() {
+  try { return JSON.parse(localStorage.getItem('tt_saves') || '[]'); } catch(e) { return []; }
+}
+
+function loadGameFile(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data._tt) throw new Error('Not a ConcertTracker save file');
+      applyLoadedState(data, file.name);
+    } catch(err) {
+      softNotice(`Load failed: ${err.message}`, 'error');
+    }
+    // Reset file input so same file can be loaded again
+    document.getElementById('sl-file-input').value = '';
+  };
+  reader.readAsText(file);
+}
+
+function applyLoadedState(data, filename) {
+  ARTISTS          = data.artists      || [];
+  ARTIST_PLAYS     = data.plays        || {};
+  concerts         = data.concerts     || [];
+  festivals        = data.festivals    || [];
+  cacheTimestamp   = data.cacheTimestamp || 0;
+  countryMode      = data.countryMode  || 'world';
+  includeCountries = new Set(data.includeCountries || []);
+  excludeCountries = new Set(data.excludeCountries || []);
+  geoPreset        = data.geoPreset || 'all';
+  hiddenArtists    = data.hiddenArtists || {};
+  favoriteArtists  = new Set(data.favoriteArtists || []);
+  artistPreset     = data.artistPreset || 'all';
+
+  // Re-apply dedup (may have been saved before 2-pass dedup)
+  if (concerts.length) concerts = deduplicateConcerts(concerts);
+
+  persistData();
+
+  const age = data.savedAt ? new Date(data.savedAt).toLocaleString('en-GB',{
+    day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'
+  }) : '?';
+  const msg = `Loaded ${filename} · ${concerts.length} shows · ${festivals.length} festivals · saved ${age}`;
+  setStatus(msg, true);
+  dblog('info', `LOAD: ${msg}`);
+
+  closeSaveLoad();
+  hideOnboard();
+
+  // Track that this data came from a save (not a scan) — mark in history
+  if (data.playlistUrl || data.playlistName) {
+    addToOnboardHistory(
+      data.playlistName || filename,
+      data.playlistUrl  || '',
+      data.trackCount   || ARTISTS.length,
+      ARTISTS.length,
+      data.coverUrl     || '',
+      (data.topArtists  || ARTISTS.slice(0, 4)),
+      { fromSave: true, saveFile: filename }
+    );
+  }
+
+  // Re-render everything
+  buildCalChips();
+  renderCalendar();
+  renderMap();
+
+  // If settings open, refresh them
+  if (!document.getElementById('settings-bg').classList.contains('off')) {
+    openSettings();
+  }
+}
+
+// ── Reset map + lists, keep artists — rescan from scratch ──────────

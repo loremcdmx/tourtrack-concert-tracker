@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "check": "node --check server/index.js && node --check api/index.js && node -e \"new Function(require('fs').readFileSync('client/assets/app.js', 'utf8')); console.log('syntax ok')\""
+    "check": "node -e \"const fs=require('fs'); const cp=require('child_process'); const files=['server/index.js','api/index.js']; (function walk(dir){ for (const entry of fs.readdirSync(dir,{withFileTypes:true})) { const full=dir+'/'+entry.name; if (entry.isDirectory()) walk(full); else if (full.endsWith('.js')) files.push(full); } })('client/assets/app'); for (const file of files) cp.execFileSync(process.execPath,['--check',file],{stdio:'inherit'}); console.log('syntax ok');\""
   },
   "engines": {
     "node": ">=20"

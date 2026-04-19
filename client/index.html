@@ -32,8 +32,8 @@
     <span class="hd-progress" id="hd-progress" style="display:none"></span>
     <button class="btn btn-stop" id="stop-btn" onclick="stopScan()" style="display:none">■ Stop</button>
     <button class="btn btn-spotify-auth" id="spotify-auth-btn" onclick="openSpotifyAccess()">Spotify</button>
-    <button class="btn btn-rescan" id="merge-rescan-btn" onclick="mergeRescan()" title="Re-fetch concerts for all artists from Ticketmaster">&#x21BB; Rescan</button>
-    <button class="btn btn-rescan-fests" id="fest-rescan-btn" onclick="rescanFestsOnly()" title="Re-fetch festival data only — fast, keeps all concerts">&#x1F3AA; Fests</button>
+    <button class="btn btn-rescan" id="merge-rescan-btn" onclick="runScanAction('smart')" title="Refresh concerts with the cache-aware scan">&#x21BB; Refresh</button>
+    <button class="btn btn-rescan-fests" id="fest-rescan-btn" onclick="openScanLibrary()" title="Open all scan and rescan actions">&#x1F50E; Actions</button>
     <button class="btn btn-primary" onclick="openSettings()">⚙ Settings</button>
   </div>
 </header>
@@ -70,7 +70,7 @@
       <button class="sl-btn primary" onclick="saveGame()" id="sl-save-btn">💾 Save current state</button>
       <div class="sl-actions-right">
         <button class="sl-btn danger" onclick="purgePastConcerts()" title="Remove all concerts that have already happened">🗑 Delete past concerts</button>
-        <button class="sl-new-game" onclick="mergeRescan()" title="Rescan all artists from TM but keep existing concert data — only adds new shows, never removes" style="border-color:rgba(200,255,95,.3);color:var(--accent)">↻ Merge rescan</button>
+        <button class="sl-new-game" onclick="runScanAction('merge')" title="Re-fetch all artists but keep current concert results visible and only add new shows" style="border-color:rgba(200,255,95,.3);color:var(--accent)">↻ Add-only refresh</button>
 
       </div>
     </div>
@@ -723,6 +723,12 @@
     <!-- SETTINGS TAB -->
     <div class="smodal-pane" id="stab-pane-advanced">
 
+      <div class="sset-block" id="scan-actions-block">
+        <div class="sset-label">Refresh library</div>
+        <div class="sset-hint">Choose how aggressively to rescan concerts and festivals.</div>
+        <div id="scan-actions-panel"></div>
+      </div>
+
       <div class="sset-block">
         <div class="sset-label">Search scope</div>
         <div class="sset-hint">Which countries Ticketmaster scans for concerts. Worldwide is recommended.</div>
@@ -764,7 +770,7 @@
         </div>
       </div>
 
-      <div class="sset-block">
+      <div class="sset-block" id="settings-tm-block">
         <div class="sset-label">Ticketmaster API keys</div>
         <div class="sset-hint" id="tm-key-hint">Keys rotate when quota is hit (5,000 req/day). <span style="color:var(--green)">&#x25cf;</span> Active &#xb7; <span style="color:var(--red)">&#x25cf;</span> Exhausted (resets midnight UTC)</div>
         <div id="key-pool-list" style="margin-top:8px"></div>
@@ -772,7 +778,7 @@
         <div class="sset-link"><a href="https://developer.ticketmaster.com" target="_blank">developer.ticketmaster.com</a> &#x2192; My Apps &#x2192; Create App</div>
       </div>
 
-      <div class="sset-block">
+      <div class="sset-block" id="settings-spotify-block">
         <div class="sset-label">Spotify access <span id="sp-cred-note" style="font-size:.65em;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted2)">&#x2014; server managed</span></div>
         <div style="font-size:12px;color:var(--muted2);line-height:1.5;margin-top:8px">
           Playlist import and top tracks use server environment variables. Browser secrets are not stored in this build.
@@ -827,8 +833,8 @@
       <details id="proxy-details" class="sset-details">
         <summary class="sset-details-summary"
           onclick="this.parentElement.open ? this.querySelector('.prx-arr').textContent='&#x25b8;' : this.querySelector('.prx-arr').textContent='&#x25be;'">
-          <span>Proxy</span>
-          <span style="font-size:.8em;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0">&#x2014; only if IP is blocked</span>
+          <span>Diagnostics</span>
+          <span style="font-size:.8em;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0">&#x2014; proxy and low-level network overrides</span>
           <span class="prx-arr" style="margin-left:auto;font-size:.7rem;color:var(--muted2)">&#x25b8;</span>
         </summary>
         <div class="sset-details-body">
@@ -862,7 +868,7 @@
         </div>
       </details>
 
-      <div class="sset-block sset-block-last">
+      <div class="sset-block sset-block-last" id="settings-utilities-block">
         <div class="sset-label">Utilities</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
           <button class="adv-badge" id="use-cached-btn" onclick="useCached()" style="display:none">&#x1F4E6; Use cached</button>
@@ -874,11 +880,21 @@
   </div><!-- /smodal-body -->
   <div class="smodal-foot">
     <button class="sset-btn-ghost" onclick="closeSettings()">Cancel</button>
-    <button class="sset-btn-primary" onclick="saveAndFetch(false)">&#x25b6; Smart scan</button>
+    <button class="sset-btn-primary" onclick="runScanAction('smart')">&#x25B6; Save & refresh</button>
   </div>
 </div>
 </div>
 <script src="/config.js"></script>
-<script src="/assets/app.js"></script>
+<script src="/assets/app/core/runtime.js"></script>
+<script src="/assets/app/core/profiles.js"></script>
+<script src="/assets/app/core/storage.js"></script>
+<script src="/assets/app/scan/actions.js"></script>
+<script src="/assets/app/ui/settings.js"></script>
+<script src="/assets/app/scan/workflow.js"></script>
+<script src="/assets/app/ui/calendar.js"></script>
+<script src="/assets/app/ui/map.js"></script>
+<script src="/assets/app/ui/overlays.js"></script>
+<script src="/assets/app/integrations/spotify.js"></script>
+<script src="/assets/app/bootstrap.js"></script>
 </body>
 </html>
