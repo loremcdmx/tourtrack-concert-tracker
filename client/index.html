@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tourtrack</title>
+<title>ConcertTracker</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&family=Bebas+Neue&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 </head>
 <body>
 <header>
-  <div class="logo">Tour<span>track</span></div>
+  <div class="logo">Concert<span>Tracker</span></div>
   <div class="hd-status">
     <div class="pulse" id="pulse"></div>
     <span class="hd-msg" id="hd-msg">Not loaded yet</span>
@@ -59,7 +59,7 @@
 <!-- SAVE / LOAD PANEL -->
 <div class="sl-panel" id="sl-panel" onclick="if(event.target===this)closeSaveLoad()">
   <div class="sl-card">
-    <div class="sl-title">Tour<span>track</span> · Save Slots</div>
+    <div class="sl-title">Concert<span>Tracker</span> · Save Slots</div>
     <div class="sl-sub">Save your current scan to a file and reload it anytime — no re-scanning needed.<br>
       All data: concerts, festivals, playlist, favorites, settings.</div>
     <div class="sl-slots" id="sl-slots-list"><!-- rendered by JS --></div>
@@ -108,7 +108,7 @@
 <!-- ONBOARDING OVERLAY -->
 <div class="onboard" id="onboard">
   <div class="onboard-card">
-    <div class="onboard-logo">Tour<span>track</span></div>
+    <div class="onboard-logo">Concert<span>Tracker</span></div>
 
     <!-- ▸ RESUME PANEL — shown when IDB has cached data -->
     <div class="onboard-resume" id="onboard-resume" style="display:none">
@@ -144,8 +144,20 @@
 
     <!-- ▸ NEW IMPORT PANEL — default state or when no IDB data -->
     <div id="onboard-import-panel">
-      <div class="onboard-title" id="onboard-main-title">Open a playlist<br>and jump into results</div>
-      <div class="onboard-sub" id="onboard-sub-text">The loremcdmx twitch playlist is ready to go. Open cached results when they exist, or start a fresh scan from the same link.</div>
+      <div class="onboard-title" id="onboard-main-title">Start with Spotify<br>or open the sample</div>
+      <div class="onboard-sub" id="onboard-sub-text">Connect Spotify to pick one of your playlists, or open the loremcdmx twitch playlist instantly. Cached scans reopen fast on this device.</div>
+      <div class="onboard-auth-wrap" id="onboard-auth-wrap" style="display:none">
+        <div class="onboard-auth-row">
+          <button class="onboard-auth-btn" id="onboard-auth-btn" onclick="onboardSpotifyAuthAction()">Continue with Spotify</button>
+          <button class="onboard-auth-link" id="onboard-auth-logout" onclick="spotifyLogout()" style="display:none">Sign out</button>
+        </div>
+        <div class="onboard-auth-status" id="onboard-auth-status"></div>
+        <div class="onboard-auth-list-wrap" id="onboard-auth-list-wrap" style="display:none">
+          <div class="onboard-history-label">Your Spotify playlists</div>
+          <div class="onboard-auth-list" id="onboard-auth-list"></div>
+        </div>
+        <hr class="onboard-divider onboard-auth-divider">
+      </div>
       <div class="onboard-input-wrap">
         <input class="onboard-input" id="onboard-url" placeholder="https://open.spotify.com/playlist/…"
           spellcheck="false" autocomplete="off"
@@ -479,7 +491,7 @@
           <div class="match-label">Her Spotify playlist</div>
           <div class="match-url-row">
             <input class="match-url-input" id="match-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false">
-            <button class="match-btn" id="match-btn" onclick="runMatch()">▶ Match</button>
+            <button class="match-btn" id="match-btn" onclick="runMatchV2()">▶ Match</button>
           </div>
           <div class="match-progress" id="match-progress" style="display:none">
             <div class="match-progress-fill" id="match-prog-fill" style="width:5%"></div>
@@ -661,7 +673,7 @@
 <div class="modal-bg off" id="settings-bg" onclick="settingsBgClick(event)">
 <div class="smodal">
   <div class="smodal-hd">
-    <div class="smodal-logo">Tour<span>track</span></div>
+    <div class="smodal-logo">Concert<span>Tracker</span></div>
     <button class="smodal-close" onclick="closeSettings()">&#x2715;</button>
   </div>
   <nav class="smodal-nav">

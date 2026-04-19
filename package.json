@@ -1,5 +1,5 @@
 {
-  "name": "tourtrack-concert-tracker",
+  "name": "concerttracker",
   "version": "1.0.0",
   "private": true,
   "description": "Concert tracker with server-side API proxying for Ticketmaster, Bandsintown, Spotify, and Deezer.",

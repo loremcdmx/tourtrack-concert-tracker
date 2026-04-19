@@ -150,6 +150,22 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   font-size:clamp(1.6rem,4vw,2.4rem); line-height:1.05; letter-spacing:-.03em;
   color:var(--text); margin-bottom:8px; }
 .onboard-sub { font-size:.7rem; color:var(--muted); margin-bottom:24px; line-height:1.6; }
+.onboard-auth-wrap { display:flex; flex-direction:column; gap:10px; margin:0 0 16px; }
+.onboard-auth-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.onboard-auth-btn { font-family:'DM Mono',monospace; font-size:.68rem; font-weight:700;
+  padding:11px 16px; border-radius:8px; border:1px solid rgba(200,255,95,.28);
+  background:rgba(200,255,95,.08); color:var(--text); cursor:pointer; transition:all .15s; }
+.onboard-auth-btn:hover { border-color:var(--accent); background:rgba(200,255,95,.12); }
+.onboard-auth-btn:disabled { opacity:.6; cursor:not-allowed; }
+.onboard-auth-link { background:none; border:none; padding:0; font-family:'DM Mono',monospace;
+  font-size:.62rem; color:var(--muted2); cursor:pointer; }
+.onboard-auth-link:hover { color:var(--text); }
+.onboard-auth-status { min-height:16px; font-size:.62rem; color:var(--muted); }
+.onboard-auth-status[data-tone="ok"] { color:var(--accent); }
+.onboard-auth-status[data-tone="error"] { color:#ff7070; }
+.onboard-auth-list { display:flex; flex-direction:column; gap:6px; }
+.onboard-auth-empty { font-size:.58rem; color:var(--muted2); padding:8px 0 2px; }
+.onboard-auth-divider { margin:2px 0 0; }
 .onboard-input-wrap { display:flex; gap:8px; margin-bottom:10px; }
 .onboard-input { flex:1; font-family:'DM Mono',monospace; font-size:.85rem;
   background:var(--s2); border:2px solid var(--border2); border-radius:8px;
@@ -212,7 +228,7 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .obf-btn.nousa { border-color:rgba(255,80,80,.35); color:rgba(255,100,100,.7); }
 .obf-btn.nousa.on { border-color:#ff6060; color:#ff8080; background:rgba(255,60,60,.07); }
 .onboard-resume-btn { margin-top:20px; width:100%; font-family:'DM Mono',monospace; font-weight:700;
-  font-size:.78rem; padding:13px 20px; border-radius:10px; border:none;
+  font-size:.78rem; padding:13px 20px; border-radius:8px; border:none;
   background:var(--accent); color:var(--bg); cursor:pointer; transition:all .15s;
   letter-spacing:.04em; }
 .onboard-resume-btn:hover { background:var(--accent-d); }
@@ -226,7 +242,7 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .onboard-quickload { margin-top:4px; }
 /* Quick load & history cards */
 .onboard-pl { display:flex; align-items:stretch; gap:0; padding:0;
-  background:var(--s1); border:1px solid var(--border); border-radius:10px;
+  background:var(--s1); border:1px solid var(--border); border-radius:8px;
   cursor:pointer; transition:all .2s; overflow:hidden; }
 .onboard-pl:hover { border-color:rgba(200,255,95,.5); background:var(--s2);
   box-shadow: 0 4px 20px rgba(0,0,0,.4); }
