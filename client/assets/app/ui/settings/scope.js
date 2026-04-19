@@ -129,14 +129,8 @@ function selectRegion(rid, sel) {
 }
 
 function scopePreset(preset) {
-  const EU = regionCodes('eu');
-  const ALL = Object.keys(COUNTRY_MAP);
   const set = activeSet();
-  set.clear();
-  if (preset === 'eu')    EU.forEach(c => set.add(c));
-  if (preset === 'eu+na') [...EU, ...regionCodes('na')].forEach(c => set.add(c));
-  if (preset === 'all')   ALL.forEach(c => set.add(c));
-  // 'none' = already cleared
+  applyScopePresetValues(set, preset);
   document.querySelectorAll('.cc').forEach(syncCCStyle);
   document.querySelectorAll('.rcard').forEach(syncRCard);
   refreshScopeSummary();

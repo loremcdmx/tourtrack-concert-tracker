@@ -103,8 +103,19 @@ function setArtistPreset(preset) {
 function applyArtistPreset(list) {
   if (artistPreset === 'all') return list;
   const today = new Date().toISOString().split('T')[0];
+  const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
   if (artistPreset === 'fav') {
     return list.filter(artist => favoriteArtists.has((artist || '').toLowerCase()));
+  }
+  if (artistPreset === 'heavy') {
+    if (hasPlays) return list.filter(artist => (ARTIST_PLAYS[(artist || '').toLowerCase()] || 0) >= 10);
+    const ranked = [...list].sort((a, b) => _rankScore(b) - _rankScore(a));
+    const keep = new Set(ranked.slice(0, Math.min(12, Math.max(6, Math.ceil(ranked.length * 0.2)))));
+    return list.filter(artist => keep.has(artist));
+  }
+  if (artistPreset === 'hot') {
+    const hotWindow = dateOffset(14);
+    return list.filter(artist => (allTourData[artist] || []).some(ev => ev.date >= today && ev.date <= hotWindow));
   }
   if (artistPreset === 'dense') {
     return list.filter(artist => (allTourData[artist] || []).length >= 3);

@@ -297,6 +297,10 @@
     <div class="date-row secondary" id="cal-date-row-extra">
       <button class="chip" data-d="thismonth" onclick="setDateFilter('thismonth')">This mo</button>
       <button class="chip" data-d="nextmonth" onclick="setDateFilter('nextmonth')">Next mo</button>
+      <button class="chip" data-d="weekend" onclick="setDateFilter('weekend')">Weekend</button>
+      <button class="chip" data-d="thisquarter" onclick="setDateFilter('thisquarter')">Quarter</button>
+      <button class="chip" data-d="nextquarter" onclick="setDateFilter('nextquarter')">Next Q</button>
+      <button class="chip" data-d="nextyear" onclick="setDateFilter('nextyear')">Next yr</button>
       <button class="chip" data-d="spring" onclick="setDateFilter('spring')">🌸</button>
       <button class="chip" data-d="summer" onclick="setDateFilter('summer')">☀️</button>
       <button class="chip" data-d="autumn" onclick="setDateFilter('autumn')">🍂</button>
@@ -306,11 +310,15 @@
       <span class="toolbar-chip-label">Places</span>
       <button class="chip on" data-gp="all" onclick="setGeoPreset('all')">All</button>
       <button class="chip" data-gp="eu" onclick="setGeoPreset('eu')">EU</button>
+      <button class="chip" data-gp="ukie" onclick="setGeoPreset('ukie')">UK / IE</button>
+      <button class="chip" data-gp="dach" onclick="setGeoPreset('dach')">DACH</button>
+      <button class="chip" data-gp="nordics" onclick="setGeoPreset('nordics')">Nordics</button>
+      <button class="chip" data-gp="iberia" onclick="setGeoPreset('iberia')">Iberia</button>
       <button class="chip" data-gp="americas" onclick="setGeoPreset('americas')">Americas</button>
+      <button class="chip" data-gp="na" onclick="setGeoPreset('na')">N. America</button>
       <button class="chip" data-gp="latam" onclick="setGeoPreset('latam')">LatAm</button>
       <button class="chip" data-gp="mx" onclick="setGeoPreset('mx')">Mexico</button>
       <button class="chip" data-gp="apac" onclick="setGeoPreset('apac')">APAC</button>
-      <button class="chip" data-gp="ukie" onclick="setGeoPreset('ukie')">UK / IE</button>
     </div>
 
     <!-- Combined filter bar -->
@@ -423,7 +431,9 @@
         <div class="artist-preset-row">
           <span class="fest-sort-lbl">Filter</span>
           <button class="fsort-btn on" data-ap="all" onclick="setArtistPreset('all')">All</button>
+          <button class="fsort-btn" data-ap="heavy" onclick="setArtistPreset('heavy')">Heavy</button>
           <button class="fsort-btn" data-ap="top" onclick="setArtistPreset('top')">Top</button>
+          <button class="fsort-btn" data-ap="hot" onclick="setArtistPreset('hot')">Hot</button>
           <button class="fsort-btn" data-ap="soon" onclick="setArtistPreset('soon')">Soon</button>
           <button class="fsort-btn" data-ap="dense" onclick="setArtistPreset('dense')">Dense</button>
           <button class="fsort-btn" data-ap="ending" onclick="setArtistPreset('ending')">Ending</button>
@@ -741,6 +751,13 @@
           <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">
             <button class="scope-preset" onclick="scopePreset('eu')">&#x1F1EA;&#x1F1FA; EU</button>
             <button class="scope-preset" onclick="scopePreset('eu+na')">EU + Americas</button>
+            <button class="scope-preset" onclick="scopePreset('ukie')">UK / IE</button>
+            <button class="scope-preset" onclick="scopePreset('dach')">DACH</button>
+            <button class="scope-preset" onclick="scopePreset('nordics')">Nordics</button>
+            <button class="scope-preset" onclick="scopePreset('iberia')">Iberia</button>
+            <button class="scope-preset" onclick="scopePreset('americas')">Americas</button>
+            <button class="scope-preset" onclick="scopePreset('latam')">LatAm</button>
+            <button class="scope-preset" onclick="scopePreset('apac')">APAC</button>
             <button class="scope-preset" onclick="scopePreset('all')">All</button>
             <button class="scope-preset" onclick="scopePreset('none')">Clear</button>
           </div>
@@ -888,8 +905,10 @@
 <script src="/assets/app/core/runtime.js"></script>
 <script src="/assets/app/core/profiles.js"></script>
 <script src="/assets/app/core/storage.js"></script>
+<script src="/assets/app/core/filter-presets.js"></script>
 <script src="/assets/app/scan/actions.js"></script>
 <script src="/assets/app/scan/shared/network.js"></script>
+<script src="/assets/app/scan/shared/geo.js"></script>
 <script src="/assets/app/scan/shared/matching.js"></script>
 <script src="/assets/app/scan/shared/concert-matching.js"></script>
 <script src="/assets/app/scan/shared/concert-records.js"></script>
@@ -901,6 +920,9 @@
 <script src="/assets/app/scan/runtime.js"></script>
 <script src="/assets/app/scan/pipeline.js"></script>
 <script src="/assets/app/scan/providers.js"></script>
+<script src="/assets/app/scan/festivals/ingest.js"></script>
+<script src="/assets/app/scan/festivals/dedup.js"></script>
+<script src="/assets/app/scan/festivals/scoring.js"></script>
 <script src="/assets/app/scan/festivals.js"></script>
 <script src="/assets/app/scan/concerts.js"></script>
 <script src="/assets/app/ui/calendar.js"></script>

@@ -445,33 +445,10 @@ function monthBounds(offsetMonths = 0) {
 }
 
 function dateMatchesPreset(dateStr, filter = dateFilter) {
-  const today = new Date().toISOString().split('T')[0];
-  if (!dateStr) return false;
-  if (filter === 'all') return dateStr >= today;
-  if (filter === '7')   return dateStr >= today && dateStr <= dateOffset(7);
-  if (filter === '14')  return dateStr >= today && dateStr <= dateOffset(14);
-  if (filter === '30')  return dateStr >= today && dateStr <= dateOffset(30);
-  if (filter === '90')  return dateStr >= today && dateStr <= dateOffset(90);
-  if (filter === '180') return dateStr >= today && dateStr <= dateOffset(180);
-  if (filter === 'year') return dateStr >= today && dateStr.startsWith(String(new Date().getFullYear()));
-  if (filter === 'thismonth') {
-    const { from, to } = monthBounds(0);
-    return dateStr >= (today > from ? today : from) && dateStr <= to;
-  }
-  if (filter === 'nextmonth') {
-    const { from, to } = monthBounds(1);
-    return dateStr >= from && dateStr <= to;
-  }
-  if (filter === 'spring') { const m = parseInt(dateStr.slice(5, 7), 10); return m >= 3 && m <= 5; }
-  if (filter === 'summer') { const m = parseInt(dateStr.slice(5, 7), 10); return m >= 6 && m <= 8; }
-  if (filter === 'autumn') { const m = parseInt(dateStr.slice(5, 7), 10); return m >= 9 && m <= 11; }
-  if (filter === 'winter') { const m = parseInt(dateStr.slice(5, 7), 10); return m === 12 || m <= 2; }
-  if (filter === 'range') {
-    const from = calDateFrom || today;
-    const to   = calDateTo   || dateOffset(365 * 3);
-    return dateStr >= from && dateStr <= to;
-  }
-  return dateStr >= today;
+  return dateMatchesNamedPreset(dateStr, filter, {
+    rangeFrom: calDateFrom,
+    rangeTo: calDateTo,
+  });
 }
 
 function setDateFilter(f, fromDate, toDate) {
@@ -732,13 +709,7 @@ function _syncGeoButtons() {
 }
 
 function geoPresetCodes(preset) {
-  if (preset === 'eu') return new Set(regionCodes('eu'));
-  if (preset === 'americas') return new Set([...regionCodes('na'), ...regionCodes('sa')]);
-  if (preset === 'latam') return new Set([...regionCodes('sa'), 'MX']);
-  if (preset === 'mx') return new Set(['MX']);
-  if (preset === 'apac') return new Set([...regionCodes('as'), ...regionCodes('oc')]);
-  if (preset === 'ukie') return new Set(['GB', 'IE']);
-  return null;
+  return getDisplayGeoPresetCodes(preset);
 }
 
 function geoPresetOk(cc) {
@@ -1186,4 +1157,3 @@ function getColor(artist) {
   if (!artistColors[artist]) artistColors[artist] = ARTIST_COLORS[colorIdx++ % ARTIST_COLORS.length];
   return artistColors[artist];
 }
-
