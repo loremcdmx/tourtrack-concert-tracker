@@ -51,7 +51,7 @@ async function fetchAll(forceRefresh = false) {
         C.bit++;
       }
     }
-    if (!scanAborted) { buildCalChips(); renderCalendar(); renderMap(); }
+    if (!scanAborted) scheduleUiRefresh();
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -82,7 +82,7 @@ async function fetchAll(forceRefresh = false) {
         }
         geoSweepCovered.add(artist); // mark as covered regardless of result count
       }
-      if (!scanAborted) { buildCalChips(); renderCalendar(); renderMap(); }
+      if (!scanAborted) scheduleUiRefresh();
     } catch(e) {
       dblog('warn', `Geo sweep failed: ${e.message} — falling back to per-artist TM scan`);
     }
@@ -196,7 +196,7 @@ async function fetchAll(forceRefresh = false) {
         // We throttle to once per 3 fresh artists (or whenever new shows land)
         // to avoid layout thrash while still feeling live.
         if (finalShows.length > 0 || C.fresh % 3 === 0) {
-          buildCalChips(); renderCalendar(); renderMap();
+          scheduleUiRefresh();
         }
         return;
       } catch(e) {
@@ -246,7 +246,7 @@ async function fetchAll(forceRefresh = false) {
     // Fresh results from BIT/geo sweep are already appended after them.
     concerts.splice(0, _staleCount);
     festivals.splice(0, _staleFestCount);
-    buildCalChips(); renderCalendar(); renderMap();
+    scheduleUiRefresh();
   }
 
   // ── PASS 1: concurrent batch dispatch ─────────────────────────────
@@ -438,7 +438,7 @@ function finalizeScan(aborted, nCached = 0, nFresh = 0) {
     /* refresh-btn removed */
   }, 1200);
   updateErrorTab();
-  buildCalChips(); renderCalendar(); renderMap();
+  scheduleUiRefresh();
 }
 
 // ── ERROR TAB ────────────────────────────────────────────────────

@@ -169,7 +169,7 @@ function purgePastConcerts() {
   try { localStorage.setItem('tt_concerts', JSON.stringify(concerts)); } catch(e) {}
   cacheTimestamp = Date.now();
 
-  buildCalChips(); renderCalendar(); renderMap();
+  scheduleUiRefresh();
   renderSaveSlots(); // refresh save button state
   setStatus(`🗑 Removed ${pastCount} past concerts · ${concerts.length} upcoming remain`, true);
   dblog('info', `PURGE: removed ${pastCount} past concerts (before ${today}), ${concerts.length} remain`);

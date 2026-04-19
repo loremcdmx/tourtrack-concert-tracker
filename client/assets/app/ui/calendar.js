@@ -682,6 +682,25 @@ function withMapSpinner(workFn) {
   });
 }
 
+let _scheduledUiRefreshRaf = 0;
+let _scheduledUiRefreshPending = false;
+
+function flushScheduledUiRefresh() {
+  _scheduledUiRefreshRaf = 0;
+  if (!_scheduledUiRefreshPending) return;
+  _scheduledUiRefreshPending = false;
+  buildCalChips();
+  renderCalendar();
+  renderMap();
+  _updateTally();
+}
+
+function scheduleUiRefresh() {
+  _scheduledUiRefreshPending = true;
+  if (_scheduledUiRefreshRaf) return;
+  _scheduledUiRefreshRaf = requestAnimationFrame(flushScheduledUiRefresh);
+}
+
 // Filter control handlers
 function setMapType(t) {
   mapTypeFilter = t;

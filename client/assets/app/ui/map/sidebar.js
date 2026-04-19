@@ -506,3 +506,205 @@ function filterArtists() {
     r.style.display = !q || (r.dataset.artist||'').toLowerCase().includes(q) ? '' : 'none';
   });
 }
+
+const FEST_PANEL_BATCH_SIZE = 48;
+let _festPanelBuildToken = 0;
+
+function setFestPanelMessage(container, message) {
+  _festPanelBuildToken++;
+  if (container) container.innerHTML = `<div style="padding:16px;font-size:.62rem;color:var(--muted2)">${message}</div>`;
+}
+
+function createFestCardNode(festival) {
+  const score = festival.score || 0;
+  const matched = festival.matched || [];
+  const lineup = festival.lineupResolved || _resolvedFestivalLineup(festival);
+  const linkedShows = festival.linkedShows || _festivalLinkedConcerts(festival).length;
+  const perfect = score >= 80 && matched.length >= 2;
+  const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
+  const loc = [festival.city, festival.country ? flag(festival.country) : ''].filter(Boolean).join(' ');
+  const lineupMeta = [
+    matched.length ? `${matched.length} tracked` : '',
+    lineup.length ? `lineup ${lineup.length}` : '',
+    linkedShows ? `${linkedShows} linked` : '',
+  ].filter(Boolean).join(' Â· ');
+
+  const card = document.createElement('div');
+  card.className = 'fcard' + (festival.id === focusedFest ? ' hl' : '');
+  card.dataset.id = festival.id;
+
+  const hasPlays = matched.some(m => m.plays > 0);
+  const chips = matched.slice(0, 6).map((m, i) => {
+    const playsTag = hasPlays && m.plays > 0 ? `<span style="opacity:.55;margin-left:3px">${m.plays}</span>` : '';
+    return `<span class="fcard-chip${i < 2 ? ' top' : ''}">${m.artist}${playsTag}</span>`;
+  }).join('');
+
+  const ringLabel = score > 0 ? score : 'â€”';
+  card.innerHTML = `
+    <div class="fcard-top">
+      <div class="fcard-ring ${ringCls}" title="${score}/100">${ringLabel}</div>
+      <div class="fcard-info">
+        <div class="fcard-name">${festival.name}</div>
+        <div class="fcard-meta">${fmtDateRange(festival)}${festival.endDate ? '<span style="font-size:.5rem;margin-left:4px;opacity:.6;vertical-align:middle">' + (Math.round((new Date(festival.endDate) - new Date(festival.date)) / 86400000) + 1) + 'd</span>' : ''} Â· ${loc}</div>
+        ${lineupMeta ? `<div class="fcard-meta" style="opacity:.72">${lineupMeta}</div>` : ''}
+      </div>
+      ${festival.url ? `<a class="fcard-tkt" href="${festival.url}" target="_blank">Tickets</a>` : ''}
+    </div>
+    <div class="fcard-chips" data-fid="${festival.id}">${matched.length ? chips : '<span class="fcard-none">No tracked artists</span>'}</div>
+    ${score > 0 ? `<div class="fcard-bar"><div class="fcard-bar-fill${perfect ? ' p' : ''}" style="width:${score}%"></div></div>` : ''}`;
+
+  if (matched.length > 6) {
+    const chipsEl = card.querySelector('.fcard-chips');
+    const more = document.createElement('span');
+    more.className = 'fcard-chip fcard-chip-more';
+    more.textContent = `+${matched.length - 6}`;
+    more.title = 'Show all';
+    more.onclick = e => {
+      e.stopPropagation();
+      more.remove();
+      matched.slice(6).forEach(m => {
+        const playsTag = hasPlays && m.plays > 0 ? `<span style="opacity:.55;margin-left:3px">${m.plays}</span>` : '';
+        const chip = document.createElement('span');
+        chip.className = 'fcard-chip';
+        chip.innerHTML = m.artist + playsTag;
+        chipsEl.appendChild(chip);
+      });
+    };
+    chipsEl.appendChild(more);
+  }
+
+  card.onclick = e => {
+    if (e.target.tagName === 'A' || e.target.classList.contains('fcard-chip-more')) return;
+    openFestDetail(festival.id);
+  };
+  return card;
+}
+
+function renderFestCardChunks(container, festivalsList) {
+  const token = ++_festPanelBuildToken;
+  container.innerHTML = '';
+
+  const renderChunk = start => {
+    if (_festPanelBuildToken !== token) return;
+    const frag = document.createDocumentFragment();
+    const end = Math.min(start + FEST_PANEL_BATCH_SIZE, festivalsList.length);
+    for (let i = start; i < end; i++) {
+      frag.appendChild(createFestCardNode(festivalsList[i]));
+    }
+    container.appendChild(frag);
+    if (end < festivalsList.length) requestAnimationFrame(() => renderChunk(end));
+  };
+
+  renderChunk(0);
+}
+
+buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
+  const today = new Date().toISOString().split('T')[0];
+  const upFests = festivals.filter(f => f.date >= today && geoDisplayOk(f.country || '') && dateMatchesPreset(f.date));
+  const withMatches = upFests.filter(f => f.score > 0).length;
+  const tab = document.getElementById('tab-fests');
+  if (tab) tab.textContent = upFests.length ? `Festivals Â· ${withMatches}â˜…` : 'Festivals';
+
+  const container = document.getElementById('fest-cards');
+  if (!container) return;
+  const cb = document.getElementById('show-unranked-cb');
+  if (cb) cb.checked = showUnrankedFests;
+
+  if (!upFests.length) {
+    setFestPanelMessage(container, 'No festivals match current date / location filters');
+    return;
+  }
+
+  const displayFests = showUnrankedFests ? upFests : upFests.filter(f => (f.score || 0) > 0);
+  if (!displayFests.length) {
+    setFestPanelMessage(
+      container,
+      showUnrankedFests
+        ? 'No festivals match current filters'
+        : 'No ranked festivals in current filters â€” enable "unranked" to see all'
+    );
+    return;
+  }
+
+  if (sidebarTab !== 'fests' && !focusedFest) return;
+
+  const sorted = [...displayFests].sort((a, b) =>
+    festSort === 'date' ? a.date.localeCompare(b.date) : ((b.score - a.score) || a.date.localeCompare(b.date))
+  );
+  renderFestCardChunks(container, sorted);
+};
+
+buildSidebar = window.buildSidebar = function buildSidebarOptimized() {
+  buildStats();
+  const today = new Date().toISOString().split('T')[0];
+  const in90 = new Date();
+  in90.setDate(in90.getDate() + 90);
+  const in90s = in90.toISOString().split('T')[0];
+  document.querySelectorAll('[data-ap]').forEach(btn =>
+    btn.classList.toggle('on', btn.dataset.ap === artistPreset));
+
+  const favBtn = document.getElementById('lt-fav');
+  if (favBtn) favBtn.style.display = favoriteArtists.size ? '' : 'none';
+
+  const dupesBtn = document.getElementById('dupes-toggle');
+  if (dupesBtn) {
+    const rawCount = concerts.length;
+    const dedupCount = visibleConcerts().length;
+    const hiddenDupes = rawCount - dedupCount;
+    dupesBtn.style.display = hiddenDupes > 0 ? '' : 'none';
+    dupesBtn.style.color = showPossibleDupes ? 'var(--accent)' : '';
+    dupesBtn.style.borderColor = showPossibleDupes ? 'var(--accent)' : '';
+    dupesBtn.style.background = showPossibleDupes ? 'rgba(200,255,95,.08)' : '';
+    dupesBtn.title = !showPossibleDupes && hiddenDupes > 0
+      ? `${hiddenDupes} possible duplicate show${hiddenDupes !== 1 ? 's' : ''} hidden â€” click to show`
+      : 'Showing all entries including possible duplicates â€” click to hide';
+  }
+
+  let artists = sortedArtists();
+  if (showFavOnly) artists = artists.filter(artist => favoriteArtists.has(artist.toLowerCase()));
+  artists = applyArtistPreset(artists);
+
+  document.getElementById('msb-all').classList.toggle('on', focusedArtist === null);
+  document.getElementById('msb-all-cnt').textContent =
+    showFavOnly ? `${artists.length} favorites` : artistPreset === 'all' ? `${artists.length} artists` : `${artists.length} filtered`;
+
+  const list = document.getElementById('msb-list');
+  const existingReset = list.parentElement.querySelector('.fav-reset-btn');
+  if (existingReset) existingReset.remove();
+  if (favoriteArtists.size > 0) {
+    const rb = document.createElement('button');
+    rb.className = 'fav-reset-btn';
+    rb.textContent = `âœ• Clear ${favoriteArtists.size} favorites`;
+    rb.style.cssText = 'display:block;margin:6px 14px 2px;font-size:.52rem;';
+    rb.onclick = resetFavorites;
+    list.before(rb);
+  }
+
+  buildFestPanel();
+  if (sidebarTab !== 'tours') {
+    _sidebarBuildToken++;
+    return;
+  }
+
+  if (!artists.length) {
+    _sidebarBuildToken++;
+    const emptyMsg = showFavOnly
+      ? 'No favorites on tour'
+      : artistPreset === 'all'
+        ? 'No tour data'
+        : 'No artists match this preset';
+    list.innerHTML = `<div style="padding:16px;font-size:.62rem;color:var(--muted2)">${emptyMsg}</div>`;
+    return;
+  }
+
+  const topPlays = Math.max(1, ...Object.values(ARTIST_PLAYS).map(v => v || 0));
+  renderSidebarArtistList(list, artists, { today, in90s, topPlays });
+};
+
+const _setTabBase = setTab;
+setTab = window.setTab = function setTabOptimized(tab) {
+  const result = _setTabBase(tab);
+  if (tab === 'fests') buildFestPanel();
+  else if (tab === 'tours') buildSidebar();
+  return result;
+};

@@ -74,7 +74,7 @@ async function retrySingleArtist(artist) {
     dblog('ok', `Manual retry: "${artist}" succeeded — ${upcoming.length} shows`);
     setStatus(`✓ ${artist}: ${upcoming.length} shows`, true);
     persistData();
-    buildCalChips(); renderCalendar(); renderMap();
+    scheduleUiRefresh();
   } catch(e) {
     if (fetchErrors[artist]) {
       fetchErrors[artist].attempts++;
@@ -200,7 +200,7 @@ function showQuotaModal(resetStr, totalFound) {
 
 function closeQuotaModal() {
   document.getElementById('quota-bg').classList.remove('open');
-  buildCalChips(); renderCalendar(); renderMap();
+  scheduleUiRefresh();
 }
 
 function quotaApplyNewKey() {
