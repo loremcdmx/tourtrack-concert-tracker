@@ -138,13 +138,49 @@ function dateOffset(days) {
   return d.toISOString().split('T')[0];
 }
 
+let _artistIndexCacheRef = null;
+let _artistIndexCacheLen = -1;
+let _artistIndexCacheFirst = '';
+let _artistIndexCacheLast = '';
+let _artistIndexCacheMap = new Map();
+
+function getArtistIndexMap() {
+  const list = Array.isArray(ARTISTS) ? ARTISTS : [];
+  const len = list.length;
+  const first = len ? String(list[0] || '') : '';
+  const last = len ? String(list[len - 1] || '') : '';
+  if (
+    _artistIndexCacheRef !== list ||
+    _artistIndexCacheLen !== len ||
+    _artistIndexCacheFirst !== first ||
+    _artistIndexCacheLast !== last
+  ) {
+    const map = new Map();
+    list.forEach((artist, idx) => {
+      const key = (artist || '').toLowerCase();
+      if (key && !map.has(key)) map.set(key, idx);
+    });
+    _artistIndexCacheRef = list;
+    _artistIndexCacheLen = len;
+    _artistIndexCacheFirst = first;
+    _artistIndexCacheLast = last;
+    _artistIndexCacheMap = map;
+  }
+  return _artistIndexCacheMap;
+}
+
+function artistListPosition(artistName) {
+  const idx = getArtistIndexMap().get((artistName || '').toLowerCase());
+  return Number.isInteger(idx) ? idx : -1;
+}
+
 // ── UNIFIED ARTIST RANK SCORE ────────────────────────────────────
 // Shared by MX calendar, overview map, and everywhere else
 // Returns: high = artist you listen to a lot = show higher priority
 function artistRankScore(artistName) {
   const key = (artistName || '').toLowerCase();
   const plays = ARTIST_PLAYS[key] || 0;
-  const listIdx = ARTISTS.findIndex(a => a.toLowerCase() === key);
+  const listIdx = artistListPosition(key);
   const posScore = listIdx >= 0 ? (ARTISTS.length - listIdx) : 0;
   return plays * 100 + posScore;
 }
@@ -152,7 +188,7 @@ function artistRankScore(artistName) {
 function _rankScore(artist) {
   const key = (artist || '').toLowerCase();
   const plays = ARTIST_PLAYS[key] || 0;
-  const idx   = ARTISTS.findIndex(a => a.toLowerCase() === key);
+  const idx   = artistListPosition(key);
   const pos   = idx >= 0 ? (ARTISTS.length - idx) / Math.max(ARTISTS.length, 1) * 20 : 0;
   return (plays >= 20 ? 200 + Math.log2(plays) * 10 :
           plays >= 5  ? 100 + plays * 4 :

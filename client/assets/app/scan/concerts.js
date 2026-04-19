@@ -17,6 +17,12 @@ function _deduplicateConcerts(list, aggressive) {
   return deduplicateConcertRecords(list, aggressive);
 }
 
+let _visibleConcertsCacheList = null;
+let _visibleConcertsCacheLength = -1;
+let _visibleConcertsCacheFirst = null;
+let _visibleConcertsCacheLast = null;
+let _visibleConcertsCache = [];
+
 // ── visibleConcerts() ─────────────────────────────────────────────
 // Central render-time filter for the concerts array.
 // When showPossibleDupes is false (default), applies an aggressive third
@@ -28,7 +34,24 @@ function _deduplicateConcerts(list, aggressive) {
 // slip through the city-level second pass because the sub-venue names differ.
 function visibleConcerts() {
   if (showPossibleDupes) return concerts;
-  return deduplicateConcertRecords(concerts, true);
+  const list = concerts;
+  const len = list.length;
+  const first = len ? list[0] : null;
+  const last = len ? list[len - 1] : null;
+  if (
+    _visibleConcertsCacheList === list &&
+    _visibleConcertsCacheLength === len &&
+    _visibleConcertsCacheFirst === first &&
+    _visibleConcertsCacheLast === last
+  ) {
+    return _visibleConcertsCache;
+  }
+  _visibleConcertsCache = deduplicateConcertRecords(list, true);
+  _visibleConcertsCacheList = list;
+  _visibleConcertsCacheLength = len;
+  _visibleConcertsCacheFirst = first;
+  _visibleConcertsCacheLast = last;
+  return _visibleConcertsCache;
 }
 
 function togglePossibleDupes() {

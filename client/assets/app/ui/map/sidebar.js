@@ -1,5 +1,72 @@
 'use strict';
 
+const SIDEBAR_BATCH_SIZE = 120;
+let _sidebarBuildToken = 0;
+
+function buildSidebarArtistRow(artist, evs, ctx) {
+  const col = getColor(artist);
+  const isFav = favoriteArtists.has(artist.toLowerCase());
+  const row = document.createElement('div');
+  row.className = 'msb-artist' + (focusedArtist === artist ? ' on' : '');
+  if (isFav) row.style.borderLeft = '2px solid rgba(255,215,0,.7)';
+  row.dataset.artist = artist;
+
+  const showCount = evs.length;
+  const badgeCol = showCount >= 5 ? 'var(--accent)' : showCount >= 2 ? 'var(--text)' : 'var(--muted)';
+  const lastDate = evs[evs.length - 1]?.date || '';
+  const isEndingSoon = evs.length >= 3 && lastDate >= ctx.today && lastDate <= ctx.in90s;
+  const nextShow = evs.find(e => e.date >= ctx.today);
+  const metaText = nextShow
+    ? `${nextShow.city || nextShow.venue || 'â€”'}${nextShow.country ? ' ' + flag(nextShow.country) : ''}`
+    : evs[0]?.city || 'â€”';
+
+  const plays = ARTIST_PLAYS[artist.toLowerCase()] || 0;
+  const playBarPct = (artistSort === 'list' && plays > 0)
+    ? Math.round(plays / ctx.topPlays * 100)
+    : 0;
+  const playsLabel = (artistSort === 'list' && plays > 0)
+    ? `<span style="font-size:.48rem;color:var(--accent);font-family:'DM Mono',monospace;opacity:.9">${plays}â–¶</span>`
+    : '';
+
+  row.innerHTML = `
+    <button class="msb-star ${isFav ? 'on' : ''}" title="${isFav ? 'Unfavorite' : 'Favorite'}">â˜…</button>
+    <div class="msb-dot" style="background:${col}${isFav ? ';box-shadow:0 0 7px rgba(255,215,0,.55)' : ''}"></div>
+    <div class="msb-ainfo">
+      <div class="msb-aname">${artist}</div>
+      <div class="msb-ameta">${metaText}</div>
+      ${playBarPct > 0 ? `<div style="height:2px;border-radius:1px;background:var(--s3);overflow:hidden;margin-top:3px;width:80px"><div style="height:100%;width:${playBarPct}%;background:var(--accent);border-radius:1px;opacity:.55"></div></div>` : ''}
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0">
+      ${playsLabel}
+      <span style="font-size:.54rem;color:${badgeCol};font-family:'DM Mono',monospace">${showCount}Ã—</span>
+      ${isEndingSoon ? '<span style="font-size:.44rem;color:#ff8080;letter-spacing:.04em">ENDING</span>' : ''}
+    </div>
+    <button class="msb-focus">â†’</button>`;
+  row.querySelector('.msb-star').onclick  = e => toggleFavorite(artist, e);
+  row.querySelector('.msb-focus').onclick = e => { e.stopPropagation(); focusArtist(artist); };
+  row.onclick = () => focusArtist(artist);
+  return row;
+}
+
+function renderSidebarArtistList(list, artists, ctx) {
+  const token = ++_sidebarBuildToken;
+  list.innerHTML = '';
+
+  const renderChunk = start => {
+    if (_sidebarBuildToken !== token) return;
+    const frag = document.createDocumentFragment();
+    const end = Math.min(start + SIDEBAR_BATCH_SIZE, artists.length);
+    for (let i = start; i < end; i++) {
+      const artist = artists[i];
+      frag.appendChild(buildSidebarArtistRow(artist, allTourData[artist], ctx));
+    }
+    list.appendChild(frag);
+    if (end < artists.length) requestAnimationFrame(() => renderChunk(end));
+  };
+
+  renderChunk(0);
+}
+
 function setTab(tab) {
   sidebarTab = tab;
   document.getElementById('tab-tours').className   = 'msb-tab' + (tab === 'tours'  ? ' t-on' : '');
@@ -151,7 +218,6 @@ function sortedArtists() {
   }
   // 'list' — sort by plays desc (if plays data exists), then by textarea line order
   const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
-  const lineIdx  = Object.fromEntries(ARTISTS.map((a, i) => [a.toLowerCase(), i]));
   return keys.sort((a, b) => {
     if (hasPlays) {
       const pa = ARTIST_PLAYS[a.toLowerCase()] || 0;
@@ -159,8 +225,8 @@ function sortedArtists() {
       if (pa !== pb) return pb - pa; // more plays = higher
     }
     // Tie-break: preserve textarea order
-    const ia = lineIdx[a.toLowerCase()] ?? Infinity;
-    const ib = lineIdx[b.toLowerCase()] ?? Infinity;
+    const ia = artistListPosition(a);
+    const ib = artistListPosition(b);
     return ia !== ib ? ia - ib : a.localeCompare(b);
   });
 }
@@ -271,6 +337,7 @@ function buildSidebar() {
   }
 
   if (!artists.length) {
+    _sidebarBuildToken++;
     const emptyMsg = showFavOnly
       ? 'No favorites on tour'
       : artistPreset === 'all'
@@ -280,6 +347,10 @@ function buildSidebar() {
     buildFestPanel(); return;
   }
 
+  buildFestPanel();
+  const topPlays = Math.max(1, ...Object.values(ARTIST_PLAYS).map(v => v || 0));
+  renderSidebarArtistList(list, artists, { today, in90s, topPlays });
+  return;
   const frag = document.createDocumentFragment();
   artists.forEach(artist => {
     const col = getColor(artist);
