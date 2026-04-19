@@ -1,5 +1,26 @@
 'use strict';
 
+let focusedConcertKey = '';
+
+function _concertFocusKey(ev) {
+  if (!ev) return '';
+  if (ev.id) return `id:${String(ev.id)}`;
+  return [
+    _normText(ev.artist || ''),
+    ev.date || '',
+    _venueCore(ev.venue || ''),
+    _cityCore(ev.city || '')
+  ].join('|');
+}
+
+function focusConcert(ev) {
+  if (!ev?.artist) return;
+  focusedConcertKey = _concertFocusKey(ev);
+  focusArtist(ev.artist);
+  const mapEl = document.getElementById('map');
+  if (mapEl) mapEl.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
 function focusArtist(artist) {
   focusedArtist = artist;
   { const _mr3 = document.getElementById('map-reset'); if (_mr3) _mr3.style.display = artist ? '' : 'none'; }
@@ -8,6 +29,7 @@ function focusArtist(artist) {
   clearMapLayers();
 
   if (!artist) {
+    focusedConcertKey = '';
     { const _fo3 = document.getElementById('focus-overlay'); if (_fo3) _fo3.style.display = 'none'; }
     lmap.flyTo([30, 10], 2, { duration:1 });
     renderOverview();
@@ -57,6 +79,12 @@ function renderFocusMode(artist) {
   const today = new Date().toISOString().split('T')[0];
   const future = evs.filter(e => e.date >= today);
   const display = future.length ? future : evs;
+  const targetConcertKey = focusedConcertKey;
+  focusedConcertKey = '';
+  const matchedTargetIndex = targetConcertKey ? display.findIndex(ev => _concertFocusKey(ev) === targetConcertKey) : -1;
+  let activeIndex = matchedTargetIndex;
+  if (activeIndex < 0) activeIndex = 0;
+  const targetEvent = matchedTargetIndex >= 0 ? display[matchedTargetIndex] : null;
 
   document.getElementById('focus-name').textContent = artist;
   { const _fn = document.getElementById('focus-name'); if (_fn) _fn.style.color = col; }
@@ -82,6 +110,7 @@ function renderFocusMode(artist) {
 
   const listEl = document.getElementById('focus-list');
   const frag = document.createDocumentFragment();
+  const markersByKey = new Map();
 
   display.forEach((ev, i) => {
     const dayObj  = new Date(ev.date + 'T12:00:00');
@@ -111,12 +140,13 @@ function renderFocusMode(artist) {
     const isLast = i === display.length - 1 && display.length >= 3;
 
     const row = document.createElement('div');
-    row.className = 'fshow' + (i === 0 ? ' active' : '');
+    const isActiveRow = i === activeIndex;
+    row.className = 'fshow' + (isActiveRow ? ' active' : '');
 
     // Accent bar
     const accent = document.createElement('div');
     accent.className = 'fshow-accent';
-    accent.style.background = i === 0 ? col : 'transparent';
+    accent.style.background = isActiveRow ? col : 'transparent';
     row.appendChild(accent);
 
     // Date header
@@ -198,7 +228,11 @@ function renderFocusMode(artist) {
       });
       row.classList.add('active');
       accent.style.background = col;
-      if (ev.lat) lmap.flyTo([ev.lat, ev.lng], 11, { duration:.7 });
+      const marker = markersByKey.get(_concertFocusKey(ev));
+      if (ev.lat) {
+        lmap.flyTo([ev.lat, ev.lng], 11, { duration:.7 });
+        if (marker) window.setTimeout(() => marker.openPopup(), 180);
+      }
     };
 
     frag.appendChild(row);
@@ -272,6 +306,7 @@ function renderFocusMode(artist) {
     const mk = L.marker([ev.lat, ev.lng], { icon, bubblingMouseEvents: false })
       .addTo(lmap)
       .bindPopup(pop, { autoPan: true, autoPanPaddingTopLeft: [10,10], autoPanPaddingBottomRight: [10,80] });
+    markersByKey.set(_concertFocusKey(ev), mk);
     mk.on('click', (e) => {
       L.DomEvent.stopPropagation(e);
       const rows = document.querySelectorAll('.fshow');
@@ -287,8 +322,20 @@ function renderFocusMode(artist) {
 
   // Fly to fit all markers
   if (coords.length > 0) {
-    const bounds = L.latLngBounds(coords.map(e => [e.lat, e.lng]));
-    lmap.fitBounds(bounds, { padding:[40, 320], maxZoom:8, duration:.9 });
+    if (targetEvent?.lat && targetEvent?.lng) {
+      lmap.flyTo([targetEvent.lat, targetEvent.lng], 11, { duration:.7 });
+      const targetMarker = markersByKey.get(_concertFocusKey(targetEvent));
+      if (targetMarker) window.setTimeout(() => targetMarker.openPopup(), 220);
+    } else {
+      const bounds = L.latLngBounds(coords.map(e => [e.lat, e.lng]));
+      lmap.fitBounds(bounds, { padding:[40, 320], maxZoom:8, duration:.9 });
+    }
+  }
+  if (targetEvent) {
+    const activeRow = document.querySelectorAll('.fshow')[activeIndex];
+    if (activeRow) {
+      window.setTimeout(() => activeRow.scrollIntoView({ behavior:'smooth', block:'nearest' }), 120);
+    }
   }
 }
 

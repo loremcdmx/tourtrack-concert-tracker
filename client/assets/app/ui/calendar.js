@@ -282,7 +282,7 @@ function renderMxRow(c) {
   main.className = 'ev-main';
 
   const nameEl = document.createElement('div');
-  nameEl.className = 'ev-name' + (c.url ? ' tkt' : '');
+  nameEl.className = 'ev-name';
 
   // Artist name + rank badge
   nameEl.textContent = c.artist;
@@ -294,13 +294,27 @@ function renderMxRow(c) {
     badge.textContent = isFav ? '★' + (plays || '') : plays + ' ▶';
     nameEl.appendChild(badge);
   }
-  if (c.url) nameEl.onclick = () => window.open(c.url, '_blank');
+
+  const headline = document.createElement('div');
+  headline.className = 'ev-headline';
+  headline.appendChild(createArtistAvatar(c.artist, { size:'mx', color:getColor(c.artist) }));
+  headline.appendChild(nameEl);
 
   const sub = document.createElement('div');
   sub.className = 'ev-sub';
-  sub.innerHTML = `<strong>${venuePart}</strong>${cityPart ? ' · ' + cityPart : ''}`;
+  if (c.url && venuePart) {
+    const vLink = document.createElement('strong');
+    vLink.textContent = venuePart;
+    vLink.style.cssText = 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;';
+    vLink.title = 'Open ticket page';
+    vLink.onclick = (e) => { e.stopPropagation(); window.open(c.url, '_blank'); };
+    sub.appendChild(vLink);
+    if (cityPart) sub.appendChild(document.createTextNode(' · ' + cityPart));
+  } else {
+    sub.innerHTML = `<strong>${venuePart}</strong>${cityPart ? ' · ' + cityPart : ''}`;
+  }
 
-  main.appendChild(nameEl);
+  main.appendChild(headline);
   main.appendChild(sub);
 
   const actions = document.createElement('div');
@@ -310,6 +324,13 @@ function renderMxRow(c) {
   btn.textContent = dim ? 'Restore' : 'Hide';
   btn.onclick = dim ? () => restoreArtist(c.artist) : () => openSnooze(c.artist);
   actions.appendChild(btn);
+
+  row.classList.add('is-clickable');
+  row.title = 'Open on map';
+  row.onclick = (e) => {
+    if (e.target.closest('.hide-btn,.ev-sub strong')) return;
+    focusConcert(c);
+  };
 
   row.appendChild(dayblock); row.appendChild(main); row.appendChild(actions);
   return row;
@@ -1060,9 +1081,6 @@ function renderCalendar() {
         const nameEl = document.createElement('div');
         nameEl.className = 'ev-name';
         nameEl.textContent = ev.artist;
-        // Click artist name → open their tour in focus mode
-        nameEl.style.cursor = 'pointer';
-        nameEl.onclick = () => { focusArtist(ev.artist); setTab('tours'); };
 
         // LAST SHOW badge: is this the final known date for this artist's tour?
         const artistKey = (ev.artist || '').toLowerCase();
@@ -1072,6 +1090,11 @@ function renderCalendar() {
           badge.textContent = 'LAST SHOW';
           nameEl.appendChild(badge);
         }
+
+        const headline = document.createElement('div');
+        headline.className = 'ev-headline';
+        headline.appendChild(createArtistAvatar(ev.artist, { size:'feed', color:getColor(ev.artist) }));
+        headline.appendChild(nameEl);
 
         const sub = document.createElement('div');
         sub.className = 'ev-sub';
@@ -1086,7 +1109,7 @@ function renderCalendar() {
         } else {
           sub.innerHTML = `<strong>${ev.venue}</strong>${loc ? ' · '+loc : ''}`;
         }
-        main.appendChild(nameEl); main.appendChild(sub);
+        main.appendChild(headline); main.appendChild(sub);
 
         const fest = _festForConcert(ev);
         const metaRow = document.createElement('div');
@@ -1113,11 +1136,11 @@ function renderCalendar() {
         }
         if (metaRow.childNodes.length) main.appendChild(metaRow);
 
-        // Row click → open concert card drawer
-        row.style.cursor = 'pointer';
+        row.classList.add('is-clickable');
+        row.title = 'Open on map';
         row.onclick = (e) => {
-          if (e.target.closest('.hide-btn,.ev-name,.ev-sub strong')) return;
-          openConcertDrawer(ev);
+          if (e.target.closest('.hide-btn,.ev-sub strong')) return;
+          focusConcert(ev);
         };
 
         const btn = document.createElement('button');

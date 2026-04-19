@@ -133,19 +133,7 @@ async function _loadConcertDrawerData(artist) {
   const artistPanel = document.getElementById('cdr-artist-panel');
   if (!tracksEl || !artistPanel) return;
 
-  // ── 1. Photo from Deezer (no key needed) ──────────────────────
-  try {
-    const res = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(artist)}&limit=1`);
-    const data = await res.json();
-    const deezerArtist = data.data?.[0];
-    if (deezerArtist?.picture_xl) {
-      const img = document.createElement('img');
-      img.src = deezerArtist.picture_xl;
-      img.className = 'cdr-artist-photo';
-      img.onerror = () => img.remove();
-      artistPanel.insertBefore(img, artistPanel.firstChild);
-    }
-  } catch(e) { /* photo non-critical */ }
+  mountArtistPanelPhoto(artistPanel, artist);
 
   // ── 2. Top tracks from Spotify (client credentials, no OAuth) ─
   try {

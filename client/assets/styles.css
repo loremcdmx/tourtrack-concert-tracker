@@ -460,12 +460,29 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   align-items:start; padding:10px 6px; border-bottom:1px solid var(--border);
   cursor:default; transition:background .1s,padding-left .1s; border-radius:4px; }
 .ev-row:hover { background:var(--s2); padding-left:10px; }
+.ev-row.is-clickable { cursor:pointer; }
+.ev-row.is-clickable:hover .ev-name { color:var(--accent); }
 .ev-row.ev-implicit-fest { border-left:3px solid rgba(255,170,60,.55); }
 .ev-row.ev-implicit-fest .ev-name { color:#ffcc70; }
 .ev-row.faded { opacity:.22; }
 .ev-daynum { font-family:'Bebas Neue',cursive; font-size:1.7rem; line-height:1; display:block; }
 .ev-dayname { font-size:.52rem; letter-spacing:.06em; color:var(--muted); text-transform:uppercase; }
 .ev-main { min-width:0; }
+.ev-headline { display:flex; align-items:center; gap:10px; min-width:0; margin-bottom:2px; }
+.ev-headline .ev-name { flex:1 1 auto; min-width:0; margin-bottom:0; }
+.artist-avatar { --artist-avatar-accent:var(--accent); position:relative; display:flex; align-items:center;
+  justify-content:center; width:34px; height:34px; flex:0 0 auto; border-radius:50%; overflow:hidden;
+  background:linear-gradient(135deg,rgba(255,255,255,.07),rgba(255,255,255,.02)),var(--s3);
+  border:1px solid rgba(255,255,255,.12); box-shadow:0 8px 20px rgba(0,0,0,.2); }
+.artist-avatar::after { content:''; position:absolute; right:2px; bottom:2px; width:7px; height:7px;
+  border-radius:50%; background:var(--artist-avatar-accent); box-shadow:0 0 10px rgba(0,0,0,.35); }
+.artist-avatar img { width:100%; height:100%; object-fit:cover; display:none; }
+.artist-avatar.has-image img { display:block; }
+.artist-avatar.has-image .artist-avatar-fallback { display:none; }
+.artist-avatar-fallback { font-family:'DM Mono',monospace; font-size:.62rem; font-weight:700;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--text); opacity:.88; pointer-events:none; }
+.artist-avatar--mx { width:30px; height:30px; }
+.artist-avatar--mx .artist-avatar-fallback { font-size:.56rem; }
 .ev-name { font-family:'Syne',sans-serif; font-weight:700; font-size:.82rem; line-height:1.25;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
 .ev-name.tkt { cursor:pointer; }
