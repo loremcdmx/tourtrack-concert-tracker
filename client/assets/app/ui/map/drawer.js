@@ -165,7 +165,7 @@ async function _loadConcertDrawerData(artist) {
           row.className = 'cdr-track';
           row.innerHTML = `
             <div class="cdr-track-play" title="Open on Spotify"
-              onclick="window.open('${t.external_urls?.spotify || '#'}','_blank');event.stopPropagation()">▶</div>
+              onclick="event.preventDefault();event.stopPropagation();openExternalUrl('${t.external_urls?.spotify || '#'}');return false">▶</div>
             <div class="cdr-track-name">${t.name}</div>
             <div class="cdr-track-plays" title="Spotify popularity ${pop}/100"
               style="display:flex;align-items:center;gap:4px">

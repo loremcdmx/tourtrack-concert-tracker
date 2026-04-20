@@ -75,6 +75,37 @@ function setFestPanelMessage(container, message) {
   if (container) container.innerHTML = `<div style="padding:16px;font-size:.62rem;color:var(--muted2)">${message}</div>`;
 }
 
+function bindFestivalCardInteractions(card, festival) {
+  if (!card || !festival) return;
+  card.setAttribute('role', 'button');
+  card.tabIndex = 0;
+
+  const openCard = () => {
+    if (festival.id) openFestDetail(festival.id);
+  };
+  const shouldIgnoreCardOpen = target => !!target?.closest?.('a,button,.fcard-chip-more');
+
+  card.querySelectorAll('.fcard-tkt').forEach(ticket => {
+    ticket.rel = 'noreferrer noopener';
+    ticket.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      openExternalUrl(ticket.href || festival.url);
+    });
+  });
+
+  card.onclick = event => {
+    if (shouldIgnoreCardOpen(event.target)) return;
+    openCard();
+  };
+  card.onkeydown = event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (shouldIgnoreCardOpen(event.target)) return;
+    event.preventDefault();
+    openCard();
+  };
+}
+
 function createFestCardNode(festival) {
   const score = festival.score || 0;
   const matched = festival.matched || [];
@@ -133,10 +164,7 @@ function createFestCardNode(festival) {
     chipsEl.appendChild(more);
   }
 
-  card.onclick = e => {
-    if (e.target.tagName === 'A' || e.target.classList.contains('fcard-chip-more')) return;
-    openFestDetail(festival.id);
-  };
+  bindFestivalCardInteractions(card, festival);
   return card;
 }
 
@@ -603,7 +631,7 @@ function buildFestPanel() {
       card.querySelector('.fcard-chips').appendChild(more);
     }
 
-    card.onclick = e => { if (e.target.tagName === 'A' || e.target.classList.contains('fcard-chip-more')) return; openFestDetail(f.id); };
+    bindFestivalCardInteractions(card, f);
     frag.appendChild(card);
   });
   container.innerHTML = '';
@@ -683,10 +711,7 @@ function createFestCardNode(festival) {
     chipsEl.appendChild(more);
   }
 
-  card.onclick = e => {
-    if (e.target.tagName === 'A' || e.target.classList.contains('fcard-chip-more')) return;
-    openFestDetail(festival.id);
-  };
+  bindFestivalCardInteractions(card, festival);
   return card;
 }
 

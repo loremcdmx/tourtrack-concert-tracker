@@ -32,13 +32,24 @@ function _mapPopupActionEl(label, opts = {}) {
   } else {
     el.type = 'button';
   }
-  if (typeof opts.onClick === 'function') {
-    el.addEventListener('click', ev => {
-      if (!isLink) ev.preventDefault();
-      opts.onClick(ev);
-    });
-  }
+  el.addEventListener('click', ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (isLink) {
+      openExternalUrl(opts.href);
+      return;
+    }
+    if (typeof opts.onClick === 'function') opts.onClick(ev);
+  });
   return el;
+}
+
+function _mapPopupEnableInteraction(root) {
+  if (window.L?.DomEvent) {
+    L.DomEvent.disableClickPropagation(root);
+    L.DomEvent.disableScrollPropagation(root);
+  }
+  root.addEventListener('click', ev => ev.stopPropagation());
 }
 
 function _mapMarkerAvatarHtml(artist, accent) {
@@ -175,7 +186,11 @@ function _buildFestClusterPopup(items, center) {
     btn.style.setProperty('--map-chip-accent', fTone.fg);
     const meta = [fmtDateRange(f), f.city].filter(Boolean).join(' / ');
     if (meta) btn.appendChild(_mapCreateEl('span', 'map-popup-chip__meta', meta));
-    if (f.id) btn.addEventListener('click', () => openFestDetail(f.id));
+    if (f.id) btn.addEventListener('click', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openFestDetail(f.id);
+    });
     list.appendChild(btn);
   });
   if (ranked.length > 9) list.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', `+${ranked.length - 9} more`));
@@ -193,6 +208,7 @@ function _buildFestClusterPopup(items, center) {
   body.appendChild(actions);
 
   root.appendChild(body);
+  _mapPopupEnableInteraction(root);
   return root;
 }
 
@@ -256,6 +272,11 @@ function _buildFestPopup(f) {
       mediaWrap.href = f.url;
       mediaWrap.target = '_blank';
       mediaWrap.rel = 'noreferrer noopener';
+      mediaWrap.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openExternalUrl(f.url);
+      });
     }
     const img = document.createElement('img');
     img.src = f.imageUrl;
@@ -296,7 +317,11 @@ function _buildFestPopup(f) {
       const chip = _mapCreateEl('button', 'map-popup-chip map-popup-chip--artist', name);
       chip.type = 'button';
       chip.style.setProperty('--map-chip-accent', getColor(name));
-      chip.addEventListener('click', () => focusArtist(name));
+      chip.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        focusArtist(name);
+      });
       if (item.plays > 0) chip.appendChild(_mapCreateEl('span', 'map-popup-chip__meta', `${item.plays} plays`));
       chips.appendChild(chip);
     });
@@ -320,6 +345,7 @@ function _buildFestPopup(f) {
   if (actions.childNodes.length) body.appendChild(actions);
 
   root.appendChild(body);
+  _mapPopupEnableInteraction(root);
   return root;
 }
 
@@ -353,7 +379,11 @@ function _buildConcertPopup(artist, ev, accent, isFav, plays, in7, in30) {
   if (linkedFest?.name) {
     const chip = _mapCreateEl('button', 'map-popup-chip map-popup-chip--fest', linkedFest.name);
     chip.type = 'button';
-    if (linkedFest.id) chip.addEventListener('click', () => openFestDetail(linkedFest.id));
+    if (linkedFest.id) chip.addEventListener('click', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openFestDetail(linkedFest.id);
+    });
     chips.appendChild(chip);
   }
   if (ev.country) chips.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', flag(ev.country)));
@@ -366,6 +396,7 @@ function _buildConcertPopup(artist, ev, accent, isFav, plays, in7, in30) {
   body.appendChild(actions);
 
   root.appendChild(body);
+  _mapPopupEnableInteraction(root);
   return root;
 }
 function _renderFestLabels() {

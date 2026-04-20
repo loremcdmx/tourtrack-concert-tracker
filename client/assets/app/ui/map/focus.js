@@ -212,7 +212,11 @@ function renderFocusMode(artist) {
       tkt.href = ev.url; tkt.target = '_blank';
       tkt.textContent = 'Tickets →';
       tkt.style.borderColor = col; tkt.style.color = col;
-      tkt.onclick = e => e.stopPropagation();
+      tkt.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExternalUrl(ev.url);
+      };
       foot.appendChild(tkt);
     }
     body.appendChild(foot);

@@ -52,6 +52,21 @@ window.fetch = function(input, init = {}) {
   return nativeFetch(buildInternalProxyUrl(rawUrl), nextInit);
 };
 
+function openExternalUrl(url) {
+  const href = String(url || '').trim();
+  if (!href) return;
+  const opened = window.open(href, '_blank', 'noopener,noreferrer');
+  if (!opened) window.location.href = href;
+}
+
+document.addEventListener('click', event => {
+  const link = event.target?.closest?.('a[target="_blank"][href]');
+  if (!link) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openExternalUrl(link.href);
+}, true);
+
 // DATA
 // ═══════════════════════════════════════════════════════════════
 const COUNTRY_MAP = {

@@ -264,6 +264,13 @@ function hasArtistPlayData() {
 
 let _trackedArtistLookupSignature = '';
 let _trackedArtistLookupSet = new Set();
+let _artistScoringMetaSignature = '';
+let _artistScoringMeta = {
+  list: [],
+  index: new Map(),
+  positiveRank: new Map(),
+  positiveCount: 0,
+};
 
 function _addTrackedArtistKeys(set, artistName) {
   [
@@ -296,9 +303,94 @@ function getTrackedArtistLookup() {
   return set;
 }
 
+function getArtistScoringMeta() {
+  const tracked = Array.isArray(TRACKED_ARTISTS) ? TRACKED_ARTISTS : [];
+  const scanned = Array.isArray(SCANNED_ARTISTS) ? SCANNED_ARTISTS : [];
+  const artists = Array.isArray(ARTISTS) ? ARTISTS : [];
+  const playEntries = Object.keys(ARTIST_PLAYS || {})
+    .sort()
+    .map(key => `${key}:${_toPlayNumber(ARTIST_PLAYS[key])}`);
+  const signature = [
+    tracked.map(v => String(v || '')).join('\u0001'),
+    artists.map(v => String(v || '')).join('\u0001'),
+    scanned.map(v => String(v || '')).join('\u0001'),
+    playEntries.join('\u0001'),
+  ].join('\u0002');
+  if (signature === _artistScoringMetaSignature) return _artistScoringMeta;
+
+  const list = [];
+  const seen = new Set();
+  const addArtist = value => {
+    const name = String(value || '').trim();
+    const key = _artistLookupKey(name);
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    list.push(name);
+  };
+  tracked.forEach(addArtist);
+  artists.forEach(addArtist);
+  scanned.forEach(addArtist);
+  Object.keys(ARTIST_PLAYS || {}).sort().forEach(addArtist);
+
+  const index = new Map();
+  const positiveRank = new Map();
+  let positiveCount = 0;
+  list.forEach((artist, idx) => {
+    [
+      _artistLookupKey(artist),
+      _artistNormalizedKey(artist),
+      _artistFoldedKey(artist),
+    ].forEach(key => {
+      if (key && !index.has(key)) index.set(key, idx);
+    });
+    if (artistPlayCount(artist) > 0) {
+      positiveCount += 1;
+      [
+        _artistLookupKey(artist),
+        _artistNormalizedKey(artist),
+        _artistFoldedKey(artist),
+      ].forEach(key => {
+        if (key && !positiveRank.has(key)) positiveRank.set(key, positiveCount);
+      });
+    }
+  });
+
+  _artistScoringMetaSignature = signature;
+  _artistScoringMeta = { list, index, positiveRank, positiveCount };
+  return _artistScoringMeta;
+}
+
+function artistScoringPosition(artistName) {
+  const meta = getArtistScoringMeta();
+  const keys = [
+    _artistLookupKey(artistName),
+    _artistNormalizedKey(artistName),
+    _artistFoldedKey(artistName),
+  ];
+  for (const key of keys) {
+    const idx = meta.index.get(key);
+    if (Number.isInteger(idx)) return idx;
+  }
+  return -1;
+}
+
+function artistPositiveRank(artistName) {
+  const meta = getArtistScoringMeta();
+  const keys = [
+    _artistLookupKey(artistName),
+    _artistNormalizedKey(artistName),
+    _artistFoldedKey(artistName),
+  ];
+  for (const key of keys) {
+    const rank = meta.positiveRank.get(key);
+    if (Number.isInteger(rank)) return rank;
+  }
+  return -1;
+}
+
 function artistRankFallbackLevel(artistName) {
-  const idx = artistListPosition(artistName);
-  const total = ARTISTS.length || 0;
+  const idx = artistScoringPosition(artistName);
+  const total = getArtistScoringMeta().list.length || 0;
   if (idx < 0 || !total) return 0;
   const rank = idx + 1;
   if (rank <= Math.max(1, Math.ceil(total * 0.15))) return 3;
@@ -315,17 +407,37 @@ function artistIsTracked(artistName) {
   ].some(key => key && lookup.has(key));
 }
 
-function artistScoreLevel(artistName) {
-  const plays = artistPlayCount(artistName);
+function artistAbsoluteScoreLevel(plays) {
   if (plays >= SCORE_ARTIST_MIN[4]) return 4;
   if (plays >= SCORE_ARTIST_MIN[3]) return 3;
   if (plays >= SCORE_ARTIST_MIN[2]) return 2;
   if (plays >= SCORE_ARTIST_MIN[1]) return 1;
+  return 0;
+}
+
+function artistRelativeScoreLevel(artistName, plays) {
+  if (!plays || !artistIsTracked(artistName)) return 0;
+  const meta = getArtistScoringMeta();
+  const rank = artistPositiveRank(artistName);
+  if (rank < 1 || meta.positiveCount < 4) return 0;
+  const pct = rank / meta.positiveCount;
+  if (plays >= SCORE_ARTIST_RANK_MIN[4] && pct <= SCORE_ARTIST_RANK_PCT[4]) return 4;
+  if (plays >= SCORE_ARTIST_RANK_MIN[3] && pct <= SCORE_ARTIST_RANK_PCT[3]) return 3;
+  if (plays >= SCORE_ARTIST_RANK_MIN[2] && pct <= SCORE_ARTIST_RANK_PCT[2]) return 2;
+  return 1;
+}
+
+function artistScoreLevel(artistName) {
+  const plays = artistPlayCount(artistName);
   if (!hasArtistPlayData()) {
     const fallbackLevel = artistRankFallbackLevel(artistName);
     return fallbackLevel || (artistIsTracked(artistName) ? 1 : 0);
   }
-  return artistIsTracked(artistName) ? 1 : 0;
+  return Math.max(
+    artistAbsoluteScoreLevel(plays),
+    artistRelativeScoreLevel(artistName, plays),
+    artistIsTracked(artistName) ? 1 : 0
+  );
 }
 
 function artistScoreOk(artistName, level) {
@@ -463,12 +575,23 @@ function renderMxCalendar() {
       const badge = document.createElement('span');
       badge.className = 'fest-badge'; badge.textContent = 'Festival';
       nameEl.appendChild(badge);
-      if (f.url) nameEl.onclick = () => window.open(f.url, '_blank');
+      if (f.url) nameEl.onclick = event => {
+        event.stopPropagation();
+        openExternalUrl(f.url);
+      };
       const sub = document.createElement('div');
       sub.className = 'ev-sub';
       sub.innerHTML = `<strong>${f.venue || ''}</strong>${loc ? ' · ' + loc : ''}`;
       main.appendChild(nameEl); main.appendChild(sub);
       row.appendChild(dayblock); row.appendChild(main); row.appendChild(document.createElement('div'));
+      if (f.id) {
+        row.classList.add('is-clickable');
+        row.title = 'Open festival card';
+        row.onclick = event => {
+          if (event.target.closest('.ev-name.tkt')) return;
+          openFestDetail(f.id);
+        };
+      }
       frag.appendChild(row);
     });
   }
@@ -528,7 +651,11 @@ function renderMxRow(c) {
     vLink.textContent = venuePart;
     vLink.style.cssText = 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;';
     vLink.title = 'Open ticket page';
-    vLink.onclick = (e) => { e.stopPropagation(); window.open(c.url, '_blank'); };
+    vLink.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      openExternalUrl(c.url);
+    };
     sub.appendChild(vLink);
     if (cityPart) sub.appendChild(document.createTextNode(' · ' + cityPart));
   } else {
@@ -773,9 +900,13 @@ function dateFilter_(arr) {
 
 // ── SCORE FILTER ─────────────────────────────────────────────────
 // Level 0 = all, 1 = low+, 2 = mid+, 3 = high+, 4 = top+
-// For artists (tracks in playlist): 0, >=1/tracked, >=5, >=10, >=20
+// Artists use relaxed absolute play floors plus playlist-relative rank promotion.
+// Absolute floors:                 0, >=1/tracked, >=2, >=4, >=8
+// Rank promotion: mid top 65%+1 play, high top 30%+2 plays, top top 12%+4 plays
 // For festivals (0-100 score):      0, >20, >30, >50, >70
-const SCORE_ARTIST_MIN = [0, 1, 5, 10, 20];  // min ARTIST_PLAYS tracks per level
+const SCORE_ARTIST_MIN = [0, 1, 2, 4, 8];  // absolute min ARTIST_PLAYS tracks per level
+const SCORE_ARTIST_RANK_PCT = [1, 1, 0.65, 0.30, 0.12];
+const SCORE_ARTIST_RANK_MIN = [0, 1, 1, 2, 4];
 const SCORE_FEST_MIN   = [0, 20, 30, 50, 70]; // min f.score per level
 let calScoreFilter = 0;   // 0–4
 
@@ -1248,7 +1379,10 @@ function renderCalendar() {
         const nameEl = document.createElement('div');
         nameEl.className = 'ev-name' + (ev.url ? ' tkt' : '');
         nameEl.textContent = ev.venue || 'Multi-artist show';
-        if (ev.url) nameEl.onclick = () => window.open(ev.url, '_blank');
+        if (ev.url) nameEl.onclick = event => {
+          event.stopPropagation();
+          openExternalUrl(ev.url);
+        };
 
         const badgeWrap = document.createElement('span');
         const festBadge = document.createElement('span');
@@ -1295,7 +1429,10 @@ function renderCalendar() {
         const badge = document.createElement('span');
         badge.className = 'fest-badge'; badge.textContent = 'Festival';
         nameEl.appendChild(badge);
-        if (ev.url) nameEl.onclick = () => window.open(ev.url, '_blank');
+        if (ev.url) nameEl.onclick = event => {
+          event.stopPropagation();
+          openExternalUrl(ev.url);
+        };
         const sub = document.createElement('div');
         sub.className = 'ev-sub';
         const dateStr = fmtDateRange(ev._fest ? ev : {date:ev.date, endDate:ev.endDate});
@@ -1312,7 +1449,10 @@ function renderCalendar() {
             const chip = document.createElement('span');
             chip.className = 'ev-artist-chip mine';
             appendArtistChipIdentity(chip, m.artist, m.plays || 0);
-            chip.onclick = () => focusArtist(m.artist);
+            chip.onclick = event => {
+              event.stopPropagation();
+              focusArtist(m.artist);
+            };
             chipsEl.appendChild(chip);
           });
           if (matched.length > 6) {
@@ -1320,20 +1460,33 @@ function renderCalendar() {
             more.className = 'ev-artist-chip ev-more-chip';
             more.textContent = `+${matched.length - 6} more`;
             more.title = 'Click to show all';
-            more.onclick = () => {
+            more.onclick = event => {
+              event.stopPropagation();
               // Replace this chip with the remaining artists
               more.remove();
               matched.slice(6).forEach(m => {
                 const chip = document.createElement('span');
                 chip.className = 'ev-artist-chip mine';
                 appendArtistChipIdentity(chip, m.artist, m.plays || 0);
-                chip.onclick = () => focusArtist(m.artist);
+                chip.onclick = event => {
+                  event.stopPropagation();
+                  focusArtist(m.artist);
+                };
                 chipsEl.appendChild(chip);
               });
             };
             chipsEl.appendChild(more);
           }
           main.appendChild(chipsEl);
+        }
+
+        if (ev.id) {
+          row.classList.add('is-clickable');
+          row.title = 'Open festival card';
+          row.onclick = event => {
+            if (event.target.closest('.ev-name.tkt,.ev-artist-chip')) return;
+            openFestDetail(ev.id);
+          };
         }
 
       } else {
@@ -1364,7 +1517,11 @@ function renderCalendar() {
           vLink.textContent = ev.venue;
           vLink.style.cssText = 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;';
           vLink.title = 'Open ticket page';
-          vLink.onclick = (e) => { e.stopPropagation(); window.open(ev.url, '_blank'); };
+          vLink.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openExternalUrl(ev.url);
+          };
           sub.appendChild(vLink);
           if (loc) sub.appendChild(document.createTextNode(' · ' + loc));
         } else {
@@ -1452,7 +1609,10 @@ function buildCalendarEventRow(ev, ctx) {
     const nameEl = document.createElement('div');
     nameEl.className = 'ev-name' + (ev.url ? ' tkt' : '');
     nameEl.textContent = ev.venue || 'Multi-artist show';
-    if (ev.url) nameEl.onclick = () => window.open(ev.url, '_blank');
+    if (ev.url) nameEl.onclick = event => {
+      event.stopPropagation();
+      openExternalUrl(ev.url);
+    };
 
     const badgeWrap = document.createElement('span');
     const festBadge = document.createElement('span');
@@ -1500,7 +1660,10 @@ function buildCalendarEventRow(ev, ctx) {
     badge.className = 'fest-badge';
     badge.textContent = 'Festival';
     nameEl.appendChild(badge);
-    if (ev.url) nameEl.onclick = () => window.open(ev.url, '_blank');
+    if (ev.url) nameEl.onclick = event => {
+      event.stopPropagation();
+      openExternalUrl(ev.url);
+    };
 
     const sub = document.createElement('div');
     sub.className = 'ev-sub';
@@ -1518,7 +1681,10 @@ function buildCalendarEventRow(ev, ctx) {
         const chip = document.createElement('span');
         chip.className = 'ev-artist-chip mine';
         appendArtistChipIdentity(chip, m.artist, m.plays || 0);
-        chip.onclick = () => focusArtist(m.artist);
+        chip.onclick = event => {
+          event.stopPropagation();
+          focusArtist(m.artist);
+        };
         chipsEl.appendChild(chip);
       });
       if (matched.length > 6) {
@@ -1526,19 +1692,31 @@ function buildCalendarEventRow(ev, ctx) {
         more.className = 'ev-artist-chip ev-more-chip';
         more.textContent = `+${matched.length - 6} more`;
         more.title = 'Click to show all';
-        more.onclick = () => {
+        more.onclick = event => {
+          event.stopPropagation();
           more.remove();
           matched.slice(6).forEach(m => {
             const chip = document.createElement('span');
             chip.className = 'ev-artist-chip mine';
             appendArtistChipIdentity(chip, m.artist, m.plays || 0);
-            chip.onclick = () => focusArtist(m.artist);
+            chip.onclick = event => {
+              event.stopPropagation();
+              focusArtist(m.artist);
+            };
             chipsEl.appendChild(chip);
           });
         };
         chipsEl.appendChild(more);
       }
       main.appendChild(chipsEl);
+    }
+    if (ev.id) {
+      row.classList.add('is-clickable');
+      row.title = 'Open festival card';
+      row.onclick = event => {
+        if (event.target.closest('.ev-name.tkt,.ev-artist-chip')) return;
+        openFestDetail(ev.id);
+      };
     }
   } else {
     if (ev.artist) primeArtists.add(ev.artist);
@@ -1566,7 +1744,11 @@ function buildCalendarEventRow(ev, ctx) {
       vLink.textContent = ev.venue;
       vLink.style.cssText = 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;';
       vLink.title = 'Open ticket page';
-      vLink.onclick = e => { e.stopPropagation(); window.open(ev.url, '_blank'); };
+      vLink.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExternalUrl(ev.url);
+      };
       sub.appendChild(vLink);
       if (loc) sub.appendChild(document.createTextNode(' · ' + loc));
     } else {
