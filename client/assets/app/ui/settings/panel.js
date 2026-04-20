@@ -270,8 +270,17 @@ function parseArtistLines(text) {
 
 // Rebuild ARTISTS (string[]) and ARTIST_PLAYS from parsed data
 function applyParsedArtists(parsed) {
-  ARTISTS = parsed.map(p => p.name);
-  ARTIST_PLAYS = Object.fromEntries(parsed.map(p => [p.name.toLowerCase(), p.plays]));
+  const scanArtists = parsed.map(p => p.name);
+  const parsedPlays = Object.fromEntries(parsed.map(p => [p.name.toLowerCase(), p.plays]));
+  const previousTracked = Array.isArray(TRACKED_ARTISTS) ? TRACKED_ARTISTS.slice() : [];
+  const previousPlays = ARTIST_PLAYS && typeof ARTIST_PLAYS === 'object' ? { ...ARTIST_PLAYS } : {};
+  const preserveTracked =
+    previousTracked.length >= scanArtists.length &&
+    scanArtists.every(name => artistNameInList(previousTracked, name));
+
+  ARTISTS = scanArtists;
+  TRACKED_ARTISTS = preserveTracked ? uniqueArtistNames(previousTracked) : scanArtists.slice();
+  ARTIST_PLAYS = preserveTracked ? { ...previousPlays, ...parsedPlays } : parsedPlays;
 }
 
 function updateArtistCount() {

@@ -141,7 +141,9 @@ const KNOWN_FESTIVALS = [
 // ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
-let API_KEY = '', ARTISTS = []; // plain string names — used throughout
+let API_KEY = '', ARTISTS = []; // plain string names - current scan list
+let TRACKED_ARTISTS = [];       // full playlist/list used by quality filters
+let SCANNED_ARTISTS = [];       // artists represented by the current cached concerts
 let TM_KEYS = [];      // { key, label, exhausted }[] — auto-rotated on quota exhaustion
 let _activeKeyIdx = 0; // index of currently active key in TM_KEYS
 let ARTIST_PLAYS = {};          // name.toLowerCase() → play count (parsed from "Artist 14" format)

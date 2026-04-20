@@ -25,6 +25,7 @@ function profPersistCurrent() {
   const all = profAll();
   if (!all[activeProf]) return;
   all[activeProf].artists = ARTISTS.slice();
+  all[activeProf].tracked = TRACKED_ARTISTS.slice();
   all[activeProf].plays   = Object.assign({}, ARTIST_PLAYS);
   profSaveAll(all);
 }
@@ -72,9 +73,16 @@ function _profApply(name) {
   if (prof.artists === null) {
     ARTISTS      = JSON.parse(localStorage.getItem('tt_artists') || '[]');
     ARTIST_PLAYS = JSON.parse(localStorage.getItem('tt_plays')   || '{}');
+    TRACKED_ARTISTS = JSON.parse(localStorage.getItem('tt_tracked_artists') || localStorage.getItem('tt_main_tracked_artists') || '[]');
   } else {
     ARTISTS      = (prof.artists || []).slice();
+    TRACKED_ARTISTS = (prof.tracked || prof.artists || []).slice();
     ARTIST_PLAYS = Object.assign({}, prof.plays || {});
+  }
+  if (!Array.isArray(TRACKED_ARTISTS) || !TRACKED_ARTISTS.length) {
+    TRACKED_ARTISTS = typeof uniqueArtistNames === 'function'
+      ? uniqueArtistNames([...ARTISTS, ...Object.keys(ARTIST_PLAYS || {})])
+      : ARTISTS.slice();
   }
 
   // Keep the artists textarea in Settings in sync if it's open.

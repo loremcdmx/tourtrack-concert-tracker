@@ -2,6 +2,8 @@
 
 async function fetchAll(forceRefresh = false) {
   if (!API_KEY || !ARTISTS.length) { openSettings(); return; }
+  setScannedArtists(ARTISTS);
+  if (!TRACKED_ARTISTS.length) setTrackedArtists(ARTISTS);
 
   const scan = beginScanRun(forceRefresh);
   const {

@@ -140,38 +140,48 @@ function dateOffset(days) {
 
 let _artistIndexCacheRef = null;
 let _artistIndexCacheLen = -1;
-let _artistIndexCacheFirst = '';
-let _artistIndexCacheLast = '';
+let _artistIndexCacheSignature = '';
 let _artistIndexCacheMap = new Map();
 
 function getArtistIndexMap() {
   const list = Array.isArray(ARTISTS) ? ARTISTS : [];
   const len = list.length;
-  const first = len ? String(list[0] || '') : '';
-  const last = len ? String(list[len - 1] || '') : '';
+  const signature = list.map(artist => String(artist || '')).join('\u0001');
   if (
     _artistIndexCacheRef !== list ||
     _artistIndexCacheLen !== len ||
-    _artistIndexCacheFirst !== first ||
-    _artistIndexCacheLast !== last
+    _artistIndexCacheSignature !== signature
   ) {
     const map = new Map();
     list.forEach((artist, idx) => {
-      const key = (artist || '').toLowerCase();
-      if (key && !map.has(key)) map.set(key, idx);
+      [
+        _artistLookupKey(artist),
+        _artistNormalizedKey(artist),
+        _artistFoldedKey(artist),
+      ].forEach(key => {
+        if (key && !map.has(key)) map.set(key, idx);
+      });
     });
     _artistIndexCacheRef = list;
     _artistIndexCacheLen = len;
-    _artistIndexCacheFirst = first;
-    _artistIndexCacheLast = last;
+    _artistIndexCacheSignature = signature;
     _artistIndexCacheMap = map;
   }
   return _artistIndexCacheMap;
 }
 
 function artistListPosition(artistName) {
-  const idx = getArtistIndexMap().get((artistName || '').toLowerCase());
-  return Number.isInteger(idx) ? idx : -1;
+  const map = getArtistIndexMap();
+  const keys = [
+    _artistLookupKey(artistName),
+    _artistNormalizedKey(artistName),
+    _artistFoldedKey(artistName),
+  ];
+  for (const key of keys) {
+    const idx = map.get(key);
+    if (Number.isInteger(idx)) return idx;
+  }
+  return -1;
 }
 
 let _artistPlayLookupSource = null;
@@ -252,6 +262,40 @@ function hasArtistPlayData() {
   return getArtistPlayLookup().hasPositive;
 }
 
+let _trackedArtistLookupSignature = '';
+let _trackedArtistLookupSet = new Set();
+
+function _addTrackedArtistKeys(set, artistName) {
+  [
+    _artistLookupKey(artistName),
+    _artistNormalizedKey(artistName),
+    _artistFoldedKey(artistName),
+  ].forEach(key => { if (key) set.add(key); });
+}
+
+function getTrackedArtistLookup() {
+  const tracked = Array.isArray(TRACKED_ARTISTS) ? TRACKED_ARTISTS : [];
+  const scanned = Array.isArray(SCANNED_ARTISTS) ? SCANNED_ARTISTS : [];
+  const artists = Array.isArray(ARTISTS) ? ARTISTS : [];
+  const playKeys = Object.keys(ARTIST_PLAYS || {}).sort();
+  const signature = [
+    tracked.map(v => String(v || '')).join('\u0001'),
+    artists.map(v => String(v || '')).join('\u0001'),
+    scanned.map(v => String(v || '')).join('\u0001'),
+    playKeys.join('\u0001'),
+  ].join('\u0002');
+  if (signature === _trackedArtistLookupSignature) return _trackedArtistLookupSet;
+
+  const set = new Set();
+  tracked.forEach(name => _addTrackedArtistKeys(set, name));
+  artists.forEach(name => _addTrackedArtistKeys(set, name));
+  scanned.forEach(name => _addTrackedArtistKeys(set, name));
+  playKeys.forEach(name => _addTrackedArtistKeys(set, name));
+  _trackedArtistLookupSignature = signature;
+  _trackedArtistLookupSet = set;
+  return set;
+}
+
 function artistRankFallbackLevel(artistName) {
   const idx = artistListPosition(artistName);
   const total = ARTISTS.length || 0;
@@ -263,7 +307,12 @@ function artistRankFallbackLevel(artistName) {
 }
 
 function artistIsTracked(artistName) {
-  return artistListPosition(artistName) >= 0;
+  const lookup = getTrackedArtistLookup();
+  return [
+    _artistLookupKey(artistName),
+    _artistNormalizedKey(artistName),
+    _artistFoldedKey(artistName),
+  ].some(key => key && lookup.has(key));
 }
 
 function artistScoreLevel(artistName) {
@@ -272,7 +321,10 @@ function artistScoreLevel(artistName) {
   if (plays >= SCORE_ARTIST_MIN[3]) return 3;
   if (plays >= SCORE_ARTIST_MIN[2]) return 2;
   if (plays >= SCORE_ARTIST_MIN[1]) return 1;
-  if (!hasArtistPlayData()) return artistRankFallbackLevel(artistName);
+  if (!hasArtistPlayData()) {
+    const fallbackLevel = artistRankFallbackLevel(artistName);
+    return fallbackLevel || (artistIsTracked(artistName) ? 1 : 0);
+  }
   return artistIsTracked(artistName) ? 1 : 0;
 }
 

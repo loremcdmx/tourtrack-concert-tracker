@@ -644,6 +644,10 @@ async function instantResume(opts = {}) {
     // Rebuild concerts from IDB artist cache
     const keys = await DB.keys('artists');
     const artistKeys = keys.filter(k => k !== '__ping__');
+    setScannedArtists(artistKeys);
+    if (!TRACKED_ARTISTS.length) {
+      setTrackedArtists([...ARTISTS, ...Object.keys(ARTIST_PLAYS || {}), ...artistKeys]);
+    }
     concerts = [];
     for (const key of artistKeys) {
       try {
@@ -983,6 +987,8 @@ async function legacyRunSpotifyImport(opts = {}) {
     const allArtists = Object.values(artistMap).sort((a, b) => b.count - a.count);
     const minT = _minTracksFilter || 1;
     const artists = minT > 1 ? allArtists.filter(a => a.count >= minT) : allArtists;
+    setTrackedArtists(allArtists.map(a => a.name));
+    ARTIST_PLAYS = Object.fromEntries(allArtists.map(a => [a.name.toLowerCase(), a.count]));
     const skipped = allArtists.length - artists.length;
     if (skipped > 0) dblog('info', `Min-tracks filter (≥${minT}): kept ${artists.length} artists, skipped ${skipped} with fewer tracks`);
     const lines = artists.map(a => `${a.name} ${a.count}`);
@@ -1103,6 +1109,8 @@ async function runSpotifyImport(opts = {}) {
 
     const minT = _minTracksFilter || 1;
     const artists = minT > 1 ? allArtists.filter(a => a.count >= minT) : allArtists;
+    setTrackedArtists(allArtists.map(a => a.name));
+    ARTIST_PLAYS = Object.fromEntries(allArtists.map(a => [a.name.toLowerCase(), a.count]));
     if (!artists.length) {
       throw new Error(`No artists matched the current threshold (${minT}+ tracks).`);
     }

@@ -72,6 +72,37 @@ async function clearArtistCache() {
 // ═══════════════════════════════════════════════════════════════
 // STORAGE — localStorage for settings + display data
 // ═══════════════════════════════════════════════════════════════
+function uniqueArtistNames(names) {
+  const seen = new Set();
+  const out = [];
+  for (const value of names || []) {
+    const name = String(value || '').trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+function artistNameInList(list, name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return false;
+  return (list || []).some(value => String(value || '').trim().toLowerCase() === key);
+}
+
+function setTrackedArtists(names) {
+  TRACKED_ARTISTS = uniqueArtistNames(names);
+}
+
+function setScannedArtists(names) {
+  SCANNED_ARTISTS = uniqueArtistNames(names);
+}
+
+function inferConcertArtists(list = concerts) {
+  return uniqueArtistNames((list || []).map(c => c && c.artist));
+}
+
 function persistSettings() {
   try {
     localStorage.setItem('tt_key',     API_KEY);
@@ -91,10 +122,12 @@ function persistSettings() {
       // should ever overwrite them.
       localStorage.setItem('tt_artists', JSON.stringify(ARTISTS));
       localStorage.setItem('tt_plays',   JSON.stringify(ARTIST_PLAYS));
+      localStorage.setItem('tt_tracked_artists', JSON.stringify(TRACKED_ARTISTS));
       // Also keep a dedicated Main backup so restore() can always
       // distinguish "true Main data" from "last non-Main data".
       localStorage.setItem('tt_main_artists', JSON.stringify(ARTISTS));
       localStorage.setItem('tt_main_plays',   JSON.stringify(ARTIST_PLAYS));
+      localStorage.setItem('tt_main_tracked_artists', JSON.stringify(TRACKED_ARTISTS));
     }
     // Non-Main profiles never touch tt_artists / tt_plays — their data
     // lives exclusively in the tt_profiles[name] snapshot (updated below).
@@ -109,6 +142,7 @@ function persistData() {
   try {
     localStorage.setItem('tt_concerts',  JSON.stringify(concerts));
     localStorage.setItem('tt_festivals', JSON.stringify(festivals));
+    localStorage.setItem('tt_scanned_artists', JSON.stringify(SCANNED_ARTISTS));
   } catch(e) {}
   if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
 }
@@ -138,13 +172,18 @@ function restore() {
     // tt_artists may be stale with a non-Main profile's data from before this fix.
     const _mainArtRaw  = localStorage.getItem('tt_main_artists');
     const _mainPlayRaw = localStorage.getItem('tt_main_plays');
+    const _mainTrackedRaw = localStorage.getItem('tt_main_tracked_artists');
     if (_mainArtRaw) {
       ARTISTS      = JSON.parse(_mainArtRaw);
       ARTIST_PLAYS = _mainPlayRaw ? JSON.parse(_mainPlayRaw) : {};
+      TRACKED_ARTISTS = _mainTrackedRaw
+        ? JSON.parse(_mainTrackedRaw)
+        : JSON.parse(localStorage.getItem('tt_tracked_artists') || '[]');
     } else {
       // No backup yet (first run after update) — fall back to tt_artists
       ARTISTS      = JSON.parse(localStorage.getItem('tt_artists') || '[]');
       ARTIST_PLAYS = JSON.parse(localStorage.getItem('tt_plays')   || '{}');
+      TRACKED_ARTISTS = JSON.parse(localStorage.getItem('tt_tracked_artists') || '[]');
     }
     countryMode      = localStorage.getItem('tt_cmode') || 'world'; // default: worldwide
     includeCountries = new Set(JSON.parse(localStorage.getItem('tt_inc') || '["GB","DE","FR","NL","BE","ES","IT","SE","DK","NO","FI","PL","CZ","AT","CH","PT","IE","HU","RO","GR","HR","SK","BG","RS","LT","LV","EE","IS","LU","UA","TR"]'));
@@ -152,6 +191,7 @@ function restore() {
     hiddenArtists    = JSON.parse(localStorage.getItem('tt_hidden') || '{}');
     concerts         = JSON.parse(localStorage.getItem('tt_concerts') || '[]');
     festivals        = JSON.parse(localStorage.getItem('tt_festivals') || '[]');
+    SCANNED_ARTISTS  = JSON.parse(localStorage.getItem('tt_scanned_artists') || '[]');
     cacheTimestamp   = parseInt(localStorage.getItem('tt_cachets') || '0', 10);
     geoPreset        = localStorage.getItem('tt_geo_preset') || 'all';
     artistPreset     = localStorage.getItem('tt_artist_preset') || 'all';
@@ -164,11 +204,21 @@ function restore() {
     const oldExc = localStorage.getItem('tt3_exc') || localStorage.getItem('tt_exc_legacy');
     if (!hiddenArtists || typeof hiddenArtists !== 'object') hiddenArtists = {};
     if (!ARTIST_PLAYS  || typeof ARTIST_PLAYS  !== 'object') ARTIST_PLAYS  = {};
+    if (!Array.isArray(TRACKED_ARTISTS)) TRACKED_ARTISTS = [];
+    if (!Array.isArray(SCANNED_ARTISTS)) SCANNED_ARTISTS = [];
     favoriteArtists = new Set(JSON.parse(localStorage.getItem('tt_favs') || '[]'));
     // Re-apply dedup to cached data (catches duplicates from old scans)
     if (concerts.length) concerts = deduplicateConcerts(concerts);
     if (festivals.length && typeof normalizeFestivalLabels === 'function') festivals = normalizeFestivalLabels(festivals);
-  } catch(e) { hiddenArtists = {}; ARTIST_PLAYS = {}; favoriteArtists = new Set(); geoPreset = 'all'; artistPreset = 'all'; }
+    if (!SCANNED_ARTISTS.length && concerts.length) SCANNED_ARTISTS = inferConcertArtists(concerts);
+    if (!TRACKED_ARTISTS.length) {
+      TRACKED_ARTISTS = uniqueArtistNames([
+        ...ARTISTS,
+        ...Object.keys(ARTIST_PLAYS || {}),
+        ...SCANNED_ARTISTS,
+      ]);
+    }
+  } catch(e) { hiddenArtists = {}; ARTIST_PLAYS = {}; TRACKED_ARTISTS = []; SCANNED_ARTISTS = []; favoriteArtists = new Set(); geoPreset = 'all'; artistPreset = 'all'; }
 }
 
 function cacheAge() {
@@ -195,6 +245,8 @@ function buildSavePayload(label) {
     label: label || 'Save',
     savedAt: Date.now(),
     artists: ARTISTS,
+    trackedArtists: TRACKED_ARTISTS,
+    scannedArtists: SCANNED_ARTISTS,
     plays: ARTIST_PLAYS,
     concerts, festivals,
     cacheTimestamp,
@@ -268,6 +320,8 @@ function loadGameFile(ev) {
 
 function applyLoadedState(data, filename) {
   ARTISTS          = data.artists      || [];
+  TRACKED_ARTISTS  = data.trackedArtists || data.playlistArtists || data.artists || [];
+  SCANNED_ARTISTS  = data.scannedArtists || [];
   ARTIST_PLAYS     = data.plays        || {};
   concerts         = data.concerts     || [];
   festivals        = data.festivals    || [];
@@ -282,6 +336,14 @@ function applyLoadedState(data, filename) {
 
   // Re-apply dedup (may have been saved before 2-pass dedup)
   if (concerts.length) concerts = deduplicateConcerts(concerts);
+  if (!SCANNED_ARTISTS.length && concerts.length) SCANNED_ARTISTS = inferConcertArtists(concerts);
+  if (!TRACKED_ARTISTS.length) {
+    TRACKED_ARTISTS = uniqueArtistNames([
+      ...ARTISTS,
+      ...Object.keys(ARTIST_PLAYS || {}),
+      ...SCANNED_ARTISTS,
+    ]);
+  }
 
   persistData();
 

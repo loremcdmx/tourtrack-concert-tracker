@@ -29,7 +29,12 @@ initMap();
 
 if (ARTISTS.length) {
   const ta = document.getElementById('artists-ta');
-  if (ta) ta.value = ARTISTS.join('\n');
+  if (ta) {
+    ta.value = ARTISTS.map(name => {
+      const plays = Number((ARTIST_PLAYS || {})[String(name || '').toLowerCase()] || 0);
+      return plays > 0 ? `${name} ${plays}` : name;
+    }).join('\n');
+  }
 }
 updateArtistCount();
 
