@@ -31,6 +31,19 @@ const DB = (() => {
   return {
     get:     (store, key)      => tx(store, 'readonly',  s => s.get(key)),
     put:     (store, key, val) => tx(store, 'readwrite', s => s.put(val, key)),
+    putMany: (store, entries)  => open().then(() => new Promise((res, rej) => {
+      const list = Array.isArray(entries) ? entries : [];
+      if (!list.length) {
+        res();
+        return;
+      }
+      const t = _db.transaction(store, 'readwrite');
+      const s = t.objectStore(store);
+      t.oncomplete = () => res();
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error || new Error('IndexedDB transaction aborted'));
+      list.forEach(([key, val]) => s.put(val, key));
+    })),
     delete:  (store, key)      => tx(store, 'readwrite', s => s.delete(key)),
     keys:    (store)           => tx(store, 'readonly',  s => s.getAllKeys()),
     getAll:  (store)           => tx(store, 'readonly',  s => s.getAll()),
@@ -63,6 +76,7 @@ async function clearArtistCache() {
   try {
     await DB.clear('artists');
     await DB.clear('artistKnowledge');
+    if (typeof clearArtistMediaSeedMarker === 'function') clearArtistMediaSeedMarker();
     await DB.delete('meta', 'festivals');
     if (typeof clearOnboardCacheSummary === 'function') clearOnboardCacheSummary();
     softNotice('Cache cleared - next scan will re-fetch everything.', 'ok');

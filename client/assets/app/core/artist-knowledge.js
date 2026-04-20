@@ -3,6 +3,9 @@
 const ARTIST_KNOWLEDGE_TTL = 14 * 24 * 3600e3;
 const ARTIST_KNOWLEDGE_MISS_TTL = 12 * 3600e3;
 const ARTIST_KNOWLEDGE_VER = 2;
+const ARTIST_MEDIA_SEED_VERSION = 2026042001;
+const ARTIST_MEDIA_SEED_STORAGE_KEY = 'tt_artist_media_seed_version';
+const ARTIST_MEDIA_SEED_URL = '/assets/data/artist-media-seed.json';
 
 const artistKnowledgeCache = new Map();
 const artistKnowledgeAliasCache = new Map();
@@ -10,6 +13,7 @@ const artistMediaCache = new Map();
 const artistMediaInflight = new Map();
 const artistMediaPrimed = new Set();
 let artistAvatarObserver = null;
+let artistMediaSeedImportPromise = null;
 
 function artistMediaKey(artist) {
   return _normText(artist || '');
@@ -197,6 +201,128 @@ function persistArtistKnowledge(key, record) {
   if (!key || !record || typeof DB === 'undefined') return;
   const normalized = cacheArtistKnowledgeRecord(key, record);
   DB.put('artistKnowledge', key, normalized).catch(() => {});
+}
+
+function _artistMediaSeedImportedVersion() {
+  try {
+    return Number(localStorage.getItem(ARTIST_MEDIA_SEED_STORAGE_KEY) || 0) || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function _setArtistMediaSeedImportedVersion(version) {
+  try {
+    localStorage.setItem(ARTIST_MEDIA_SEED_STORAGE_KEY, String(version || 0));
+  } catch (_) {}
+}
+
+function clearArtistMediaSeedMarker() {
+  try {
+    localStorage.removeItem(ARTIST_MEDIA_SEED_STORAGE_KEY);
+  } catch (_) {}
+}
+
+async function importArtistMediaSeed(opts = {}) {
+  if (artistMediaSeedImportPromise && !opts.force) return artistMediaSeedImportPromise;
+  artistMediaSeedImportPromise = (async () => {
+    if (typeof DB === 'undefined' || typeof fetch !== 'function') {
+      return { imported: 0, skipped: 0, reason: 'unavailable' };
+    }
+
+    const currentVersion = _artistMediaSeedImportedVersion();
+    if (!opts.force && currentVersion >= ARTIST_MEDIA_SEED_VERSION) {
+      return { imported: 0, skipped: 0, reason: 'current' };
+    }
+
+    let seed = null;
+    try {
+      const res = await fetch(`${ARTIST_MEDIA_SEED_URL}?v=${ARTIST_MEDIA_SEED_VERSION}`);
+      if (!res.ok) return { imported: 0, skipped: 0, reason: `http:${res.status}` };
+      seed = await res.json();
+    } catch (_) {
+      return { imported: 0, skipped: 0, reason: 'fetch-failed' };
+    }
+
+    const version = Number(seed?.version || 0) || ARTIST_MEDIA_SEED_VERSION;
+    const records = Array.isArray(seed?.records) ? seed.records : [];
+    if (!records.length) {
+      _setArtistMediaSeedImportedVersion(version);
+      return { imported: 0, skipped: 0, reason: 'empty' };
+    }
+
+    const existing = new Map();
+    try {
+      const existingKeys = await DB.keys('artistKnowledge');
+      const existingRecords = await DB.getAll('artistKnowledge');
+      existingKeys.forEach((key, idx) => {
+        const record = existingRecords[idx];
+        if (record) existing.set(key, record);
+      });
+    } catch (_) {}
+
+    let imported = 0;
+    let skipped = 0;
+    let pendingWrites = [];
+    const flushWrites = async () => {
+      if (!pendingWrites.length) return;
+      const batch = pendingWrites;
+      pendingWrites = [];
+      try {
+        if (typeof DB.putMany === 'function') {
+          await DB.putMany('artistKnowledge', batch);
+        } else {
+          for (const [key, record] of batch) await DB.put('artistKnowledge', key, record);
+        }
+        imported += batch.length;
+      } catch (_) {
+        skipped += batch.length;
+      }
+      await new Promise(resolve => setTimeout(resolve, 0));
+    };
+
+    for (const item of records) {
+      const media = _normalizeKnowledgeMediaNode(item?.media);
+      const seedHasImage = !!artistKnowledgeToMedia(media);
+      if (!media || (!media.miss && !seedHasImage)) {
+        skipped += 1;
+        continue;
+      }
+
+      const artist = item.artist || media.matchName || item.key || '';
+      const key = artistMediaKey(item.key || artist);
+      if (!key) {
+        skipped += 1;
+        continue;
+      }
+
+      const current = existing.get(key) || null;
+      if (!opts.force && current && artistKnowledgeMediaFresh(current)) {
+        const currentHasImage = !!artistKnowledgeToMedia(current);
+        if (currentHasImage || current.media?.miss) {
+          skipped += 1;
+          continue;
+        }
+      }
+
+      const normalized = normalizeArtistKnowledgeRecord({
+        ...(current || {}),
+        artist: current?.artist || artist,
+        aliases: _knowledgeList(current?.aliases || [], item.aliases || [], artist, media.matchName || ''),
+        media,
+        updatedAt: Math.max(Number(current?.updatedAt || 0) || 0, media.fetchedAt || Date.now()),
+      }, artist);
+
+      cacheArtistKnowledgeRecord(key, normalized);
+      pendingWrites.push([key, normalized]);
+      if (pendingWrites.length >= 180) await flushWrites();
+    }
+    await flushWrites();
+
+    _setArtistMediaSeedImportedVersion(version);
+    return { imported, skipped, total: records.length, version };
+  })();
+  return artistMediaSeedImportPromise;
 }
 
 async function mergeArtistKnowledge(artist, patch = {}) {
@@ -479,4 +605,12 @@ function primeArtistMediaKnowledge(artists, limit = 24) {
       fetchArtistMedia(artist).catch(() => {});
     }, idx * 140);
   });
+}
+
+if (typeof window !== 'undefined') {
+  window.importArtistMediaSeed = importArtistMediaSeed;
+  window.clearArtistMediaSeedMarker = clearArtistMediaSeedMarker;
+  window.setTimeout(() => {
+    importArtistMediaSeed().catch(() => {});
+  }, 1200);
 }
