@@ -849,7 +849,7 @@ function applyDateFilterValue(f, fromDate, toDate) {
 
 function setDateFilter(f, fromDate, toDate) {
   applyDateFilterValue(f, fromDate, toDate);
-  renderCalendar(); renderMap(); _updateTally();
+  renderCalendar(); refreshFilteredMap(); _updateTally();
 }
 
 // setPlaysFilter removed — use setScoreFilter instead
@@ -875,7 +875,7 @@ function toggleFavOnly() {
   showFavOnly = !showFavOnly;
   const btn = document.getElementById('lt-fav');
   if (btn) { btn.style.color = showFavOnly ? '#ffd700' : ''; btn.style.borderColor = showFavOnly ? '#ffd700' : ''; }
-  renderMap();
+  refreshFilteredMap();
 }
 
 function resetFavorites() {
@@ -885,13 +885,13 @@ function resetFavorites() {
   if (btn) btn.style.display = 'none';
   persistSettings();
   buildSidebar();
-  renderMap();
+  refreshFilteredMap();
 }
 
 function toggleType(t) {
   if (t === 'shows') { showShows = !showShows; document.querySelector('[data-t=shows]').classList.toggle('on', showShows); }
   else               { showFests  = !showFests;  document.querySelector('[data-t=fests]').classList.toggle('on', showFests); }
-  renderCalendar(); renderMap();
+  renderCalendar(); refreshFilteredMap();
 }
 
 function dateFilter_(arr) {
@@ -924,7 +924,7 @@ function applyScoreFilterLevel(level) {
 
 function setScoreFilter(level) {
   applyScoreFilterLevel(level);
-  renderCalendar(); renderMap(); _updateTally();
+  renderCalendar(); refreshFilteredMap(); _updateTally();
 }
 
 // ── MAP-SPECIFIC FILTER HELPERS ──────────────────────────────────────
@@ -1016,6 +1016,20 @@ function withMapSpinner(workFn) {
   });
 }
 
+function refreshFilteredMap(opts = {}) {
+  const smartFit = opts.smartFit !== false;
+  if (focusedArtist || focusedFest) {
+    renderMap({ smartFit });
+    return;
+  }
+  withMapSpinner(() => {
+    _rebuildMapData();
+    buildSidebar();
+    clearMapLayers();
+    renderOverview({ smartFit });
+  });
+}
+
 let _scheduledUiRefreshRaf = 0;
 let _scheduledUiRefreshPending = false;
 const CALENDAR_RENDER_BATCH_SIZE = 60;
@@ -1057,13 +1071,13 @@ function setMapType(t) {
   // Sync sidebar tab to match map type
   if (t === 'fests' && sidebarTab === 'tours') setTab('fests');
   else if (t === 'tours' && sidebarTab === 'fests') setTab('tours');
-  else withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
+  refreshFilteredMap();
 }
 function setMapScore(s) {
   applyScoreFilterLevel(s);
   renderCalendar();
   _updateTally();
-  withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
+  refreshFilteredMap();
 }
 function setMapDate(d) {
   mapDateMode = d;
@@ -1085,7 +1099,7 @@ function setMapDate(d) {
   }
   renderCalendar();
   _updateTally();
-  withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
+  refreshFilteredMap();
 }
 function applyMapRange() {
   mapDateFrom = document.getElementById('mfilt-from')?.value || '';
@@ -1093,7 +1107,7 @@ function applyMapRange() {
   applyDateFilterValue('range', mapDateFrom, mapDateTo);
   renderCalendar();
   _updateTally();
-  withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
+  refreshFilteredMap();
 }
 
 function setMapMaxArtists(n) {
@@ -1126,7 +1140,7 @@ function setGeoQuick(mode) {
   geoNoCA  = (mode === 'nocanada' || mode === 'nousacanada');
   geoQuick = mode;
   _syncGeoButtons();
-  renderCalendar(); _updateTally();
+  renderCalendar(); refreshFilteredMap(); _updateTally();
 }
 
 function toggleGeoExclude(cc) {
@@ -1134,8 +1148,7 @@ function toggleGeoExclude(cc) {
   if (cc === 'CA') geoNoCA  = !geoNoCA;
   if (cc === 'GB') geoNoGB  = !geoNoGB;
   _syncGeoButtons();
-  _mapFirstFit = false;
-  renderCalendar(); renderMap(); _updateTally();
+  renderCalendar(); refreshFilteredMap(); _updateTally();
 }
 
 function _syncGeoButtons() {
@@ -1167,9 +1180,8 @@ function setGeoPreset(preset) {
   geoPreset = preset;
   _syncGeoButtons();
   persistSettings();
-  _mapFirstFit = false;
   renderCalendar();
-  renderMap();
+  refreshFilteredMap();
   _updateTally();
 }
 

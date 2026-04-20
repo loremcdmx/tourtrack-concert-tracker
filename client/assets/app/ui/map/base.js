@@ -273,6 +273,9 @@ function updateVisiblePanel() {
   const visibleTours = [];
   if (mapTypeFilter !== 'fests') {
     for (const [artist, evs] of Object.entries(allTourData)) {
+      if (typeof _mapRenderedTourArtists !== 'undefined'
+          && _mapRenderedTourArtists.size
+          && !_mapRenderedTourArtists.has(artist)) continue;
       if (isHidden(artist)) continue;
       if (!mapScoreOkArtist(artist)) continue;
       const next = evs.find(e =>
@@ -384,7 +387,7 @@ function updateVisiblePanel() {
   list.appendChild(frag);
 }
 
-function renderMap() {
+function renderMap(opts = {}) {
   initMap();
   clearMapLayers();
   const today = new Date().toISOString().split('T')[0];
@@ -407,7 +410,7 @@ function renderMap() {
   // renderFocusMode handles the case where allTourData[focusedArtist] is missing
   // (case-insensitive fallback + rebuild guard are inside renderFocusMode itself).
   if (focusedArtist) renderFocusMode(focusedArtist);
-  else renderOverview();
+  else renderOverview(opts);
 }
 
 // ── MAP SIDEBAR TOGGLE ───────────────────────────────────────────

@@ -4,6 +4,85 @@ let MAP_MAX_ARTISTS = 30;
 let _mapWasCapped = false;   // true when last render trimmed to top 20
 let _mapFirstFit  = false;   // becomes true after the first fitBounds — prevents jumping on filter changes
 
+let _mapRenderedTourArtists = new Set();
+
+function _mapArtistQualityLabel(level) {
+  if (level >= 4) return 'Top+';
+  if (level >= 3) return 'High+';
+  if (level >= 2) return 'Mid+';
+  if (level >= 1) return 'Low+';
+  return '';
+}
+
+function _mapArtistVisualLevel(artist, plays, isFav) {
+  if (isFav) return 4;
+  const scoreLevel = typeof artistScoreLevel === 'function'
+    ? Number(artistScoreLevel(artist)) || 0
+    : 0;
+  const playLevel = plays >= 20 ? 4 : plays >= 5 ? 3 : plays >= 1 ? 1 : 0;
+  return Math.max(scoreLevel, playLevel);
+}
+
+function _mapMarkerLatLngPoints() {
+  const points = [];
+  tourMarkers.forEach(marker => {
+    const ll = marker.getLatLng?.();
+    if (ll) points.push([ll.lat, ll.lng]);
+  });
+  festMarkers.forEach(marker => {
+    const ll = marker.getLatLng?.();
+    if (ll) points.push([ll.lat, ll.lng]);
+  });
+  return points;
+}
+
+function _mapRouteLatLngPoints() {
+  const points = [];
+  routeLines.forEach(line => {
+    const latLngs = line.getLatLngs?.() || [];
+    latLngs.forEach(pt => {
+      if (Array.isArray(pt)) {
+        pt.forEach(inner => {
+          if (inner?.lat != null && inner?.lng != null) points.push([inner.lat, inner.lng]);
+        });
+      } else if (pt?.lat != null && pt?.lng != null) {
+        points.push([pt.lat, pt.lng]);
+      }
+    });
+  });
+  return points;
+}
+
+function _mapShouldSmartFit(points) {
+  if (!lmap || !points.length) return false;
+  const bounds = lmap.getBounds().pad(0.04);
+  const visibleCount = points.reduce((count, point) => count + (bounds.contains(point) ? 1 : 0), 0);
+  if (visibleCount === 0) return true;
+  const requiredVisible = Math.min(
+    points.length,
+    Math.min(10, Math.max(3, Math.ceil(points.length * 0.25)))
+  );
+  return visibleCount < requiredVisible;
+}
+
+function _mapMaybeFitFilteredView(opts = {}) {
+  if (!lmap) return;
+  const markerPoints = _mapMarkerLatLngPoints();
+  const routePoints = markerPoints.length ? [] : _mapRouteLatLngPoints();
+  const fitPoints = markerPoints.length ? markerPoints : routePoints;
+  if (!fitPoints.length) return;
+
+  const firstFit = !_mapFirstFit;
+  const smartFit = !!opts.smartFit && !firstFit && _mapShouldSmartFit(markerPoints.length ? markerPoints : fitPoints);
+  if (!firstFit && !smartFit) return;
+
+  const bounds = L.latLngBounds(fitPoints);
+  if (!bounds.isValid()) return;
+  lmap.fitBounds(bounds, { padding: [48, 48], maxZoom: 7, animate: false });
+  _mapFirstFit = true;
+  if (typeof scheduleMapTileWarmup === 'function') scheduleMapTileWarmup(20);
+}
+
 function _mapCreateEl(tag, className, text) {
   const el = document.createElement(tag);
   if (className) el.className = className;
@@ -551,6 +630,10 @@ function renderOverview(opts = {}) {
   // produces a noisy unreadable dot-cloud. Cap the map to the top 20 by
   // rank score so the most relevant artists are always visible.
   const totalPassing = tourEntries.length;
+  const totalPassingConcerts = tourEntries.reduce(
+    (sum, [, evs]) => sum + evs.filter(e => e.lat && e.date >= today).length,
+    0
+  );
   if (totalPassing > MAP_MAX_ARTISTS) {
     // Sort descending by rank
     const ranked = tourEntries
@@ -559,7 +642,6 @@ function renderOverview(opts = {}) {
 
     // Take top N
     const top = ranked.slice(0, MAP_MAX_ARTISTS);
-    const topSet = new Set(top.map(x => x.artist));
 
     // Country coverage: for each country that has concerts but no artist in top N,
     // add the highest-ranked artist from that country
@@ -585,8 +667,8 @@ function renderOverview(opts = {}) {
   const capNotice = document.getElementById('map-cap-notice');
   if (capNotice) {
     if (_mapWasCapped) {
-      capNotice.textContent = `Top ${MAP_MAX_ARTISTS} of ${totalPassing} shown — use filters to narrow`;
       capNotice.style.display = '';
+      capNotice.textContent = `Map cap: ${tourEntries.length} of ${totalPassing} artists shown (${totalPassingConcerts} geolocated concerts match filters)`;
     } else {
       capNotice.style.display = 'none';
     }
@@ -596,6 +678,8 @@ function renderOverview(opts = {}) {
   // We clip each artist's route to only include points that are within
   // the viewport (padded 80%) so zooming into a region doesn't show
   // dangling lines flying off to distant continents.
+  _mapRenderedTourArtists = new Set(tourEntries.map(([artist]) => artist));
+
   if (!preserveRoutes) {
     clearRouteLines();
     const bounds = lmap.getBounds().pad(0.8);
@@ -719,6 +803,8 @@ function renderOverview(opts = {}) {
   if (!showMapFests) clearFestMarkers();
 
   updateVisiblePanel();
+  _mapMaybeFitFilteredView(opts);
+  updateVisiblePanel();
 
   // ── Auto-fit: on the very first render with data, fly to the bounding box
   // of all visible markers so the map opens at a sensible zoom level.
@@ -768,26 +854,29 @@ function _renderArtistPill(artist, ev, rank, today, in7, in30, jitterIdx) {
   const col    = getColor(artist);
   const plays  = typeof artistPlayCount === 'function' ? artistPlayCount(artist) : (ARTIST_PLAYS[(artist || '').toLowerCase()] || 0);
   const isFav  = favoriteArtists.has((artist || '').toLowerCase());
+  const visualLevel = _mapArtistVisualLevel(artist, plays, isFav);
   const acc    = isFav ? '#ffd700' : col;
   const urgency = ev.date <= in7  ? 'urgent' :
                   ev.date <= in30 ? 'soon'   : 'far';
   const glow   = isFav               ? `0 0 14px rgba(255,215,0,.65)` :
                  urgency === 'urgent' ? `0 0 12px ${col}90` :
                  urgency === 'soon'   ? `0 0 7px ${col}60` : 'none';
-  const dimOp  = urgency === 'far' && !isFav && plays === 0 ? '.45' : '1';
+  const dimOp  = urgency === 'far' && !isFav && plays === 0 && visualLevel < 2 ? '.45' : '1';
 
-  const tierS  = plays >= 20 || isFav;
-  const tierA  = plays >= 5;
-  const tierB  = plays >= 1;
+  const tierS  = visualLevel >= 4 || isFav;
+  const tierA  = visualLevel >= 2;
+  const tierB  = visualLevel >= 1;
 
   let html, iconW, iconH, anchorX, anchorY;
 
   if (tierS || tierA) {
     const metaParts = [_mapShortDate(ev.date)];
     if (plays > 0) metaParts.push(`${plays} plays`);
+    const qualityLabel = _mapArtistQualityLabel(visualLevel);
+    if (qualityLabel && visualLevel >= 2) metaParts.push(qualityLabel);
     if (isFav) metaParts.push('Fav');
     const metaLabel = metaParts.filter(Boolean).join(' / ');
-    const estW = Math.min(240, Math.max(108, artist.length * (tierS ? 7.3 : 6.8) + 84 + (metaLabel.length > 12 ? 22 : 0)));
+    const estW = Math.min(280, Math.max(108, artist.length * (tierS ? 7.3 : 6.8) + 78 + Math.min(74, metaLabel.length * 3.1)));
     const markerHeight = tierS ? 34 : 30;
 
     html = `<div class="map-tour-marker ${tierS ? 'is-hero' : 'is-strong'} ${isFav ? 'is-fav' : ''} is-${urgency}"
