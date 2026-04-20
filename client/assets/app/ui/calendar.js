@@ -635,11 +635,35 @@ function dateMatchesPreset(dateStr, filter = dateFilter) {
   });
 }
 
-function setDateFilter(f, fromDate, toDate) {
+function _dateFilterToMapMode(filter) {
+  if (filter === 'all') return 'all';
+  if (filter === '7') return 'week';
+  if (filter === '30') return 'month';
+  if (filter === 'range') return 'range';
+  return 'calendar';
+}
+
+function applyDateFilterValue(f, fromDate, toDate) {
   dateFilter = f;
-  if (f === 'range') { calDateFrom = fromDate || ''; calDateTo = toDate || ''; }
+  mapDateMode = _dateFilterToMapMode(f);
+  if (f === 'range') {
+    calDateFrom = fromDate || '';
+    calDateTo = toDate || '';
+    mapDateFrom = calDateFrom;
+    mapDateTo = calDateTo;
+  }
   else { const chip = document.getElementById('drp-chip'); if (chip) chip.textContent = '📅'; }
   document.querySelectorAll('.chip[data-d]').forEach(c => c.classList.toggle('on', c.dataset.d === f));
+  document.querySelectorAll('[data-md],[data-md2]').forEach(b => {
+    const val = b.dataset.md || b.dataset.md2;
+    b.classList.toggle('on', val === mapDateMode);
+  });
+  const rangeRow = document.getElementById('mfilt-range-row');
+  if (rangeRow) rangeRow.style.display = f === 'range' ? '' : 'none';
+}
+
+function setDateFilter(f, fromDate, toDate) {
+  applyDateFilterValue(f, fromDate, toDate);
   renderCalendar(); renderMap(); _updateTally();
 }
 
@@ -717,17 +741,6 @@ function setScoreFilter(level) {
 // ── MAP-SPECIFIC FILTER HELPERS ──────────────────────────────────────
 // Map date filters stay map-local. Score is global, shared with calendar chips,
 // so concerts and festivals are filtered identically in the list and on the map.
-function _mapDateWindowBounds(today) {
-  if (mapDateMode === 'week') return { from: today, to: dateOffset(7) };
-  if (mapDateMode === 'month') return { from: today, to: dateOffset(30) };
-  if (mapDateMode === 'range') {
-    return {
-      from: mapDateFrom || today,
-      to: mapDateTo || dateOffset(30),
-    };
-  }
-  return { from: today, to: '' };
-}
 function mapScoreOkArtist(name) {
   const level = Number(mapScoreFilter) || 0;
   return artistScoreOk(name, level);
@@ -739,10 +752,7 @@ function mapScoreOkFest(f) {
 }
 function mapDateOk(dateStr) {
   if (!dateStr) return false;
-  const today = new Date().toISOString().split('T')[0];
-  if (dateStr < today) return false;
-  const { from, to } = _mapDateWindowBounds(today);
-  return dateStr >= from && (!to || dateStr <= to);
+  return dateMatchesPreset(dateStr);
 }
 
 // ── MAP RENDER PIPELINE ──────────────────────────────────────────────────
@@ -868,12 +878,9 @@ function setMapScore(s) {
 }
 function setMapDate(d) {
   mapDateMode = d;
-  document.querySelectorAll('[data-md],[data-md2]').forEach(b => {
-    const val = b.dataset.md || b.dataset.md2;
-    b.classList.toggle('on', val === d);
-  });
   const rangeRow = document.getElementById('mfilt-range-row');
   if (rangeRow) rangeRow.style.display = d === 'range' ? '' : 'none';
+  const preset = d === 'week' ? '7' : d === 'month' ? '30' : d;
   if (d === 'range') {
     const today = new Date().toISOString().split('T')[0];
     const end   = dateOffset(30);
@@ -883,12 +890,20 @@ function setMapDate(d) {
     if (toEl   && !toEl.value)   toEl.value   = end;
     mapDateFrom = fromEl?.value || today;
     mapDateTo   = toEl?.value   || end;
+    applyDateFilterValue('range', mapDateFrom, mapDateTo);
+  } else {
+    applyDateFilterValue(preset);
   }
-  if (d !== 'range') withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
+  renderCalendar();
+  _updateTally();
+  withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
 }
 function applyMapRange() {
   mapDateFrom = document.getElementById('mfilt-from')?.value || '';
   mapDateTo   = document.getElementById('mfilt-to')?.value   || '';
+  applyDateFilterValue('range', mapDateFrom, mapDateTo);
+  renderCalendar();
+  _updateTally();
   withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
 }
 

@@ -220,7 +220,7 @@ function _renderFestCluster(items) {
   const mk = L.marker(center, { icon, zIndexOffset:zIndex })
     .addTo(lmap)
     .bindPopup(() => _buildFestClusterPopup(ranked, center), {
-      maxWidth: 360,
+      maxWidth: 460,
       className: 'map-popup-shell map-popup-shell--festival'
     });
   festMarkers.push(mk);
@@ -491,7 +491,7 @@ function _renderFestLabels() {
     const icon = L.divIcon({ className: '', iconSize: [w, h], iconAnchor: [anchorX, anchorY], html });
     const mk = L.marker([f.lat, f.lng], { icon, zIndexOffset: Math.round(item.priority + score * 5) })
       .addTo(lmap)
-      .bindPopup(() => _buildFestPopup(f), { maxWidth: 360, className: 'map-popup-shell map-popup-shell--festival' });
+      .bindPopup(() => _buildFestPopup(f), { maxWidth: 460, className: 'map-popup-shell map-popup-shell--festival' });
     festMarkers.push(mk);
   });
 
