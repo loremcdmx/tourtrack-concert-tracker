@@ -475,13 +475,16 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   justify-content:center; width:34px; height:34px; flex:0 0 auto; border-radius:50%; overflow:hidden;
   background:linear-gradient(135deg,rgba(255,255,255,.07),rgba(255,255,255,.02)),var(--s3);
   border:1px solid rgba(255,255,255,.12); box-shadow:0 8px 20px rgba(0,0,0,.2); }
-.artist-avatar::after { content:''; position:absolute; right:2px; bottom:2px; width:7px; height:7px;
+.artist-avatar::after { content:''; position:absolute; right:2px; bottom:2px; width:7px; height:7px; z-index:3;
   border-radius:50%; background:var(--artist-avatar-accent); box-shadow:0 0 10px rgba(0,0,0,.35); }
-.artist-avatar img { width:100%; height:100%; object-fit:cover; display:none; }
-.artist-avatar.has-image img { display:block; }
-.artist-avatar.has-image .artist-avatar-fallback { display:none; }
-.artist-avatar-fallback { font-family:'DM Mono',monospace; font-size:.62rem; font-weight:700;
-  letter-spacing:.06em; text-transform:uppercase; color:var(--text); opacity:.88; pointer-events:none; }
+.artist-avatar img { position:absolute; inset:0; z-index:1; width:100%; height:100%; object-fit:cover; display:block;
+  opacity:0; transition:opacity .14s ease; }
+.artist-avatar.has-image img { opacity:1; }
+.artist-avatar.has-image .artist-avatar-fallback { opacity:0; }
+.artist-avatar-fallback { position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center;
+  font-family:'DM Mono',monospace; font-size:.62rem; font-weight:700;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--text); opacity:.88; pointer-events:none;
+  transition:opacity .12s ease; }
 .artist-avatar--mx { width:30px; height:30px; }
 .artist-avatar--mx .artist-avatar-fallback { font-size:.56rem; }
 .artist-avatar--chip { width:18px; height:18px; border-color:rgba(255,255,255,.08); box-shadow:none; }
