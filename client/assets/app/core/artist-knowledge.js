@@ -3,7 +3,7 @@
 const ARTIST_KNOWLEDGE_TTL = 14 * 24 * 3600e3;
 const ARTIST_KNOWLEDGE_MISS_TTL = 12 * 3600e3;
 const ARTIST_KNOWLEDGE_VER = 2;
-const ARTIST_MEDIA_SEED_VERSION = 2026042001;
+const ARTIST_MEDIA_SEED_VERSION = 2026042002;
 const ARTIST_MEDIA_SEED_STORAGE_KEY = 'tt_artist_media_seed_version';
 const ARTIST_MEDIA_SEED_URL = '/assets/data/artist-media-seed.json';
 
@@ -223,6 +223,24 @@ function clearArtistMediaSeedMarker() {
   } catch (_) {}
 }
 
+async function hydrateStoredArtistKnowledgeCache() {
+  const existing = new Map();
+  let hydrated = 0;
+  if (typeof DB === 'undefined') return { existing, hydrated };
+  try {
+    const existingKeys = await DB.keys('artistKnowledge');
+    const existingRecords = await DB.getAll('artistKnowledge');
+    existingKeys.forEach((key, idx) => {
+      const record = existingRecords[idx];
+      if (!record) return;
+      const normalized = cacheArtistKnowledgeRecord(key, record);
+      existing.set(key, normalized);
+      if (artistKnowledgeToMedia(normalized) || normalized.media?.miss) hydrated += 1;
+    });
+  } catch (_) {}
+  return { existing, hydrated };
+}
+
 async function importArtistMediaSeed(opts = {}) {
   if (artistMediaSeedImportPromise && !opts.force) return artistMediaSeedImportPromise;
   artistMediaSeedImportPromise = (async () => {
@@ -232,7 +250,8 @@ async function importArtistMediaSeed(opts = {}) {
 
     const currentVersion = _artistMediaSeedImportedVersion();
     if (!opts.force && currentVersion >= ARTIST_MEDIA_SEED_VERSION) {
-      return { imported: 0, skipped: 0, reason: 'current' };
+      const { hydrated } = await hydrateStoredArtistKnowledgeCache();
+      return { imported: 0, skipped: 0, hydrated, reason: 'current' };
     }
 
     let seed = null;
@@ -244,22 +263,14 @@ async function importArtistMediaSeed(opts = {}) {
       return { imported: 0, skipped: 0, reason: 'fetch-failed' };
     }
 
-    const version = Number(seed?.version || 0) || ARTIST_MEDIA_SEED_VERSION;
+    const version = Math.max(Number(seed?.version || 0) || 0, ARTIST_MEDIA_SEED_VERSION);
     const records = Array.isArray(seed?.records) ? seed.records : [];
     if (!records.length) {
       _setArtistMediaSeedImportedVersion(version);
       return { imported: 0, skipped: 0, reason: 'empty' };
     }
 
-    const existing = new Map();
-    try {
-      const existingKeys = await DB.keys('artistKnowledge');
-      const existingRecords = await DB.getAll('artistKnowledge');
-      existingKeys.forEach((key, idx) => {
-        const record = existingRecords[idx];
-        if (record) existing.set(key, record);
-      });
-    } catch (_) {}
+    const { existing } = await hydrateStoredArtistKnowledgeCache();
 
     let imported = 0;
     let skipped = 0;
@@ -299,7 +310,7 @@ async function importArtistMediaSeed(opts = {}) {
       const current = existing.get(key) || null;
       if (!opts.force && current && artistKnowledgeMediaFresh(current)) {
         const currentHasImage = !!artistKnowledgeToMedia(current);
-        if (currentHasImage || current.media?.miss) {
+        if (currentHasImage || (current.media?.miss && !seedHasImage)) {
           skipped += 1;
           continue;
         }
@@ -504,6 +515,25 @@ function applyArtistMediaToAvatar(el, media) {
   if (img.complete && img.naturalWidth > 0) el.classList.add('has-image');
 }
 
+function refreshArtistAvatarImages(root = document) {
+  if (!root?.querySelectorAll) return 0;
+  let refreshed = 0;
+  root.querySelectorAll('.artist-avatar[data-artist]').forEach(el => {
+    const media = getCachedArtistMedia(el.dataset.artist || '');
+    if (media === undefined) return;
+    applyArtistMediaToAvatar(el, media);
+    refreshed += 1;
+  });
+  return refreshed;
+}
+
+function refreshArtistMediaViews() {
+  refreshArtistAvatarImages();
+  if (typeof renderMap === 'function' && typeof lmap !== 'undefined' && lmap) {
+    try { renderMap({ smartFit: false }); } catch (_) {}
+  }
+}
+
 async function loadArtistAvatar(el, artist) {
   if (!el) return;
   const key = artistMediaKey(artist);
@@ -610,7 +640,12 @@ function primeArtistMediaKnowledge(artists, limit = 24) {
 if (typeof window !== 'undefined') {
   window.importArtistMediaSeed = importArtistMediaSeed;
   window.clearArtistMediaSeedMarker = clearArtistMediaSeedMarker;
+  window.refreshArtistMediaViews = refreshArtistMediaViews;
   window.setTimeout(() => {
-    importArtistMediaSeed().catch(() => {});
+    importArtistMediaSeed()
+      .then(result => {
+        if ((result?.imported || 0) > 0 || (result?.hydrated || 0) > 0) refreshArtistMediaViews();
+      })
+      .catch(() => {});
   }, 1200);
 }
