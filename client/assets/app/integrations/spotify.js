@@ -619,9 +619,16 @@ async function instantResume(opts = {}) {
 
   // Apply onboard filters to toolbar state
   setGeoQuick(_obGeo);  // converts legacy mode → geoNoUSA/geoNoCA + syncs buttons
-  calScoreFilter = _obScore;
-  document.querySelectorAll('#score-filter-row .plays-chip').forEach(c =>
-    c.classList.toggle('on', parseInt(c.dataset.s) === calScoreFilter));
+  if (typeof applyScoreFilterLevel === 'function') {
+    applyScoreFilterLevel(_obScore);
+  } else {
+    calScoreFilter = _obScore;
+    mapScoreFilter = _obScore;
+    document.querySelectorAll('#score-filter-row .plays-chip').forEach(c =>
+      c.classList.toggle('on', parseInt(c.dataset.s) === calScoreFilter));
+    document.querySelectorAll('[data-ms]').forEach(c =>
+      c.classList.toggle('on', parseInt(c.dataset.ms) === mapScoreFilter));
+  }
 
   // Apply min-tracks filter — same logic as runSpotifyImport but applied here
   // so Quick Load respects the chip selection too

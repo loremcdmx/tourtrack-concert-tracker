@@ -697,16 +697,26 @@ const SCORE_ARTIST_MIN = [0, 3, 5, 10, 20];  // min ARTIST_PLAYS tracks per leve
 const SCORE_FEST_MIN   = [0, 20, 30, 50, 70]; // min f.score per level
 let calScoreFilter = 0;   // 0–4
 
-function setScoreFilter(level) {
-  calScoreFilter = level;
+function applyScoreFilterLevel(level) {
+  const maxLevel = Math.min(SCORE_ARTIST_MIN.length, SCORE_FEST_MIN.length) - 1;
+  const nextLevel = Math.max(0, Math.min(maxLevel, Number(level) || 0));
+  calScoreFilter = nextLevel;
+  mapScoreFilter = nextLevel;
   document.querySelectorAll('#score-filter-row .plays-chip').forEach(c =>
-    c.classList.toggle('on', parseInt(c.dataset.s) === level));
+    c.classList.toggle('on', parseInt(c.dataset.s) === nextLevel));
+  document.querySelectorAll('[data-ms]').forEach(c =>
+    c.classList.toggle('on', parseInt(c.dataset.ms) === nextLevel));
+  return nextLevel;
+}
+
+function setScoreFilter(level) {
+  applyScoreFilterLevel(level);
   renderCalendar(); renderMap(); _updateTally();
 }
 
 // ── MAP-SPECIFIC FILTER HELPERS ──────────────────────────────────────
-// Map date/score filters are independent from the calendar chips and should
-// narrow the dataset before Leaflet rebuilds markers and routes.
+// Map date filters stay map-local. Score is global, shared with calendar chips,
+// so concerts and festivals are filtered identically in the list and on the map.
 function _mapDateWindowBounds(today) {
   if (mapDateMode === 'week') return { from: today, to: dateOffset(7) };
   if (mapDateMode === 'month') return { from: today, to: dateOffset(30) };
@@ -851,9 +861,9 @@ function setMapType(t) {
   else withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
 }
 function setMapScore(s) {
-  mapScoreFilter = s;
-  document.querySelectorAll('[data-ms]').forEach(b =>
-    b.classList.toggle('on', +b.dataset.ms === s));
+  applyScoreFilterLevel(s);
+  renderCalendar();
+  _updateTally();
   withMapSpinner(() => { _rebuildMapData(); clearMapLayers(); renderOverview(); });
 }
 function setMapDate(d) {
