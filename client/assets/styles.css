@@ -337,7 +337,8 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .artist-trim-btn:hover { border-color:#ff9070; color:#ffb090; background:rgba(255,100,50,.08); }
 .artist-trim-btn:active { transform:scale(.96); }
 .artist-trim-hint { font-size:.54rem; color:var(--accent); font-family:'DM Mono',monospace; opacity:0; transition:opacity .3s; }
-.artist-trim-hint.visible { opacity:1; } font-family:'DM Mono',monospace; font-size:.62rem; font-weight:500;
+.artist-trim-hint.visible { opacity:1; }
+.onboard-proxy-btn { font-family:'DM Mono',monospace; font-size:.62rem; font-weight:500;
   padding:5px 10px; border-radius:6px; border:1px solid var(--border2);
   background:var(--s3); color:var(--muted); cursor:pointer; transition:all .15s; white-space:nowrap; }
 .onboard-proxy-btn:hover { border-color:var(--border2); color:var(--text); }
@@ -527,6 +528,332 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .plays-chip.on { border-color:var(--accent); color:var(--accent); background:rgba(200,255,95,.08); }
 .plays-filter-label { font-size:.52rem; color:var(--muted2); letter-spacing:.08em;
   text-transform:uppercase; align-self:center; margin-right:2px; }
+
+/* Calendar tab UX refresh */
+.cal-toolbar {
+  position:relative;
+  padding:12px 16px 14px;
+  gap:8px;
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,0) 48%),
+    #0d0d11;
+  border-bottom:1px solid rgba(255,255,255,.12);
+  box-shadow:0 12px 32px rgba(0,0,0,.24);
+}
+.cal-toolbar::after {
+  content:'';
+  position:absolute;
+  left:16px;
+  right:16px;
+  bottom:-1px;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(200,255,95,.42),transparent);
+  pointer-events:none;
+}
+.cal-view-row {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:6px;
+  margin:0 0 2px;
+}
+.cal-view-btn,
+.chip,
+.plays-chip,
+.geo-qbtn,
+.fsort-btn {
+  min-height:28px;
+  border-radius:8px;
+  letter-spacing:0;
+}
+.cal-view-btn {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:0;
+  padding:6px 10px;
+  background:rgba(255,255,255,.035);
+  border-color:rgba(255,255,255,.12);
+  color:#a5a5ad;
+}
+.cal-view-btn:hover:not(.on) {
+  background:rgba(255,255,255,.06);
+  border-color:rgba(255,255,255,.2);
+  color:var(--text);
+}
+.cal-view-btn.on {
+  background:linear-gradient(180deg,rgba(200,255,95,.2),rgba(200,255,95,.08));
+  border-color:rgba(200,255,95,.72);
+  color:var(--accent);
+  box-shadow:0 0 0 1px rgba(200,255,95,.1) inset,0 8px 20px rgba(0,0,0,.18);
+}
+#calview-all,
+#calview-mx {
+  font-size:0;
+}
+#calview-all::before,
+#calview-mx::before {
+  font-family:'DM Mono',monospace;
+  font-size:.62rem;
+  line-height:1;
+}
+#calview-all::before { content:'All events'; }
+#calview-mx::before { content:'MX Mexico'; }
+.date-row,
+.cal-filter-bar,
+.mx-sort-row {
+  position:relative;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-start;
+  gap:6px;
+  min-height:34px;
+  padding:2px 0 2px 72px;
+}
+.date-row.secondary {
+  padding-top:2px;
+}
+#cal-date-row::before,
+#cal-date-row-extra::before,
+#geo-preset-row::before,
+#score-filter-row::before,
+.mx-sort-row::before {
+  position:absolute;
+  left:0;
+  top:7px;
+  width:58px;
+  font-family:'DM Mono',monospace;
+  font-size:.52rem;
+  line-height:1;
+  letter-spacing:0;
+  text-transform:uppercase;
+  color:#6f6f78;
+}
+#cal-date-row::before { content:'When'; }
+#cal-date-row-extra::before { content:'Dates'; }
+#geo-preset-row::before { content:'Where'; }
+#score-filter-row::before { content:'Quality'; }
+.mx-sort-row::before { content:'Mexico'; }
+#geo-preset-row .toolbar-chip-label,
+.mx-sort-row .fest-sort-lbl {
+  display:none;
+}
+.chip,
+.plays-chip,
+.geo-qbtn {
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  padding:5px 9px;
+  background:rgba(255,255,255,.025);
+  border-color:rgba(255,255,255,.12);
+  color:#8f8f98;
+  line-height:1;
+  white-space:nowrap;
+}
+.chip:hover,
+.plays-chip:hover,
+.geo-qbtn:hover {
+  background:rgba(255,255,255,.055);
+  border-color:rgba(255,255,255,.22);
+  color:var(--text);
+}
+.chip.on,
+.plays-chip.on,
+.geo-qbtn.on {
+  background:rgba(200,255,95,.1);
+  border-color:rgba(200,255,95,.68);
+  color:var(--accent);
+  box-shadow:0 0 0 1px rgba(200,255,95,.07) inset;
+}
+#cal-type-row {
+  position:static;
+  margin-left:auto;
+  display:flex;
+  gap:6px;
+}
+#cal-type-row .chip {
+  min-width:58px;
+  padding:0 9px;
+  font-size:0;
+}
+#cal-type-row .chip::before {
+  font-size:.56rem;
+  line-height:1;
+}
+#cal-type-row .chip[data-t='shows']::before { content:'Shows'; }
+#cal-type-row .chip[data-t='fests']::before { content:'Fests'; }
+#cal-date-row .chip[data-d='range'],
+#cal-date-row-extra .chip[data-d='thismonth'],
+#cal-date-row-extra .chip[data-d='nextmonth'],
+#cal-date-row-extra .chip[data-d='nextquarter'],
+#cal-date-row-extra .chip[data-d='nextyear'],
+#cal-date-row-extra .chip[data-d='spring'],
+#cal-date-row-extra .chip[data-d='summer'],
+#cal-date-row-extra .chip[data-d='autumn'],
+#cal-date-row-extra .chip[data-d='winter'] {
+  font-size:0;
+}
+#cal-date-row .chip[data-d='range']::before,
+#cal-date-row-extra .chip[data-d='thismonth']::before,
+#cal-date-row-extra .chip[data-d='nextmonth']::before,
+#cal-date-row-extra .chip[data-d='nextquarter']::before,
+#cal-date-row-extra .chip[data-d='nextyear']::before,
+#cal-date-row-extra .chip[data-d='spring']::before,
+#cal-date-row-extra .chip[data-d='summer']::before,
+#cal-date-row-extra .chip[data-d='autumn']::before,
+#cal-date-row-extra .chip[data-d='winter']::before {
+  font-size:.58rem;
+  line-height:1;
+}
+#cal-date-row .chip[data-d='range']::before { content:'Custom'; }
+#cal-date-row-extra .chip[data-d='thismonth']::before { content:'This month'; }
+#cal-date-row-extra .chip[data-d='nextmonth']::before { content:'Next month'; }
+#cal-date-row-extra .chip[data-d='nextquarter']::before { content:'Next qtr'; }
+#cal-date-row-extra .chip[data-d='nextyear']::before { content:'Next year'; }
+#cal-date-row-extra .chip[data-d='spring']::before { content:'Spring'; }
+#cal-date-row-extra .chip[data-d='summer']::before { content:'Summer'; }
+#cal-date-row-extra .chip[data-d='autumn']::before { content:'Fall'; }
+#cal-date-row-extra .chip[data-d='winter']::before { content:'Winter'; }
+#drp-popover {
+  border-radius:8px;
+}
+.cal-filter-bar {
+  flex-wrap:wrap;
+  border:0;
+  background:transparent;
+  min-height:34px;
+}
+.cal-filter-sep {
+  height:28px;
+  margin:0 2px;
+  background:rgba(255,255,255,.13);
+}
+#ev-tally {
+  margin-left:auto;
+  padding:7px 0 0 8px;
+  color:#868690;
+  line-height:1;
+}
+.geo-qbtn.nousa,
+.geo-qbtn.noca {
+  border-color:rgba(255,142,96,.38);
+  color:#dd9a75;
+}
+.geo-qbtn.nousa.on,
+.geo-qbtn.noca.on {
+  background:rgba(255,92,76,.09);
+  border-color:rgba(255,118,92,.76);
+  color:#ffad95;
+}
+.mx-sort-row {
+  margin-top:1px;
+}
+.mx-tally {
+  padding-top:7px;
+}
+.fsort-btn {
+  min-height:28px;
+  padding:5px 9px;
+}
+.cal-body {
+  padding:0 18px 36px;
+  background:linear-gradient(180deg,#08080a,#050507 32rem);
+}
+.month-sep {
+  position:sticky;
+  top:0;
+  z-index:4;
+  margin:0 -18px 8px;
+  padding:18px 18px 8px;
+  font-size:2.35rem;
+  letter-spacing:0;
+  color:rgba(237,237,235,.13);
+  background:linear-gradient(180deg,#08080a 0%,rgba(8,8,10,.94) 70%,rgba(8,8,10,0) 100%);
+  pointer-events:none;
+}
+.ev-row {
+  grid-template-columns:48px minmax(0,1fr) auto;
+  gap:12px;
+  margin:0 -4px;
+  padding:12px 8px;
+  border:1px solid transparent;
+  border-bottom-color:rgba(255,255,255,.09);
+  border-radius:8px;
+  transition:background .12s,border-color .12s;
+}
+.ev-row:hover {
+  background:rgba(255,255,255,.035);
+  border-color:rgba(200,255,95,.18);
+  padding-left:8px;
+}
+.ev-row.ev-implicit-fest {
+  border-left-color:rgba(255,170,60,.55);
+  box-shadow:inset 3px 0 0 rgba(255,170,60,.4);
+}
+.ev-daynum {
+  font-size:1.75rem;
+}
+.ev-dayname,
+.fest-badge,
+.artist-avatar-fallback {
+  letter-spacing:0;
+}
+.ev-headline {
+  gap:9px;
+}
+.ev-name {
+  font-size:.86rem;
+}
+.ev-sub {
+  color:#878790;
+}
+.ev-sub strong {
+  color:#cfcfcb;
+}
+.fest-badge,
+.ev-artist-chip,
+.fav-reset-btn,
+.drp-clear-btn,
+.drp-apply-btn {
+  border-radius:8px;
+}
+.ev-artist-chip {
+  background:rgba(255,255,255,.04);
+}
+@media (max-width: 760px) {
+  .cal-toolbar {
+    padding:10px 12px 12px;
+  }
+  .cal-toolbar::after {
+    left:12px;
+    right:12px;
+  }
+  .cal-view-row {
+    margin-right:0;
+    grid-template-columns:1fr;
+  }
+  #cal-type-row {
+    width:100%;
+    margin-top:4px;
+    margin-left:0;
+  }
+  #cal-type-row .chip {
+    flex:1 1 0;
+  }
+  .date-row,
+  .cal-filter-bar,
+  .mx-sort-row {
+    padding-left:0;
+    padding-top:22px;
+  }
+  #cal-date-row::before,
+  #cal-date-row-extra::before,
+  #geo-preset-row::before,
+  #score-filter-row::before,
+  .mx-sort-row::before {
+    top:2px;
+  }
+}
 
 .hide-btn { font-family:'DM Mono',monospace; font-size:.52rem; padding:3px 7px; border-radius:3px;
   border:1px solid var(--border2); background:transparent; color:var(--muted);
@@ -1841,8 +2168,9 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 .map-fest-marker-wrap { display:flex; flex-direction:column; align-items:center; gap:2px; pointer-events:none; }
 .map-fest-marker {
   display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:220px;
-  padding:4px 8px; border-radius:8px; background:rgba(8,10,14,.96);
-  border:1px solid var(--map-fest-color); box-shadow:0 10px 24px rgba(0,0,0,.32);
+  padding:4px 8px; border-radius:8px; background:rgba(5,6,9,.92);
+  border:1px solid var(--map-fest-color);
+  box-shadow:0 10px 24px rgba(0,0,0,.34),0 0 0 1px rgba(255,255,255,.04) inset;
 }
 .map-fest-marker__count {
   display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
@@ -1860,7 +2188,31 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 }
 .map-fest-dot {
   border-radius:3px; border:1.5px solid var(--map-fest-color); background:var(--map-fest-bg);
-  transform:rotate(45deg); box-shadow:0 8px 18px rgba(0,0,0,.22);
+  transform:rotate(45deg); box-shadow:0 0 0 2px rgba(5,6,9,.72),0 8px 18px rgba(0,0,0,.22);
+}
+.map-fest-cluster {
+  display:flex; align-items:center; gap:7px; padding:4px 8px 4px 5px; border-radius:8px;
+  border:1px solid var(--map-fest-color); background:rgba(5,6,9,.94);
+  color:var(--map-fest-color); box-shadow:0 12px 28px rgba(0,0,0,.38),0 0 0 1px rgba(255,255,255,.04) inset;
+  cursor:pointer;
+}
+.map-fest-cluster__count {
+  display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:23px; height:21px; border-radius:7px; background:var(--map-fest-bg);
+  font-family:'DM Mono',monospace; font-size:.62rem; font-weight:800; line-height:1;
+}
+.map-fest-cluster__copy {
+  min-width:0; display:flex; flex-direction:column; gap:3px; line-height:1;
+}
+.map-fest-cluster__name {
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-family:'Syne',sans-serif; font-size:.6rem; font-weight:800; letter-spacing:0;
+}
+.map-fest-cluster__swatches {
+  display:flex; gap:3px; height:4px;
+}
+.map-fest-cluster__swatch {
+  width:13px; height:3px; border-radius:3px; opacity:.92;
 }
 
 .map-cluster-marker {
@@ -1957,6 +2309,12 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 }
 .map-popup-chip--fest {
   cursor:pointer; border-color:rgba(255,170,60,.4); color:var(--fest); background:rgba(255,170,60,.08);
+}
+.map-popup__chips--stacked { flex-direction:column; align-items:stretch; }
+.map-popup-chip--fest-cluster {
+  width:100%; justify-content:space-between; cursor:pointer;
+  border-color:var(--map-chip-accent, rgba(255,255,255,.14));
+  color:var(--map-chip-accent, var(--text)); background:rgba(255,255,255,.035);
 }
 .map-popup-chip--muted { color:rgba(255,255,255,.62); }
 .map-popup-chip__meta { font-family:'DM Mono',monospace; font-size:.44rem; color:rgba(255,255,255,.46); }

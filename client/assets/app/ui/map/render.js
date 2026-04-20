@@ -76,6 +76,156 @@ function _mapUrgencyLabel(tone) {
 }
 
 // ── Festival map popup — rich card with lineup ──────────────────
+const MAP_FEST_PALETTE = [
+  { fg:'#c8ff5f', bg:'rgba(200,255,95,.18)' },
+  { fg:'#54d6ff', bg:'rgba(84,214,255,.18)' },
+  { fg:'#45e2b8', bg:'rgba(69,226,184,.18)' },
+  { fg:'#ff6b9a', bg:'rgba(255,107,154,.17)' },
+  { fg:'#ffd166', bg:'rgba(255,209,102,.18)' },
+  { fg:'#ff8f5c', bg:'rgba(255,143,92,.18)' },
+  { fg:'#9cf6a3', bg:'rgba(156,246,163,.17)' },
+  { fg:'#ff5e57', bg:'rgba(255,94,87,.16)' },
+  { fg:'#7ee7ff', bg:'rgba(126,231,255,.17)' }
+];
+
+function _mapHashText(value) {
+  let h = 2166136261;
+  const str = String(value || '');
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function _mapFestTone(f) {
+  const key = `${f?.country || ''}|${f?.city || ''}|${f?.name || ''}`;
+  return MAP_FEST_PALETTE[_mapHashText(key) % MAP_FEST_PALETTE.length];
+}
+
+function _mapFestPriority(f) {
+  const matched = (f?.matched || []).length;
+  const linked = Number(f?.linkedShows || 0);
+  const score = Number(f?.score || 0);
+  return score * 10 + matched * 28 + linked * 10;
+}
+
+function _mapFestShortName(f, maxLen = 24) {
+  const name = String(f?.name || 'Festival').trim() || 'Festival';
+  if (name.length <= maxLen) return name;
+  return `${name.slice(0, Math.max(4, maxLen - 1))}\u2026`;
+}
+
+function _mapFestLabelBudget(zoom, mapSize, count) {
+  const area = Math.max(1, (mapSize?.x || 1200) * (mapSize?.y || 800));
+  const density = zoom <= 4.5 ? 150000 : zoom <= 5.6 ? 105000 : zoom <= 6.8 ? 78000 : 54000;
+  const budget = Math.round(area / density);
+  const min = zoom <= 4.5 ? 6 : zoom <= 5.6 ? 10 : 16;
+  const max = zoom <= 4.5 ? 16 : zoom <= 5.6 ? 24 : zoom <= 6.8 ? 34 : 64;
+  return Math.min(count, Math.max(min, Math.min(max, budget)));
+}
+
+function _mapFestClusterCellSize(zoom) {
+  if (zoom <= 4.5) return 150;
+  if (zoom <= 5.6) return 120;
+  if (zoom <= 6.8) return 94;
+  return 72;
+}
+
+function _mapFestClusterThreshold(zoom) {
+  if (zoom <= 4.8) return 2;
+  if (zoom <= 6.2) return 3;
+  return 4;
+}
+
+function _mapFestClusterCenter(items) {
+  let lat = 0, lng = 0, total = 0;
+  items.forEach(f => {
+    const weight = Math.max(1, _mapFestPriority(f) / 30);
+    lat += Number(f.lat || 0) * weight;
+    lng += Number(f.lng || 0) * weight;
+    total += weight;
+  });
+  return total ? [lat / total, lng / total] : [items[0]?.lat || 0, items[0]?.lng || 0];
+}
+
+function _buildFestClusterPopup(items, center) {
+  const ranked = [...items].sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
+  const top = ranked[0] || {};
+  const tone = _mapFestTone(top);
+  const root = _mapCreateEl('div', 'map-popup map-popup--festival map-popup--festival-cluster');
+  root.style.setProperty('--map-popup-accent', tone.fg);
+
+  const body = _mapCreateEl('div', 'map-popup__body');
+  const badges = _mapCreateEl('div', 'map-popup__badges');
+  badges.appendChild(_mapPopupBadgeEl(`${ranked.length} festivals`, 'fest'));
+  const tracked = ranked.reduce((sum, f) => sum + (f.matched || []).length, 0);
+  if (tracked) badges.appendChild(_mapPopupBadgeEl(`${tracked} tracked`, 'accent'));
+  body.appendChild(badges);
+
+  body.appendChild(_mapCreateEl('div', 'map-popup__title', 'Nearby festivals'));
+  const places = [...new Set(ranked.map(f => [f.city, f.country ? flag(f.country) : ''].filter(Boolean).join(' ')).filter(Boolean))];
+  if (places.length) body.appendChild(_mapCreateEl('div', 'map-popup__meta', places.slice(0, 4).join(' / ')));
+
+  const list = _mapCreateEl('div', 'map-popup__chips map-popup__chips--stacked');
+  ranked.slice(0, 9).forEach(f => {
+    const btn = _mapCreateEl('button', 'map-popup-chip map-popup-chip--fest-cluster', _mapFestShortName(f, 26));
+    btn.type = 'button';
+    const fTone = _mapFestTone(f);
+    btn.style.setProperty('--map-chip-accent', fTone.fg);
+    const meta = [fmtDateRange(f), f.city].filter(Boolean).join(' / ');
+    if (meta) btn.appendChild(_mapCreateEl('span', 'map-popup-chip__meta', meta));
+    if (f.id) btn.addEventListener('click', () => openFestDetail(f.id));
+    list.appendChild(btn);
+  });
+  if (ranked.length > 9) list.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', `+${ranked.length - 9} more`));
+  body.appendChild(list);
+
+  const actions = _mapCreateEl('div', 'map-popup__actions');
+  actions.appendChild(_mapPopupActionEl('Zoom in', {
+    tone: 'primary',
+    onClick: () => {
+      if (!lmap) return;
+      lmap.closePopup();
+      lmap.flyTo(center, Math.min(10, Math.max((lmap.getZoom() || 5) + 2, 7)), { duration: .55 });
+    }
+  }));
+  body.appendChild(actions);
+
+  root.appendChild(body);
+  return root;
+}
+
+function _renderFestCluster(items) {
+  if (!items?.length || !lmap) return;
+  const ranked = [...items].sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
+  const top = ranked[0];
+  const tone = _mapFestTone(top);
+  const center = _mapFestClusterCenter(ranked);
+  const label = ranked.length > 1 ? `${_mapFestShortName(top, 14)} +${ranked.length - 1}` : _mapFestShortName(top, 18);
+  const width = Math.max(94, Math.min(172, Math.round(label.length * 7.1) + 42));
+  const height = 32;
+  const swatches = ranked.slice(0, 4)
+    .map(f => `<span class="map-fest-cluster__swatch" style="background:${_mapFestTone(f).fg}"></span>`)
+    .join('');
+  const html = `<div class="map-fest-cluster" style="--map-fest-color:${tone.fg};--map-fest-bg:${tone.bg};width:${width}px;height:${height}px">
+    <span class="map-fest-cluster__count">${ranked.length}</span>
+    <span class="map-fest-cluster__copy">
+      <span class="map-fest-cluster__name">${esc2(label)}</span>
+      <span class="map-fest-cluster__swatches">${swatches}</span>
+    </span>
+  </div>`;
+  const icon = L.divIcon({ className:'', iconSize:[width, height], iconAnchor:[width / 2, height / 2], html });
+  const zIndex = Math.round(_mapFestPriority(top) + ranked.length * 20);
+  const mk = L.marker(center, { icon, zIndexOffset:zIndex })
+    .addTo(lmap)
+    .bindPopup(() => _buildFestClusterPopup(ranked, center), {
+      maxWidth: 360,
+      className: 'map-popup-shell map-popup-shell--festival'
+    });
+  festMarkers.push(mk);
+}
+
 function _buildFestPopup(f) {
   const cc      = f.country ? ' ' + flag(f.country) : '';
   const dateStr = fmtDateRange(f);
@@ -87,7 +237,8 @@ function _buildFestPopup(f) {
     const key = _normText(artist);
     if (!key || matchedNames.has(key) || !_lineupArtistHit(artist, lineup)) continue;
     matchedNames.add(key);
-    matched.push({ artist, plays: ARTIST_PLAYS[key] || 0, weight: ARTIST_PLAYS[key] || 0 });
+    const plays = typeof artistPlayCount === 'function' ? artistPlayCount(artist) : (ARTIST_PLAYS[key] || 0);
+    matched.push({ artist, plays, weight: plays });
   }
   matched.sort((a, b) => (b.plays || b.weight || 0) - (a.plays || a.weight || 0));
 
@@ -228,61 +379,107 @@ function _renderFestLabels() {
   const festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
     && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f));
 
-  festsToRender.sort((a, b) => (b.score || 0) - (a.score || 0));
+  festsToRender.sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
+
+  const zoom = lmap.getZoom();
+  const mapSize = lmap.getSize();
+  const labelBudget = _mapFestLabelBudget(zoom, mapSize, festsToRender.length);
+  const clusterCell = _mapFestClusterCellSize(zoom);
+  const clusterThreshold = _mapFestClusterThreshold(zoom);
+  const shouldCull = _mapFirstFit && typeof lmap.getBounds === 'function';
+  const viewBounds = shouldCull ? lmap.getBounds().pad(0.28) : null;
+  const festItems = festsToRender
+    .filter(f => !viewBounds || viewBounds.contains([f.lat, f.lng]))
+    .map(f => ({
+      f,
+      pt: lmap.latLngToContainerPoint([f.lat, f.lng]),
+      tone: _mapFestTone(f),
+      priority: _mapFestPriority(f)
+    }));
+
+  const labelItems = [];
+  const clusterGroups = [];
+  if (zoom <= 7.25) {
+    const buckets = new Map();
+    festItems.forEach(item => {
+      const key = `${Math.floor(item.pt.x / clusterCell)}|${Math.floor(item.pt.y / clusterCell)}`;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(item);
+    });
+    buckets.forEach(bucket => {
+      bucket.sort((a, b) => b.priority - a.priority);
+      if (bucket.length >= clusterThreshold) clusterGroups.push(bucket.map(item => item.f));
+      else labelItems.push(...bucket);
+    });
+  } else {
+    labelItems.push(...festItems);
+  }
+
+  labelItems.sort((a, b) => b.priority - a.priority);
+  clusterGroups.sort((a, b) => _mapFestPriority(b[0]) - _mapFestPriority(a[0]));
+  clusterGroups.forEach(group => _renderFestCluster(group));
 
   const occupied = [];
-  const PX_PAD = 6;
+  const PX_PAD = zoom <= 5.6 ? 12 : zoom <= 6.8 ? 9 : 6;
   const rectOverlap = (a, b) =>
     a[0] < b[0] + b[2] + PX_PAD && a[0] + a[2] + PX_PAD > b[0] &&
     a[1] < b[1] + b[3] + PX_PAD && a[1] + a[3] + PX_PAD > b[1];
 
-  festsToRender.forEach(f => {
+  let renderedLabels = 0;
+  labelItems.forEach(item => {
+    const f = item.f;
     const score = f.score || 0;
     const pct = score / 100;
-    const col = pct > .6 ? '#c8ff5f' : pct > .25 ? '#ffaa3c' : '#d4813a';
-    const colBg = pct > .6 ? 'rgba(200,255,95,' : pct > .25 ? 'rgba(255,170,60,' : 'rgba(200,120,60,';
+    const col = item.tone.fg;
+    const colBg = item.tone.bg;
     const opacity = score === 0 ? 0.55 : 0.78 + pct * 0.22;
     const sz = Math.round(8 + pct * 6);
-    const shortName = f.name.length > 24 ? f.name.slice(0, 22) + '\u2026' : f.name;
+    const shortName = _mapFestShortName(f, zoom <= 5.6 ? 17 : zoom <= 6.8 ? 21 : 24);
     const trackedCount = (f.matched || []).length;
 
-    const labelW = Math.max(78, Math.min(220, Math.round(shortName.length * 7.2) + (trackedCount ? 34 : 44)));
-    const labelH = 24;
+    const labelMaxW = zoom <= 5.6 ? 170 : zoom <= 6.8 ? 192 : 220;
+    const labelW = Math.max(78, Math.min(labelMaxW, Math.round(shortName.length * 7.2) + (trackedCount ? 34 : 44)));
+    const labelH = zoom <= 5.6 ? 22 : 24;
     const totalH = labelH + 10;
     const totalW = labelW;
 
-    const pt = lmap.latLngToContainerPoint([f.lat, f.lng]);
+    const pt = item.pt;
     const offsets = [
       [0, 0],
-      [0, totalH + sz],
-      [totalW + 2, -totalH / 2],
-      [-(totalW + 2), -totalH / 2],
-      [totalW / 2, totalH],
-      [-totalW / 2, totalH],
+      [0, totalH + sz + 4],
+      [totalW + 12, -totalH / 2],
+      [-(totalW + 12), -totalH / 2],
+      [Math.round(totalW * .55), totalH + 4],
+      [-Math.round(totalW * .55), totalH + 4],
+      [Math.round(totalW * .58), -totalH - 6],
+      [-Math.round(totalW * .58), -totalH - 6],
     ];
 
     const baseRect = [pt.x - totalW / 2, pt.y - totalH, totalW, totalH];
     let chosenOffset = null;
-    for (const [dx, dy] of offsets) {
-      const rect = [baseRect[0] + dx, baseRect[1] + dy, totalW, totalH];
-      if (!occupied.some(o => rectOverlap(rect, o))) {
-        chosenOffset = [dx, dy];
-        occupied.push(rect);
-        break;
+    if (renderedLabels < labelBudget) {
+      for (const [dx, dy] of offsets) {
+        const rect = [baseRect[0] + dx, baseRect[1] + dy, totalW, totalH];
+        if (!occupied.some(o => rectOverlap(rect, o))) {
+          chosenOffset = [dx, dy];
+          occupied.push(rect);
+          break;
+        }
       }
     }
 
     const renderLabel = chosenOffset !== null;
+    if (renderLabel) renderedLabels++;
     const [dx, dy] = chosenOffset || [0, 0];
     const html = renderLabel
-      ? `<div class="map-fest-marker-wrap" style="opacity:${opacity};--map-fest-color:${col};--map-fest-bg:${colBg}.18)">
+      ? `<div class="map-fest-marker-wrap" style="opacity:${opacity};--map-fest-color:${col};--map-fest-bg:${colBg}">
           <div class="map-fest-marker">
             <span class="map-fest-marker__count">${trackedCount || 'Fest'}</span>
             <span class="map-fest-marker__name">${esc2(shortName)}</span>
           </div>
           <div class="map-fest-marker__pin"></div>
         </div>`
-      : `<div class="map-fest-dot" style="width:${sz}px;height:${sz}px;opacity:${Math.max(opacity - 0.1, 0.35)};--map-fest-color:${col};--map-fest-bg:${colBg}.18)"></div>`;
+      : `<div class="map-fest-dot" style="width:${sz}px;height:${sz}px;opacity:${Math.max(opacity - 0.1, 0.35)};--map-fest-color:${col};--map-fest-bg:${colBg}"></div>`;
 
     const dotOnlyW = sz + 4;
     const dotOnlyH = sz + 4;
@@ -292,7 +489,7 @@ function _renderFestLabels() {
     const anchorY = renderLabel ? (totalH - dy) : dotOnlyH / 2;
 
     const icon = L.divIcon({ className: '', iconSize: [w, h], iconAnchor: [anchorX, anchorY], html });
-    const mk = L.marker([f.lat, f.lng], { icon, zIndexOffset: Math.round(score * 5) })
+    const mk = L.marker([f.lat, f.lng], { icon, zIndexOffset: Math.round(item.priority + score * 5) })
       .addTo(lmap)
       .bindPopup(() => _buildFestPopup(f), { maxWidth: 360, className: 'map-popup-shell map-popup-shell--festival' });
     festMarkers.push(mk);
@@ -538,7 +735,7 @@ function _renderCityBubble(lat, lng, city, country, entries, col, urgency, isFav
 }
 function _renderArtistPill(artist, ev, rank, today, in7, in30, jitterIdx) {
   const col    = getColor(artist);
-  const plays  = ARTIST_PLAYS[(artist || '').toLowerCase()] || 0;
+  const plays  = typeof artistPlayCount === 'function' ? artistPlayCount(artist) : (ARTIST_PLAYS[(artist || '').toLowerCase()] || 0);
   const isFav  = favoriteArtists.has((artist || '').toLowerCase());
   const acc    = isFav ? '#ffd700' : col;
   const urgency = ev.date <= in7  ? 'urgent' :

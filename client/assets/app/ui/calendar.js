@@ -174,12 +174,114 @@ function artistListPosition(artistName) {
   return Number.isInteger(idx) ? idx : -1;
 }
 
+let _artistPlayLookupSource = null;
+let _artistPlayLookupSignature = '';
+let _artistPlayLookupMap = new Map();
+let _artistPlayLookupHasPositive = false;
+
+function _toPlayNumber(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
+
+function _artistLookupKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function _artistNormalizedKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return typeof _normText === 'function' ? _normText(raw) : raw.toLowerCase();
+}
+
+function _artistFoldedKey(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function getArtistPlayLookup() {
+  const source = ARTIST_PLAYS || {};
+  const keys = Object.keys(source).sort();
+  const signature = keys.map(key => `${key}:${_toPlayNumber(source[key])}`).join('|');
+  if (_artistPlayLookupSource === source && _artistPlayLookupSignature === signature) {
+    return { map: _artistPlayLookupMap, hasPositive: _artistPlayLookupHasPositive };
+  }
+
+  const map = new Map();
+  let hasPositive = false;
+  keys.forEach(key => {
+    const plays = _toPlayNumber(source[key]);
+    if (plays > 0) hasPositive = true;
+    const exact = _artistLookupKey(key);
+    const normalized = _artistNormalizedKey(key);
+    const folded = _artistFoldedKey(key);
+    [exact, normalized, folded].forEach(lookupKey => {
+      if (!lookupKey) return;
+      const current = map.get(lookupKey) || 0;
+      if (plays > current) map.set(lookupKey, plays);
+    });
+  });
+
+  _artistPlayLookupSource = source;
+  _artistPlayLookupSignature = signature;
+  _artistPlayLookupMap = map;
+  _artistPlayLookupHasPositive = hasPositive;
+  return { map, hasPositive };
+}
+
+function artistPlayCount(artistName) {
+  const exact = _artistLookupKey(artistName);
+  if (!exact) return 0;
+  const direct = _toPlayNumber((ARTIST_PLAYS || {})[exact]);
+  if (direct > 0) return direct;
+
+  const lookup = getArtistPlayLookup().map;
+  const normalized = _artistNormalizedKey(artistName);
+  const folded = _artistFoldedKey(artistName);
+  return Math.max(
+    _toPlayNumber(lookup.get(exact)),
+    _toPlayNumber(lookup.get(normalized)),
+    _toPlayNumber(lookup.get(folded))
+  );
+}
+
+function hasArtistPlayData() {
+  return getArtistPlayLookup().hasPositive;
+}
+
+function artistRankFallbackLevel(artistName) {
+  const idx = artistListPosition(artistName);
+  const total = ARTISTS.length || 0;
+  if (idx < 0 || !total) return 0;
+  const rank = idx + 1;
+  if (rank <= Math.max(1, Math.ceil(total * 0.15))) return 3;
+  if (rank <= Math.max(1, Math.ceil(total * 0.35))) return 2;
+  return 1;
+}
+
+function artistScoreLevel(artistName) {
+  const plays = artistPlayCount(artistName);
+  if (plays >= SCORE_ARTIST_MIN[3]) return 3;
+  if (plays >= SCORE_ARTIST_MIN[2]) return 2;
+  if (plays >= SCORE_ARTIST_MIN[1]) return 1;
+  return hasArtistPlayData() ? 0 : artistRankFallbackLevel(artistName);
+}
+
+function artistScoreOk(artistName, level) {
+  const scoreLevel = Number(level) || 0;
+  if (!scoreLevel) return true;
+  return artistScoreLevel(artistName) >= scoreLevel;
+}
+
 // ── UNIFIED ARTIST RANK SCORE ────────────────────────────────────
 // Shared by MX calendar, overview map, and everywhere else
 // Returns: high = artist you listen to a lot = show higher priority
 function artistRankScore(artistName) {
   const key = (artistName || '').toLowerCase();
-  const plays = ARTIST_PLAYS[key] || 0;
+  const plays = artistPlayCount(key);
   const listIdx = artistListPosition(key);
   const posScore = listIdx >= 0 ? (ARTISTS.length - listIdx) : 0;
   return plays * 100 + posScore;
@@ -187,7 +289,7 @@ function artistRankScore(artistName) {
 // Alias used by map rendering (non-linear weighting for visual sizing)
 function _rankScore(artist) {
   const key = (artist || '').toLowerCase();
-  const plays = ARTIST_PLAYS[key] || 0;
+  const plays = artistPlayCount(key);
   const idx   = artistListPosition(key);
   const pos   = idx >= 0 ? (ARTISTS.length - idx) / Math.max(ARTISTS.length, 1) * 20 : 0;
   return (plays >= 20 ? 200 + Math.log2(plays) * 10 :
@@ -347,7 +449,7 @@ function renderMxRow(c) {
 
   // Artist name + rank badge
   nameEl.textContent = c.artist;
-  const plays = ARTIST_PLAYS[(c.artist || '').toLowerCase()] || 0;
+  const plays = artistPlayCount(c.artist);
   const isFav = favoriteArtists.has((c.artist || '').toLowerCase());
   if (plays > 0 || isFav) {
     const badge = document.createElement('span');
@@ -618,8 +720,7 @@ function _mapDateWindowBounds(today) {
 }
 function mapScoreOkArtist(name) {
   const level = Number(mapScoreFilter) || 0;
-  if (!level) return true;
-  return (ARTIST_PLAYS[(name || '').toLowerCase()] || 0) >= (SCORE_ARTIST_MIN[level] || 0);
+  return artistScoreOk(name, level);
 }
 function mapScoreOkFest(f) {
   const level = Number(mapScoreFilter) || 0;
@@ -791,9 +892,7 @@ function setMapMaxArtists(n) {
 }
 
 function scoreOkArtist(artistName) {
-  if (!calScoreFilter) return true;
-  const plays = ARTIST_PLAYS[(artistName||'').toLowerCase()] || 0;
-  return plays >= SCORE_ARTIST_MIN[calScoreFilter];
+  return artistScoreOk(artistName, calScoreFilter);
 }
 function scoreOkFest(f) {
   if (!calScoreFilter) return true;
@@ -903,10 +1002,10 @@ function renderCalendar() {
   const renderToken = ++_calendarRenderToken;
   const today = new Date().toISOString().split('T')[0];
 
-  // Show score-filter row only when there's play count data
-  const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
+  // Show score filter when artists can be ranked or festivals have scores.
+  const hasArtistScore = hasArtistPlayData() || ARTISTS.length > 0;
   const scoreRow = document.getElementById('score-filter-row');
-  if (scoreRow) scoreRow.style.display = hasPlays || festivals.some(f => f.score > 0) ? '' : 'none';
+  if (scoreRow) scoreRow.style.display = hasArtistScore || festivals.some(f => f.score > 0) ? '' : 'none';
 
   // Delegate to Mexico view renderer
   if (calView === 'mx') { renderMxCalendar(); return; }
@@ -1097,7 +1196,7 @@ function renderCalendar() {
           const isMine = trackedSet.has(key);
           const chip = document.createElement('span');
           chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
-          appendArtistChipIdentity(chip, cc.artist, isMine ? (ARTIST_PLAYS[key] || 0) : 0);
+          appendArtistChipIdentity(chip, cc.artist, isMine ? artistPlayCount(cc.artist) : 0);
           chip.style.cursor = 'pointer';
           chip.onclick = () => { focusArtist(cc.artist); setTab('tours'); };
           chipsEl.appendChild(chip);
@@ -1301,7 +1400,7 @@ function buildCalendarEventRow(ev, ctx) {
       const isMine = trackedArtistKeys.has(key);
       const chip = document.createElement('span');
       chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
-      appendArtistChipIdentity(chip, cc.artist, isMine ? (ARTIST_PLAYS[key] || 0) : 0);
+      appendArtistChipIdentity(chip, cc.artist, isMine ? artistPlayCount(cc.artist) : 0);
       chip.style.cursor = 'pointer';
       chip.onclick = () => { focusArtist(cc.artist); setTab('tours'); };
       chipsEl.appendChild(chip);
@@ -1443,9 +1542,9 @@ renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
   const renderToken = ++_calendarRenderToken;
   const today = new Date().toISOString().split('T')[0];
 
-  const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
+  const hasArtistScore = hasArtistPlayData() || ARTISTS.length > 0;
   const scoreRow = document.getElementById('score-filter-row');
-  if (scoreRow) scoreRow.style.display = hasPlays || festivals.some(f => f.score > 0) ? '' : 'none';
+  if (scoreRow) scoreRow.style.display = hasArtistScore || festivals.some(f => f.score > 0) ? '' : 'none';
 
   if (calView === 'mx') { renderMxCalendar(); return; }
 
