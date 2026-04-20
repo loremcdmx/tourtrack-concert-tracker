@@ -499,13 +499,13 @@ const PINNED_PLAYLIST = Object.freeze({
   id: '0lXmCRl0wc26aSdwfgIAwQ',
   url: 'https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ',
   name: 'loremcdmx twitch playlist',
-  artistCount: 2449,
-  trackCount: 5569,
+  artistCount: 2477,
+  trackCount: 5656,
   topArtists: ['Fall Out Boy', 'The Maine', 'Anacondaz', 'Panic! At The Disco'],
 });
-const DEFAULT_ONBOARD_TITLE = 'Start with Spotify<br>or open the sample';
+const DEFAULT_ONBOARD_TITLE = 'See upcoming concerts from a Spotify playlist';
 const DEFAULT_ONBOARD_SUB =
-  'Connect Spotify to pick one of your playlists, or open the loremcdmx twitch playlist instantly. Cached scans reopen fast on this device.';
+  'Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.';
 const spotifyAccountState = {
   loaded: false,
   loading: false,
@@ -514,6 +514,7 @@ const spotifyAccountState = {
   playlists: [],
   playlistsLoaded: false,
   playlistsLoading: false,
+  pendingPlaylistId: '',
   error: '',
 };
 let spotifyAuthFlash = null;
@@ -535,7 +536,7 @@ function getSpotifyAuthErrorMessage(code) {
   }
 }
 
-function renderSpotifyPlaylistChoices() {
+function legacyRenderSpotifyPlaylistChoices() {
   const wrap = document.getElementById('onboard-auth-list-wrap');
   const list = document.getElementById('onboard-auth-list');
   if (!wrap || !list) return;
@@ -604,6 +605,140 @@ function renderSpotifyPlaylistChoices() {
       syncOnboardPrimaryAction();
       handleOnboardPrimaryAction();
     };
+
+    list.appendChild(card);
+  });
+}
+
+function getOnboardSpotifyPlaylistId(item) {
+  const raw = item?.id || item?.url || '';
+  if (typeof spExtractId === 'function') {
+    return spExtractId(raw) || raw;
+  }
+  return raw;
+}
+
+function startOnboardSpotifyPlaylistSelection(item) {
+  if (!item) return;
+
+  if (typeof markOnboardManualIntent === 'function') markOnboardManualIntent();
+
+  const normalizedId = getOnboardSpotifyPlaylistId(item);
+  spotifyAccountState.pendingPlaylistId = normalizedId || '';
+  renderSpotifyPlaylistChoices();
+
+  if (typeof onboardSetStatus === 'function') {
+    onboardSetStatus(`Opening "${item.name || 'playlist'}"...`);
+  }
+  if (typeof onboardShowProgress === 'function') {
+    onboardShowProgress('Loading playlist...');
+  }
+  if (typeof onboardLog === 'function') {
+    onboardLog(`Selected playlist: ${item.name || normalizedId || item.id}`, 'ok');
+  }
+
+  const url = item.url || `https://open.spotify.com/playlist/${item.id}`;
+  const inp = document.getElementById('onboard-url');
+  if (inp) inp.value = url;
+  syncOnboardPrimaryAction();
+
+  const launchImport = () => {
+    try {
+      const task = typeof onboardImport === 'function' ? onboardImport() : null;
+      Promise.resolve(task).catch(error => {
+        spotifyAccountState.pendingPlaylistId = '';
+        renderSpotifyPlaylistChoices();
+        if (typeof onboardSetStatus === 'function') {
+          onboardSetStatus(error?.message || 'Playlist import failed.', '#ff7070');
+        }
+      });
+    } catch (error) {
+      spotifyAccountState.pendingPlaylistId = '';
+      renderSpotifyPlaylistChoices();
+      if (typeof onboardSetStatus === 'function') {
+        onboardSetStatus(error?.message || 'Playlist import failed.', '#ff7070');
+      }
+    }
+  };
+
+  requestAnimationFrame(() => {
+    setTimeout(launchImport, 16);
+  });
+}
+
+function renderSpotifyPlaylistChoices() {
+  const wrap = document.getElementById('onboard-auth-list-wrap');
+  const list = document.getElementById('onboard-auth-list');
+  if (!wrap || !list) return;
+
+  if (!SERVER_MANAGED_SPOTIFY_LOGIN || !spotifyAccountState.connected) {
+    wrap.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+
+  wrap.style.display = '';
+  list.innerHTML = '';
+
+  if (spotifyAccountState.playlistsLoading) {
+    list.innerHTML = '<div class="onboard-auth-empty">Loading your Spotify playlists...</div>';
+    return;
+  }
+
+  if (!spotifyAccountState.playlistsLoaded) {
+    list.innerHTML = '<div class="onboard-auth-empty">Use Spotify to load your playlists, then pick one to scan.</div>';
+    return;
+  }
+
+  if (!spotifyAccountState.playlists.length) {
+    list.innerHTML = '<div class="onboard-auth-empty">No playlists found on this Spotify account yet.</div>';
+    return;
+  }
+
+  spotifyAccountState.playlists.slice(0, 12).forEach(item => {
+    const playlistId = getOnboardSpotifyPlaylistId(item);
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'onboard-pl';
+    card.dataset.playlistId = playlistId;
+    card.dataset.playlistUrl = item.url || `https://open.spotify.com/playlist/${item.id}`;
+    card.dataset.playlistName = item.name || 'playlist';
+    const isActive = !!playlistId && spotifyAccountState.pendingPlaylistId === playlistId;
+    if (isActive) card.classList.add('is-active');
+
+    if (item.imageUrl) {
+      const coverWrap = document.createElement('div');
+      coverWrap.className = 'onboard-pl-cover-wrap';
+      const cover = document.createElement('img');
+      cover.className = 'onboard-pl-cover';
+      cover.src = item.imageUrl;
+      cover.alt = '';
+      cover.loading = 'lazy';
+      coverWrap.appendChild(cover);
+      card.appendChild(coverWrap);
+    } else {
+      const ph = document.createElement('div');
+      ph.className = 'onboard-pl-cover-ph';
+      ph.textContent = '♪';
+      card.appendChild(ph);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'onboard-pl-body';
+    const metaParts = [`${item.trackCount || 0} tracks`];
+    if (item.ownerName) metaParts.push(esc2(item.ownerName));
+    if (item.collaborative) metaParts.push('Collaborative');
+    body.innerHTML =
+      `<div class="onboard-pl-name">${esc2(item.name || 'Untitled playlist')}</div>` +
+      `<div class="onboard-pl-meta">${metaParts.join(' &middot; ')}</div>`;
+    card.appendChild(body);
+
+    const arrow = document.createElement('div');
+    arrow.className = 'onboard-pl-arrow';
+    arrow.textContent = isActive ? 'Loading...' : 'Open';
+    card.appendChild(arrow);
+
+    card.addEventListener('click', () => startOnboardSpotifyPlaylistSelection(item));
 
     list.appendChild(card);
   });

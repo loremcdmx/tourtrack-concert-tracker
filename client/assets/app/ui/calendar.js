@@ -603,18 +603,35 @@ function setScoreFilter(level) {
 }
 
 // ── MAP-SPECIFIC FILTER HELPERS ──────────────────────────────────────
-// Map uses the SAME filter state as the calendar (dateFilter, calScoreFilter, geoQuickOk)
-// so filters are unified — changing a calendar chip also updates the map.
+// Map date/score filters are independent from the calendar chips and should
+// narrow the dataset before Leaflet rebuilds markers and routes.
+function _mapDateWindowBounds(today) {
+  if (mapDateMode === 'week') return { from: today, to: dateOffset(7) };
+  if (mapDateMode === 'month') return { from: today, to: dateOffset(30) };
+  if (mapDateMode === 'range') {
+    return {
+      from: mapDateFrom || today,
+      to: mapDateTo || dateOffset(30),
+    };
+  }
+  return { from: today, to: '' };
+}
 function mapScoreOkArtist(name) {
-  if (!calScoreFilter) return true;
-  return (ARTIST_PLAYS[name.toLowerCase()] || 0) >= SCORE_ARTIST_MIN[calScoreFilter];
+  const level = Number(mapScoreFilter) || 0;
+  if (!level) return true;
+  return (ARTIST_PLAYS[(name || '').toLowerCase()] || 0) >= (SCORE_ARTIST_MIN[level] || 0);
 }
 function mapScoreOkFest(f) {
-  if (!calScoreFilter) return true;
-  return (f.score || 0) >= SCORE_FEST_MIN[calScoreFilter];
+  const level = Number(mapScoreFilter) || 0;
+  if (!level) return true;
+  return (f?.score || 0) >= (SCORE_FEST_MIN[level] || 0);
 }
 function mapDateOk(dateStr) {
-  return dateMatchesPreset(dateStr);
+  if (!dateStr) return false;
+  const today = new Date().toISOString().split('T')[0];
+  if (dateStr < today) return false;
+  const { from, to } = _mapDateWindowBounds(today);
+  return dateStr >= from && (!to || dateStr <= to);
 }
 
 // ── MAP RENDER PIPELINE ──────────────────────────────────────────────────
@@ -655,12 +672,16 @@ function _rebuildMapData() {
 // workFn() runs in the second frame — by then the spinner is on screen.
 //
 let _mapRenderPending = false;
+let _mapRenderQueuedWork = null;
 function withMapSpinner(workFn) {
   const overlay = document.getElementById('map-loading-overlay');
 
-  // Debounce: if a render is already queued, skip this click so rapid
-  // tapping doesn't queue multiple renders that run back-to-back.
-  if (_mapRenderPending) return;
+  // Coalesce rapid changes into one follow-up render so the latest filter
+  // state wins without piling up multiple heavy Leaflet rebuilds.
+  if (_mapRenderPending) {
+    _mapRenderQueuedWork = workFn;
+    return;
+  }
   _mapRenderPending = true;
 
   if (overlay) overlay.classList.add('visible');
@@ -677,6 +698,9 @@ function withMapSpinner(workFn) {
       } finally {
         if (overlay) overlay.classList.remove('visible');
         _mapRenderPending = false;
+        const queuedWork = _mapRenderQueuedWork;
+        _mapRenderQueuedWork = null;
+        if (typeof queuedWork === 'function') withMapSpinner(queuedWork);
       }
     });
   });
@@ -716,9 +740,10 @@ function setMapType(t) {
   // Sync the old layer-toggle state variables
   showMapTours = t !== 'fests';
   showMapFests = t !== 'tours';
-  // Hide score row when fests-only (fests use festival.score, not ARTIST_PLAYS)
+  // Keep score controls available in every mode: tours use ARTIST_PLAYS,
+  // festivals use festival.score.
   const scoreRow = document.getElementById('mfilt-score-row');
-  if (scoreRow) scoreRow.style.display = t === 'fests' ? 'none' : '';
+  if (scoreRow) scoreRow.style.display = '';
   // Sync sidebar tab to match map type
   if (t === 'fests' && sidebarTab === 'tours') setTab('fests');
   else if (t === 'tours' && sidebarTab === 'fests') setTab('tours');
@@ -876,6 +901,7 @@ function isHidden(a) { if (!(a in hiddenArtists)) return false; const u = hidden
 function renderCalendar() {
   expireHidden();
   const renderToken = ++_calendarRenderToken;
+  const today = new Date().toISOString().split('T')[0];
 
   // Show score-filter row only when there's play count data
   const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
@@ -1415,6 +1441,7 @@ function buildCalendarEventRow(ev, ctx) {
 renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
   expireHidden();
   const renderToken = ++_calendarRenderToken;
+  const today = new Date().toISOString().split('T')[0];
 
   const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
   const scoreRow = document.getElementById('score-filter-row');

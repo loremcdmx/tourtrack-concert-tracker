@@ -6,6 +6,84 @@ let _mapResizeObserver = null;
 let _mapResizeTimer = null;
 let _mapResizeRaf = null;
 let _mapResizeQueued = false;
+const CT_MAP_TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const CT_MAP_TILE_SUBDOMAINS = 'abcd';
+const CT_MAP_TILE_WARM_LIMIT = 1800;
+let _mapTileWarmTimer = null;
+const _mapTileWarmCache = new Set();
+
+function _mapTileUrl(z, x, y) {
+  const size = Math.pow(2, z);
+  if (y < 0 || y >= size) return '';
+  const wrappedX = ((x % size) + size) % size;
+  const subdomain = CT_MAP_TILE_SUBDOMAINS[Math.abs(wrappedX + y) % CT_MAP_TILE_SUBDOMAINS.length] || 'a';
+  return CT_MAP_TILE_URL
+    .replace('{s}', subdomain)
+    .replace('{z}', String(z))
+    .replace('{x}', String(wrappedX))
+    .replace('{y}', String(y))
+    .replace('{r}', L.Browser?.retina ? '@2x' : '');
+}
+
+function _warmMapTileUrls(urls, batchSize = 24) {
+  const unique = urls.filter(Boolean).filter(url => !_mapTileWarmCache.has(url));
+  if (!unique.length) return;
+  let idx = 0;
+  const pump = () => {
+    const end = Math.min(unique.length, idx + batchSize);
+    for (; idx < end; idx++) {
+      const url = unique[idx];
+      _mapTileWarmCache.add(url);
+      while (_mapTileWarmCache.size > CT_MAP_TILE_WARM_LIMIT) {
+        const oldest = _mapTileWarmCache.values().next().value;
+        _mapTileWarmCache.delete(oldest);
+      }
+      const img = new Image();
+      img.decoding = 'async';
+      img.referrerPolicy = 'no-referrer';
+      img.src = url;
+    }
+    if (idx < unique.length) setTimeout(pump, 80);
+  };
+  pump();
+}
+
+function warmLowResWorldTiles() {
+  const urls = [];
+  for (let z = 2; z <= 4; z++) {
+    const size = Math.pow(2, z);
+    for (let x = 0; x < size; x++) {
+      for (let y = 0; y < size; y++) urls.push(_mapTileUrl(z, x, y));
+    }
+  }
+  _warmMapTileUrls(urls, 32);
+}
+
+function scheduleMapTileWarmup(delay = 80) {
+  if (!lmap) return;
+  clearTimeout(_mapTileWarmTimer);
+  _mapTileWarmTimer = setTimeout(() => {
+    if (!lmap) return;
+    const zoom = Math.max(2, Math.min(8, Math.round(lmap.getZoom())));
+    const pixelBounds = lmap.getPixelBounds();
+    const size = lmap.getSize();
+    const pad = Math.max(size.x, size.y) * (zoom <= 4 ? 1.6 : 1.05);
+    const padded = L.bounds(
+      pixelBounds.min.subtract([pad, pad]),
+      pixelBounds.max.add([pad, pad])
+    );
+    const tileSize = 256;
+    const minX = Math.floor(padded.min.x / tileSize);
+    const maxX = Math.floor(padded.max.x / tileSize);
+    const minY = Math.floor(padded.min.y / tileSize);
+    const maxY = Math.floor(padded.max.y / tileSize);
+    const urls = [];
+    for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) urls.push(_mapTileUrl(zoom, x, y));
+    }
+    _warmMapTileUrls(urls);
+  }, delay);
+}
 
 function scheduleMapResize(delay = 0) {
   if (!lmap) return;
@@ -70,9 +148,33 @@ function initMap() {
     worldCopyJump: true,
   }).setView([30, 10], 3);
   L.control.zoom({ position:'bottomright' }).addTo(lmap);
+  if (L.GridLayer?.prototype?.options) {
+    Object.assign(L.GridLayer.prototype.options, {
+      keepBuffer: 8,
+      updateWhenIdle: false,
+      updateWhenZooming: false,
+      updateInterval: 60,
+      className: 'ct-map-tile'
+    });
+  }
+  L.tileLayer(CT_MAP_TILE_URL, {
+    subdomains: CT_MAP_TILE_SUBDOMAINS,
+    maxZoom: 19,
+    maxNativeZoom: 4,
+    minNativeZoom: 2,
+    keepBuffer: 16,
+    updateWhenIdle: false,
+    updateWhenZooming: false,
+    updateInterval: 60,
+    className: 'ct-map-underlay',
+    opacity: 0.74,
+    zIndex: 1
+  }).addTo(lmap);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     attribution:'© OpenStreetMap © CARTO', subdomains:'abcd', maxZoom:19
   }).addTo(lmap);
+  warmLowResWorldTiles();
+  scheduleMapTileWarmup(120);
 
   // Zoom-responsive re-render (overview only, not focus mode)
   lmap.on('zoomend', () => {
@@ -89,11 +191,15 @@ function initMap() {
       }
       catch(e) { console.error('[zoomend render]', e); }
     }, 90);
+    scheduleMapTileWarmup(40);
   });
   // Pan: don't re-render markers, just update the visible list
+  lmap.on('movestart', () => scheduleMapTileWarmup(0));
+  lmap.on('move', () => scheduleMapTileWarmup(140));
   lmap.on('moveend', () => {
     clearTimeout(_moveTimer);
     _moveTimer = setTimeout(updateVisiblePanel, 150);
+    scheduleMapTileWarmup(20);
   });
 
   const mapEl = document.getElementById('map');
@@ -294,6 +400,8 @@ function renderMap() {
     (allTourData[c.artist] = allTourData[c.artist] || []).push(c);
   }
   for (const a in allTourData) { allTourData[a].sort((a,b) => a.date.localeCompare(b.date)); getColor(a); }
+  const scoreRow = document.getElementById('mfilt-score-row');
+  if (scoreRow) scoreRow.style.display = '';
   buildSidebar();
   // If an artist was already focused, keep focus mode — don't reset to overview.
   // renderFocusMode handles the case where allTourData[focusedArtist] is missing

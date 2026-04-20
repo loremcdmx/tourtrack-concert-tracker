@@ -69,8 +69,8 @@ const FALSE_ATTRACTION_CONTEXT_RE = /\b(tribute|experience|karaoke|candlelight|s
 const POSITIVE_EVENT_CONTEXT_RE = /\b(live|tour|concert|headline|headlining|special|acoustic|solo|residency|showcase|session|world tour|north american tour|european tour)\b/i;
 const FEST_EVENT_RE = /\bfest(?:ival)?\b|open\s+air\b|weekender\b|lollapalooza|coachella|primavera\b|rock\s+(?:en|am|im|al)\b|pal\s+norte|vive\s+latino|summerfest|glastonbury|reading\b|leeds\b|download\b|roskilde|sziget|pukkelpop|lowlands|pinkpop|nos\s+alive|rock\s+werchter|outside\s+lands|governors\s+ball|bonnaroo|austin\s+city|fuji\s+rock|summer\s+sonic|rolling\s+loud/i;
 const FEST_VENUE_HINT_RE = /\b(park|grounds|field|fields|festival|open air|camping|weekender)\b/i;
-const TICKET_TIER_RE = /\b(vip|ga|general admission|weekend pass|day pass|single[- ]day|early bird|platinum|premium|package|parking|camping|hotel|shuttle|upgrade|fast lane|bundle|combo|presale|admission|entry|ticket(?:s)?|3 day|2 day|three day|two day|domingo|sabado|viernes|sunday|saturday|friday|abono(?:s)?|boleto(?:s)?|pase(?:s)?|ascendente|full pass)\b/gi;
-const TICKET_TIER_TEST_RE = /\b(vip|ga|general admission|weekend pass|day pass|single[- ]day|early bird|platinum|premium|package|parking|camping|hotel|shuttle|upgrade|fast lane|bundle|combo|presale|admission|entry|ticket(?:s)?|3 day|2 day|three day|two day|domingo|sabado|viernes|sunday|saturday|friday|abono(?:s)?|boleto(?:s)?|pase(?:s)?|ascendente|full pass)\b/i;
+const TICKET_TIER_RE = /\b(vip|ga|general admission|weekend pass|day pass|single[- ]day|early bird|platinum|premium|package|parking|camping|hotel|shuttle|upgrade|fast lane|bundle|combo|presale|admission|entry|ticket(?:s)?|pass(?:es)?|3 day|2 day|three day|two day|domingo|sabado|viernes|sunday|saturday|friday|abono(?:s)?|boleto(?:s)?|pase(?:s)?|ascendente|full pass)\b/gi;
+const TICKET_TIER_TEST_RE = /\b(vip|ga|general admission|weekend pass|day pass|single[- ]day|early bird|platinum|premium|package|parking|camping|hotel|shuttle|upgrade|fast lane|bundle|combo|presale|admission|entry|ticket(?:s)?|pass(?:es)?|3 day|2 day|three day|two day|domingo|sabado|viernes|sunday|saturday|friday|abono(?:s)?|boleto(?:s)?|pase(?:s)?|ascendente|full pass)\b/i;
 
 const _EV_QUALIFIER = new Set([
   'live','tour','concert','feat','ft','with','at','in','the','a','an','and',
@@ -108,6 +108,81 @@ function _festivalBaseName(name) {
     .replace(/\b(friday|saturday|sunday|jueves|viernes|sabado|domingo)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+function _knownFestivalNameFromText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  const normRaw = _normText(raw);
+  const baseRaw = _festivalBaseName(raw);
+  let best = '';
+  let bestScore = -Infinity;
+  for (const festivalName of KNOWN_FESTIVALS || []) {
+    const normFestival = _normText(festivalName);
+    if (!normFestival) continue;
+    const baseFestival = _festivalBaseName(festivalName);
+    const matches =
+      normRaw === normFestival ||
+      normRaw.includes(normFestival) ||
+      (!!baseRaw && !!baseFestival && baseRaw === baseFestival);
+    if (!matches) continue;
+    const score =
+      normFestival.length +
+      (normRaw === normFestival ? 24 : 0) +
+      (baseRaw && baseFestival && baseRaw === baseFestival ? 12 : 0);
+    if (score > bestScore) {
+      best = festivalName;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+function _titleCaseFestivalName(text) {
+  return String(text || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word, idx) => {
+      if (/^(acl|edc|iii|m3f|nrmal|sxsw|ultra)$/i.test(word)) return word.toUpperCase();
+      const lower = word.toLowerCase();
+      if (idx > 0 && /^(a|an|and|at|by|da|de|del|do|dos|el|en|for|la|las|los|of|on|the|y)$/i.test(word)) {
+        return lower;
+      }
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ');
+}
+function _canonicalFestivalName(candidates) {
+  const list = _uniqueCI((Array.isArray(candidates) ? candidates : [candidates]).filter(Boolean));
+  const firstKnown = list.length ? _knownFestivalNameFromText(list[0]) : '';
+  if (firstKnown) return firstKnown;
+  let bestLabel = '';
+  let bestScore = -Infinity;
+  list.forEach((candidate, idx) => {
+    const raw = String(candidate || '').trim();
+    if (!raw) return;
+    const base = _festivalBaseName(raw);
+    const normRaw = _normText(raw);
+    const known = _knownFestivalNameFromText(raw);
+    const cleanRaw = !TICKET_TIER_TEST_RE.test(raw);
+    const keepRaw = cleanRaw && (!base || raw.length <= base.length + 8);
+    const label = known || (keepRaw ? raw : (_titleCaseFestivalName(base) || raw));
+
+    let score = Math.max(0, 40 - idx * 12);
+    if (cleanRaw) score += 18;
+    else score -= 18;
+    if (FEST_EVENT_RE.test(normRaw)) score += 10;
+    if (known) score += 18;
+    if (idx === 0 && known) score += 40;
+    if (known && _normText(known) === normRaw) score += 10;
+    if (known && base && _festivalBaseName(known) === base) score += 24;
+    if (base && _normText(base) === normRaw) score += 6;
+    if (base && raw.length <= base.length + 8) score += 6;
+
+    if (score > bestScore) {
+      bestLabel = label;
+      bestScore = score;
+    }
+  });
+  return bestLabel || list[0] || '';
 }
 function _isFestivalSelfReference(candidate, festName) {
   const cand = _festivalBaseName(candidate);

@@ -30,7 +30,7 @@ function _sameFestival(a, b) {
   const cityB = _cityCore(b?.city || '');
   const sameCountry = !(a?.country && b?.country) || a.country === b.country;
 
-  if (a?.lat != null && a?.lng != null && b?.lat != null && b?.lng != null && geoDist(a.lat, a.lng, b.lat, b.lng) <= 12) {
+  if (a?.lat != null && a?.lng != null && b?.lat != null && b?.lng != null && sameCountry && geoDist(a.lat, a.lng, b.lat, b.lng) <= 12) {
     return true;
   }
   if (venueA && venueB && (venueA === venueB || _tokenOverlap(venueA, venueB) >= 0.72)) return sameCountry;
@@ -85,6 +85,26 @@ function deduplicateFestivals(list) {
     if (festival.endDate === festival.date) delete festival.endDate;
     festival.lineup = _uniqueCI(festival.lineup || []);
     festival.sourceHints = _uniqueCI(festival.sourceHints || []);
+    festival.name = _canonicalFestivalName([
+      festival.rawName,
+      ...(festival.sourceHints || []),
+      festival.name,
+    ]) || festival.name || festival.rawName || 'Festival';
     return festival;
+  });
+}
+
+function normalizeFestivalLabels(list) {
+  return (list || []).map(festival => {
+    if (!festival || typeof festival !== 'object') return festival;
+    const next = { ...festival };
+    next.lineup = _uniqueCI(next.lineup || []);
+    next.sourceHints = _uniqueCI(next.sourceHints || []);
+    next.name = _canonicalFestivalName([
+      next.rawName,
+      ...(next.sourceHints || []),
+      next.name,
+    ]) || next.name || next.rawName || 'Festival';
+    return next;
   });
 }

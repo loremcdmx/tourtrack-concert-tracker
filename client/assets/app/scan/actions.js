@@ -242,6 +242,8 @@ function triggerFileLoad() {
 // SPOTIFY IMPORT
 // ═══════════════════════════════════════════════════════════════
 let spTokenCache = null; // { token, exp }
+const SPOTIFY_SERVER_TIMEOUT_MS = 15000;
+const SPOTIFY_IMPORT_TIMEOUT_MS = 45000;
 
 // ═══════════════════════════════════════════════════════════════
 // UNIFIED PROXY SYSTEM  (Spotify + Ticketmaster)
@@ -557,14 +559,13 @@ async function spGetToken() {
   if (!SERVER_MANAGED_SPOTIFY) {
     throw new Error('Spotify is not configured for this deployment yet.');
   }
-  const serverRes = await fetch('/api/spotify/token', {
+  const data = await spFetchServerJson('/api/spotify/token', {
     method: 'POST',
     credentials: 'same-origin',
+  }, {
+    label: 'Spotify auth',
+    timeoutMs: SPOTIFY_SERVER_TIMEOUT_MS,
   });
-  const data = await serverRes.json().catch(() => ({}));
-  if (!serverRes.ok) {
-    throw new Error(data.error || data.message || `Spotify auth failed (${serverRes.status}).`);
-  }
   const expiresIn = Math.max(60, Number(data.expires_in) || 3600);
   spTokenCache = {
     token: data.access_token,
@@ -621,17 +622,40 @@ async function spFetchAllTracks(token, pid) {
 }
 
 async function spFetchPlaylistImport(pid) {
-  const res = await fetch(`/api/spotify/playlists/${encodeURIComponent(pid)}/import`, {
+  return spFetchServerJson(`/api/spotify/playlists/${encodeURIComponent(pid)}/import`, {
     credentials: 'same-origin',
+  }, {
+    label: 'Spotify playlist import',
+    timeoutMs: SPOTIFY_IMPORT_TIMEOUT_MS,
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const error = new Error(data.error || data.message || `Spotify playlist import failed (${res.status}).`);
-    error.status = res.status;
-    error.detail = data.detail;
+}
+
+async function spFetchServerJson(url, fetchOptions = {}, opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : SPOTIFY_SERVER_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.error || data.message || `${opts.label || 'Spotify request'} failed (${response.status}).`);
+      error.status = response.status;
+      error.detail = data.detail;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      throw new Error(`${opts.label || 'Spotify request'} timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    }
     throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return data;
 }
 
 function spBuildArtistMap(tracks) {

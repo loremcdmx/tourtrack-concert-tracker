@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&family=Bebas+Neue&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/styles.css">
+<link rel="stylesheet" href="/assets/styles.css?v=2.28.0008">
 </head>
 <body>
 <header>
@@ -22,7 +22,7 @@
   <div class="prof-bar">
     <select id="prof-select" onchange="profSwitch(this.value)" title="Switch music taste profile"></select>
     <button class="prof-btn" id="prof-reload-btn" onclick="profReload()" title="Reload this profile">&#x21BB;</button>
-    <button class="prof-btn" onclick="profOpenDialog()" title="New profile">＋</button>
+    <button class="prof-btn" onclick="profOpenDialog()" title="New profile">+</button>
     <button class="prof-btn del" id="prof-del-btn" onclick="profDelete()" title="Delete this profile" disabled>&#x2715;</button>
   </div>
   <!-- Profile switch toast -->
@@ -30,11 +30,11 @@
 
   <div class="hd-right">
     <span class="hd-progress" id="hd-progress" style="display:none"></span>
-    <button class="btn btn-stop" id="stop-btn" onclick="stopScan()" style="display:none">■ Stop</button>
+    <button class="btn btn-stop" id="stop-btn" onclick="stopScan()" style="display:none">? Stop</button>
     <button class="btn btn-spotify-auth" id="spotify-auth-btn" onclick="openSpotifyAccess()">Spotify</button>
     <button class="btn btn-rescan" id="merge-rescan-btn" onclick="runScanAction('smart')" title="Refresh concerts with the cache-aware scan">&#x21BB; Refresh</button>
     <button class="btn btn-rescan-fests" id="fest-rescan-btn" onclick="openScanLibrary()" title="Open all scan and rescan actions">&#x1F50E; Actions</button>
-    <button class="btn btn-primary" onclick="openSettings()">⚙ Settings</button>
+    <button class="btn btn-primary" onclick="openSettings()">? Settings</button>
   </div>
 </header>
 
@@ -110,6 +110,7 @@
 <div class="onboard" id="onboard">
   <div class="onboard-card">
     <div class="onboard-logo">Concert<span>Tracker</span></div>
+    <div class="onboard-headnote">Spotify playlist to live concerts</div>
 
     <!-- ▸ RESUME PANEL — shown when IDB has cached data -->
     <div class="onboard-resume" id="onboard-resume" style="display:none">
@@ -137,7 +138,7 @@
         <button class="obf-btn"   data-os="4" onclick="obSetScore(4)">top+</button>
       </div>
 
-      <button class="onboard-resume-btn" id="onboard-resume-btn" onclick="instantResume({manual:true})">▶ Resume session</button>
+      <button class="onboard-resume-btn" id="onboard-resume-btn" onclick="instantResume({manual:true})">? Resume session</button>
       <div class="onboard-resume-fresh">
         or <a onclick="showNewImport()">start a new import →</a>
       </div>
@@ -145,8 +146,8 @@
 
     <!-- ▸ NEW IMPORT PANEL — default state or when no IDB data -->
     <div id="onboard-import-panel">
-      <div class="onboard-title" id="onboard-main-title">Start with Spotify<br>or open the sample</div>
-      <div class="onboard-sub" id="onboard-sub-text">Connect Spotify to pick one of your playlists, or open the loremcdmx twitch playlist instantly. Cached scans reopen fast on this device.</div>
+      <div class="onboard-title" id="onboard-main-title">See upcoming concerts from a Spotify playlist</div>
+      <div class="onboard-sub" id="onboard-sub-text">Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.</div>
       <div class="onboard-auth-wrap" id="onboard-auth-wrap" style="display:none">
         <div class="onboard-auth-row">
           <button class="onboard-auth-btn" id="onboard-auth-btn" onclick="onboardSpotifyAuthAction()">Continue with Spotify</button>
@@ -175,7 +176,7 @@
       </div>
       <!-- Min tracks filter -->
       <div class="onboard-mintracks-row">
-        <span class="onboard-mintracks-label">Min tracks in playlist:</span>
+        <span class="onboard-mintracks-label">Artist threshold</span>
         <div class="onboard-mintracks-chips" id="onboard-mintracks-chips">
           <button class="onboard-mt-chip on" data-v="1" onclick="setMinTracks(1)">≥1</button>
           <button class="onboard-mt-chip" data-v="2" onclick="setMinTracks(2)">≥2</button>
@@ -186,7 +187,7 @@
         <span class="onboard-mintracks-hint" id="onboard-mintracks-hint">all artists</span>
       </div>
       <div class="onboard-status" id="onboard-status">
-        <span id="onboard-status-text"></span>
+        <span id="onboard-status-text">Sign in with Spotify or open the sample to begin.</span>
       </div>
       <!-- Progress bar (shown during import) -->
       <div class="onboard-prog-wrap" id="onboard-prog-wrap">
@@ -222,13 +223,15 @@
       <div class="onboard-quickload" id="onboard-quickload">
         <hr class="onboard-divider">
         <div class="onboard-history-label">Ready to open</div>
-        <div class="onboard-pl onboard-pl--pinned"
+        <button type="button" class="onboard-pl onboard-pl--pinned"
+          data-playlist-url="https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ"
+          data-playlist-name="loremcdmx twitch playlist"
           onclick="usePinnedPlaylist({start:true})">
           <canvas class="onboard-pl-mosaic" id="ql-pinned-mosaic" width="68" height="68"
             style="width:68px;height:68px;flex-shrink:0;display:block"></canvas>
           <div class="onboard-pl-body">
             <div class="onboard-pl-name">loremcdmx twitch playlist</div>
-            <div class="onboard-pl-meta">2449 artists &middot; 5569 tracks</div>
+            <div class="onboard-pl-meta">2477 artists &middot; 5656 tracks</div>
             <div class="onboard-pl-chips">
               <span class="onboard-pl-chip">Fall Out Boy</span>
               <span class="onboard-pl-chip">The Maine</span>
@@ -237,7 +240,7 @@
             </div>
           </div>
           <div class="onboard-pl-arrow">&#x2192;</div>
-        </div>
+        </button>
       </div>
       <div class="onboard-skip" id="onboard-skip" style="display:none">
         <a onclick="hideOnboard()">← Back to last session</a>
@@ -413,7 +416,7 @@
         <button class="msb-tab t-on" id="tab-tours"   onclick="setTab('tours')">🎸 Tours</button>
         <button class="msb-tab"      id="tab-fests"   onclick="setTab('fests')">🎪 Festivals</button>
         <button class="msb-tab"      id="tab-match"   onclick="setTab('match')">💑 Match</button>
-        <button class="msb-tab"      id="tab-errors"  onclick="setTab('errors')" style="display:none">⚡ Errors</button>
+        <button class="msb-tab"      id="tab-errors"  onclick="setTab('errors')" style="display:none">? Errors</button>
         <button class="msb-tab"      id="tab-honest"  onclick="setTab('honest')">🧐 Honesty</button>
       </div>
 
@@ -453,7 +456,7 @@
           <div class="msb-visible-hd" onclick="toggleVisiblePanel()">
             <span class="msb-visible-title">On screen</span>
             <span class="msb-visible-count" id="msb-visible-count">0</span>
-            <span class="msb-visible-arr">▾</span>
+            <span class="msb-visible-arr">?</span>
           </div>
           <!-- Quick date filter for ON SCREEN list — mirrors mapDateMode -->
           <div id="msb-date-row" style="display:none;padding:3px 8px 4px;gap:3px;flex-wrap:wrap;border-bottom:1px solid var(--border)">
@@ -510,7 +513,7 @@
           <div class="match-label">Her Spotify playlist</div>
           <div class="match-url-row">
             <input class="match-url-input" id="match-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false">
-            <button class="match-btn" id="match-btn" onclick="runMatchV2()">▶ Match</button>
+            <button class="match-btn" id="match-btn" onclick="runMatchV2()">? Match</button>
           </div>
           <div class="match-progress" id="match-progress" style="display:none">
             <div class="match-progress-fill" id="match-prog-fill" style="width:5%"></div>
@@ -606,7 +609,7 @@
 <div class="quota-bg" id="quota-bg">
   <div class="quota-box">
       <div class="quota-top">
-      <div class="quota-icon">⛔</div>
+      <div class="quota-icon">?</div>
         <div class="quota-title" id="quota-title">API Key Quota Exhausted</div>
         <div class="quota-subtitle" id="quota-subtitle">
         Ticketmaster is rejecting every request instantly (&lt;15ms), which means
@@ -627,7 +630,7 @@
             placeholder="Paste new Consumer Key…" autocomplete="off" spellcheck="false"
             oninput="document.getElementById('quota-key-apply').disabled=!this.value.trim()">
           <button class="quota-key-btn" id="quota-key-apply" disabled
-            onclick="quotaApplyNewKey()">▶ Continue</button>
+            onclick="quotaApplyNewKey()">? Continue</button>
         </div>
       </div>
       <div class="quota-get-link" id="quota-get-link">
@@ -651,7 +654,7 @@
       <button class="dbg-filter ok"  data-f="ok"     onclick="dbgSetFilter('ok')">✓ OK</button>
       <button class="dbg-filter err" data-f="error"  onclick="dbgSetFilter('error')">✗ Error</button>
       <button class="dbg-filter net" data-f="net"    onclick="dbgSetFilter('net')">📡 Network</button>
-      <button class="dbg-filter warn" data-f="warn"  onclick="dbgSetFilter('warn')">⚠ Warn</button>
+      <button class="dbg-filter warn" data-f="warn"  onclick="dbgSetFilter('warn')">? Warn</button>
       <button class="dbg-filter info" data-f="info"  onclick="dbgSetFilter('info')">ℹ Info</button>
     </div>
     <div class="dbg-actions">
@@ -901,40 +904,40 @@
   </div>
 </div>
 </div>
-<script src="/config.js"></script>
-<script src="/assets/app/core/runtime.js"></script>
-<script src="/assets/app/core/profiles.js"></script>
-<script src="/assets/app/core/storage.js"></script>
-<script src="/assets/app/core/filter-presets.js"></script>
-<script src="/assets/app/scan/actions.js"></script>
-<script src="/assets/app/scan/shared/network.js"></script>
-<script src="/assets/app/scan/shared/geo.js"></script>
-<script src="/assets/app/scan/shared/matching.js"></script>
-<script src="/assets/app/scan/shared/concert-matching.js"></script>
-<script src="/assets/app/scan/shared/concert-records.js"></script>
-<script src="/assets/app/core/artist-knowledge.js"></script>
-<script src="/assets/app/scan/shared/preflight.js"></script>
-<script src="/assets/app/ui/settings/panel.js"></script>
-<script src="/assets/app/ui/settings/scope.js"></script>
-<script src="/assets/app/scan/feedback.js"></script>
-<script src="/assets/app/scan/errors.js"></script>
-<script src="/assets/app/scan/runtime.js"></script>
-<script src="/assets/app/scan/pipeline.js"></script>
-<script src="/assets/app/scan/providers.js"></script>
-<script src="/assets/app/scan/festivals/ingest.js"></script>
-<script src="/assets/app/scan/festivals/dedup.js"></script>
-<script src="/assets/app/scan/festivals/scoring.js"></script>
-<script src="/assets/app/scan/festivals.js"></script>
-<script src="/assets/app/scan/concerts.js"></script>
-<script src="/assets/app/ui/calendar.js"></script>
-<script src="/assets/app/ui/map/base.js"></script>
-<script src="/assets/app/ui/map/drawer.js"></script>
-<script src="/assets/app/ui/map/match.js"></script>
-<script src="/assets/app/ui/map/sidebar.js"></script>
-<script src="/assets/app/ui/map/focus.js"></script>
-<script src="/assets/app/ui/map/render.js"></script>
-<script src="/assets/app/ui/overlays.js"></script>
-<script src="/assets/app/integrations/spotify.js"></script>
-<script src="/assets/app/bootstrap.js"></script>
+<script src="/config.js?v=2.28.0005"></script>
+    <script src="/assets/app/core/runtime.js?v=2.28.0006"></script>
+<script src="/assets/app/core/profiles.js?v=2.28.0005"></script>
+    <script src="/assets/app/core/storage.js?v=2.28.0006"></script>
+<script src="/assets/app/core/filter-presets.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/actions.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/shared/network.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/shared/geo.js?v=2.28.0005"></script>
+    <script src="/assets/app/scan/shared/matching.js?v=2.28.0006"></script>
+<script src="/assets/app/scan/shared/concert-matching.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/shared/concert-records.js?v=2.28.0005"></script>
+<script src="/assets/app/core/artist-knowledge.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/shared/preflight.js?v=2.28.0005"></script>
+<script src="/assets/app/ui/settings/panel.js?v=2.28.0005"></script>
+<script src="/assets/app/ui/settings/scope.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/feedback.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/errors.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/runtime.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/pipeline.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/providers.js?v=2.28.0005"></script>
+    <script src="/assets/app/scan/festivals/ingest.js?v=2.28.0006"></script>
+    <script src="/assets/app/scan/festivals/dedup.js?v=2.28.0006"></script>
+<script src="/assets/app/scan/festivals/scoring.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/festivals.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/concerts.js?v=2.28.0005"></script>
+    <script src="/assets/app/ui/calendar.js?v=2.28.0007"></script>
+<script src="/assets/app/ui/map/base.js?v=2.28.0009"></script>
+<script src="/assets/app/ui/map/drawer.js?v=2.28.0005"></script>
+<script src="/assets/app/ui/map/match.js?v=2.28.0005"></script>
+<script src="/assets/app/ui/map/sidebar.js?v=2.28.0005"></script>
+<script src="/assets/app/ui/map/focus.js?v=2.28.0005"></script>
+<script src="/assets/app/ui/map/render.js?v=2.28.0007"></script>
+<script src="/assets/app/ui/overlays.js?v=2.28.0005"></script>
+<script src="/assets/app/integrations/spotify.js?v=2.28.0005"></script>
+<script src="/assets/app/bootstrap.js?v=2.28.0005"></script>
 </body>
 </html>

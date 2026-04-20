@@ -123,8 +123,8 @@ const KNOWN_FESTIVALS = [
   'Vans Warped Tour','Electric Daisy Carnival','Ultra Music Festival',
   // Mexico — use exact TM names
   'Corona Capital','Tecate Pal Norte','Pal Norte','Pa\'l Norte',
-  'Vive Latino','Tecate Vive Latino',
-  'Bahidora','Bahidorá','Festival Nrmal','Coordenada','Machaca Fest',
+  'Vive Latino','Tecate Vive Latino','Tecate Emblema','Tecate Sonoro','Tecate Comuna',
+  'Bahidora','Bahidorá','Festival Nrmal','Coordenada','Machaca Fest','AXE Ceremonia','Ceremonia','Arre',
   'BPM Festival','BPM Festival Mexico','Hipnosis Festival',
   // LatAm
   'Lollapalooza Argentina','Lollapalooza Brasil','Lollapalooza Chile','Lollapalooza Colombia',
@@ -211,4 +211,3 @@ window._scanActive = false; // true while a scan is in progress — prevents sho
 // touched by profile switching.  They come from the TM API scans
 // and belong to no single profile.
 // ═══════════════════════════════════════════════════════════════
-

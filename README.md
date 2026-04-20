@@ -32,7 +32,7 @@ TICKETMASTER_API_KEYS=your_ticketmaster_key
 ```env
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SPOTIFY_REDIRECT_URI=http://127.0.0.1:3000/api/auth/spotify/callback
+SPOTIFY_REDIRECT_URI=http://localhost:3002/api/auth/spotify/callback
 SESSION_SECRET=replace_with_a_long_random_secret
 ```
 
@@ -44,7 +44,64 @@ Register the same redirect URI in the Spotify developer dashboard before testing
 npm start
 ```
 
-5. Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
+5. Open [http://localhost:3002](http://localhost:3002).
+
+## Continue On Mac With Codex
+
+Use this path to resume development from a clean Mac checkout.
+
+1. Install prerequisites:
+
+```bash
+brew install git node
+node -v
+```
+
+Node must be 20 or newer.
+
+2. Clone and enter the repo:
+
+```bash
+git clone https://github.com/loremcdmx/tourtrack-concert-tracker.git
+cd tourtrack-concert-tracker
+```
+
+3. Create `.env` from the template:
+
+```bash
+cp .env.example .env
+```
+
+Fill these values in `.env`:
+
+```env
+TICKETMASTER_API_KEYS=your_ticketmaster_key
+SPOTIFY_CLIENT_ID=your_spotify_client_id
+SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+SPOTIFY_REDIRECT_URI=http://localhost:3002/api/auth/spotify/callback
+SESSION_SECRET=replace_with_a_long_random_secret
+```
+
+Register the same Spotify redirect URI in the Spotify developer dashboard:
+
+```text
+http://localhost:3002/api/auth/spotify/callback
+```
+
+4. Verify and run:
+
+```bash
+npm run check
+npm start
+```
+
+Open [http://localhost:3002](http://localhost:3002).
+
+5. In Codex on Mac, open this repo folder and start with:
+
+```text
+прочитай AGENTS.md и README.md, проверь git status и npm run check, продолжим работу над ConcertTracker. Не трогай .env и не коммить секреты.
+```
 
 ## Scripts
 

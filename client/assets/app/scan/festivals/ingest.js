@@ -65,9 +65,11 @@ function buildFestivalRecordFromEvent(ev, hint) {
   const { accepted, hintMatch } = isMusicFestivalEvent(ev, hint);
   if (!accepted) return null;
 
-  const displayName = (hint && hintMatch && hint.length <= (ev?.name || '').length)
-    ? hint
-    : (ev?.name || hint || 'Festival');
+  const displayName = _canonicalFestivalName([
+    hint && hintMatch ? hint : '',
+    ev?.name || '',
+    hint || '',
+  ]) || (ev?.name || hint || 'Festival');
   const image = pickFestivalImage(ev);
 
   return {

@@ -4,6 +4,77 @@ let MAP_MAX_ARTISTS = 30;
 let _mapWasCapped = false;   // true when last render trimmed to top 20
 let _mapFirstFit  = false;   // becomes true after the first fitBounds — prevents jumping on filter changes
 
+function _mapCreateEl(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined && text !== null) el.textContent = text;
+  return el;
+}
+
+function _mapPopupBadgeEl(label, tone = '') {
+  return _mapCreateEl('span', `map-popup-badge${tone ? ` is-${tone}` : ''}`, label);
+}
+
+function _mapPopupMetricEl(label, value) {
+  const el = _mapCreateEl('div', 'map-popup-metric');
+  el.appendChild(_mapCreateEl('span', 'map-popup-metric__value', String(value)));
+  el.appendChild(_mapCreateEl('span', 'map-popup-metric__label', label));
+  return el;
+}
+
+function _mapPopupActionEl(label, opts = {}) {
+  const isLink = !!opts.href;
+  const el = _mapCreateEl(isLink ? 'a' : 'button', `map-popup-action${opts.tone ? ` is-${opts.tone}` : ''}`, label);
+  if (isLink) {
+    el.href = opts.href;
+    el.target = '_blank';
+    el.rel = 'noreferrer noopener';
+  } else {
+    el.type = 'button';
+  }
+  if (typeof opts.onClick === 'function') {
+    el.addEventListener('click', ev => {
+      if (!isLink) ev.preventDefault();
+      opts.onClick(ev);
+    });
+  }
+  return el;
+}
+
+function _mapMarkerAvatarHtml(artist, accent) {
+  const media = typeof getCachedArtistMedia === 'function' ? getCachedArtistMedia(artist) : null;
+  const src = media?.thumb || media?.large || media?.xl || '';
+  return `<span class="map-marker-avatar${src ? ' has-image' : ''}" style="--map-marker-accent:${accent}">
+    ${src ? `<img src="${esc2(src)}" alt="${esc2(artist)} portrait" referrerpolicy="no-referrer">` : ''}
+    <span class="map-marker-avatar__fallback">${esc2(artistAvatarInitials(artist))}</span>
+  </span>`;
+}
+
+function _mapShortDate(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(`${dateStr}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? dateStr : date.toLocaleString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function _mapConcertLocation(ev) {
+  return [ev.city, ev.state && ev.country === 'US' ? ev.state : '', ev.country ? flag(ev.country) : '']
+    .filter(Boolean)
+    .join(' ');
+}
+
+function _mapUrgencyTone(dateStr, in7, in30) {
+  if (!dateStr) return 'later';
+  if (dateStr <= in7) return 'urgent';
+  if (dateStr <= in30) return 'soon';
+  return 'later';
+}
+
+function _mapUrgencyLabel(tone) {
+  if (tone === 'urgent') return 'This week';
+  if (tone === 'soon') return 'This month';
+  return 'Upcoming';
+}
+
 // ── Festival map popup — rich card with lineup ──────────────────
 function _buildFestPopup(f) {
   const cc      = f.country ? ' ' + flag(f.country) : '';
@@ -25,66 +96,129 @@ function _buildFestPopup(f) {
     .slice(0, 6);
   const linkedShows = _festivalLinkedConcerts(f).filter(c => !isHidden(c.artist));
 
-  // My artists row
-  const myRows = matched.map(m => {
-    const name  = m.artist || m;
-    const plays = m.plays  || 0;
-    const col   = getColor(name);
-    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05)">
-      <span style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></span>
-      <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:.72rem;color:${col};flex:1">${esc2(name)}</span>
-      ${plays > 0 ? `<span style="font-size:.55rem;color:rgba(255,255,255,.35);font-family:'DM Mono',monospace">${plays}×</span>` : ''}
-    </div>`;
-  }).join('');
+  const root = _mapCreateEl('div', 'map-popup map-popup--festival');
+  root.style.setProperty('--map-popup-accent', 'var(--fest)');
 
-  // Other top headliners row
-  const otherRows = topOther.length ? `
-    <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08)">
-      <div style="font-size:.46rem;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.3);margin-bottom:4px">Headliners</div>
-      ${topOther.map(n => `<div style="font-size:.64rem;color:rgba(255,255,255,.5);padding:1px 0">${esc2(n)}</div>`).join('')}
-    </div>` : '';
+  if (f.imageUrl) {
+    const mediaWrap = _mapCreateEl(f.url ? 'a' : 'div', 'map-popup__media');
+    if (f.url) {
+      mediaWrap.href = f.url;
+      mediaWrap.target = '_blank';
+      mediaWrap.rel = 'noreferrer noopener';
+    }
+    const img = document.createElement('img');
+    img.src = f.imageUrl;
+    img.alt = f.name ? `${f.name} poster` : 'Festival poster';
+    img.referrerPolicy = 'no-referrer';
+    img.onerror = () => mediaWrap.remove();
+    mediaWrap.appendChild(img);
+    root.appendChild(mediaWrap);
+  }
 
-  const hasLineup = matched.length > 0 || topOther.length > 0;
-  const lineupBlock = hasLineup ? `
-    <div style="margin-top:10px">
-      ${myRows}
-      ${otherRows}
-    </div>` : '';
+  const body = _mapCreateEl('div', 'map-popup__body');
+  const badges = _mapCreateEl('div', 'map-popup__badges');
+  badges.appendChild(_mapPopupBadgeEl('Festival', 'fest'));
+  if (matched.length) badges.appendChild(_mapPopupBadgeEl(`${matched.length} tracked`, 'accent'));
+  if (lineup.length) badges.appendChild(_mapPopupBadgeEl(`${lineup.length} lineup`, 'muted'));
+  if (linkedShows.length) badges.appendChild(_mapPopupBadgeEl(`${linkedShows.length} linked`, 'muted'));
+  body.appendChild(badges);
 
-  const scoreBar = f.score > 0 ? `
-    <div style="margin-top:8px;height:2px;background:rgba(255,255,255,.1);border-radius:1px;overflow:hidden">
-      <div style="height:100%;width:${f.score}%;background:#ffaa3c;border-radius:1px"></div>
-    </div>` : '';
+  body.appendChild(_mapCreateEl('div', 'map-popup__title', f.name || 'Festival'));
+  if (dateStr) body.appendChild(_mapCreateEl('div', 'map-popup__meta', dateStr));
+  if (f.venue) body.appendChild(_mapCreateEl('div', 'map-popup__subhead', f.venue));
 
-  // Poster image (from TM or a Songkick/Bands-in-Town fallback via Google image search not available)
-  // We use TM's stored image directly. Clicking opens the ticket page.
-  const imgHtml = f.imageUrl ? `
-    <a href="${f.url || '#'}" target="_blank" style="display:block;margin-bottom:10px;border-radius:6px;overflow:hidden;line-height:0;border:1px solid rgba(255,170,60,.2)">
-      <img src="${f.imageUrl}" alt="${esc2(f.name)}"
-        style="width:100%;max-height:140px;object-fit:cover;display:block"
-        onerror="this.parentElement.style.display='none'">
-    </a>` : '';
+  const locLabel = `${f.city || ''}${cc}`.trim();
+  if (locLabel) body.appendChild(_mapCreateEl('div', 'map-popup__meta map-popup__meta--secondary', locLabel));
 
-  return `<div style="min-width:260px;max-width:320px">
-    ${imgHtml}
-    <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:.9rem;color:#ffaa3c;line-height:1.2;margin-bottom:3px">${esc2(f.name)}</div>
-    <div style="font-size:.64rem;color:rgba(255,255,255,.65);margin-bottom:1px">${dateStr}</div>
-    ${f.venue ? `<div style="font-size:.6rem;color:rgba(255,255,255,.45)">${esc2(f.venue)}</div>` : ''}
-    <div style="font-size:.58rem;color:rgba(255,255,255,.35);margin-bottom:4px">${esc2(f.city)}${cc}</div>
-    <div style="font-size:.54rem;color:rgba(255,255,255,.42);margin-bottom:4px">
-      ${matched.length ? `${matched.length} tracked` : '0 tracked'}${lineup.length ? ` · lineup ${lineup.length}` : ''}${linkedShows.length ? ` · linked ${linkedShows.length}` : ''}
-    </div>
-    ${lineupBlock}
-    ${scoreBar}
-    ${f.url ? `<div style="margin-top:10px"><a href="${f.url}" target="_blank" style="color:#ffaa3c;font-size:.64rem;font-family:'DM Mono',monospace;text-decoration:none;letter-spacing:.02em">🎫 Tickets →</a></div>` : ''}
-  </div>`;
+  const metrics = _mapCreateEl('div', 'map-popup__metrics');
+  metrics.appendChild(_mapPopupMetricEl('Score', Math.round(f.score || 0)));
+  metrics.appendChild(_mapPopupMetricEl('Tracked', matched.length));
+  metrics.appendChild(_mapPopupMetricEl('Linked', linkedShows.length));
+  body.appendChild(metrics);
+
+  if (matched.length) {
+    const section = _mapCreateEl('div', 'map-popup__section');
+    section.appendChild(_mapCreateEl('div', 'map-popup__section-title', 'Your artists'));
+    const chips = _mapCreateEl('div', 'map-popup__chips');
+    matched.slice(0, 8).forEach(item => {
+      const name = item.artist || item;
+      const chip = _mapCreateEl('button', 'map-popup-chip map-popup-chip--artist', name);
+      chip.type = 'button';
+      chip.style.setProperty('--map-chip-accent', getColor(name));
+      chip.addEventListener('click', () => focusArtist(name));
+      if (item.plays > 0) chip.appendChild(_mapCreateEl('span', 'map-popup-chip__meta', `${item.plays} plays`));
+      chips.appendChild(chip);
+    });
+    if (matched.length > 8) chips.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', `+${matched.length - 8} more`));
+    section.appendChild(chips);
+    body.appendChild(section);
+  }
+
+  if (topOther.length) {
+    const section = _mapCreateEl('div', 'map-popup__section');
+    section.appendChild(_mapCreateEl('div', 'map-popup__section-title', 'Also on lineup'));
+    const list = _mapCreateEl('div', 'map-popup__chips');
+    topOther.forEach(name => list.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', name)));
+    section.appendChild(list);
+    body.appendChild(section);
+  }
+
+  const actions = _mapCreateEl('div', 'map-popup__actions');
+  if (f.id) actions.appendChild(_mapPopupActionEl('Festival card', { tone: 'primary', onClick: () => openFestDetail(f.id) }));
+  if (f.url) actions.appendChild(_mapPopupActionEl('Tickets', { href: f.url, tone: 'ghost' }));
+  if (actions.childNodes.length) body.appendChild(actions);
+
+  root.appendChild(body);
+  return root;
 }
 
-// ── Festival label renderer — called from renderOverview AND on zoom ────
-// On zoom: only redraws festMarkers (cheap), tour markers stay in place.
+function _buildConcertPopup(artist, ev, accent, isFav, plays, in7, in30) {
+  const root = _mapCreateEl('div', 'map-popup map-popup--concert');
+  root.style.setProperty('--map-popup-accent', accent);
+
+  const body = _mapCreateEl('div', 'map-popup__body');
+  const header = _mapCreateEl('div', 'map-popup__header');
+  header.appendChild(createArtistAvatar(artist, { size: 'feed', color: accent }));
+
+  const copy = _mapCreateEl('div', 'map-popup__header-copy');
+  const urgency = _mapUrgencyTone(ev.date, in7, in30);
+  const badges = _mapCreateEl('div', 'map-popup__badges');
+  if (isFav) badges.appendChild(_mapPopupBadgeEl('Favorite', 'accent'));
+  badges.appendChild(_mapPopupBadgeEl(_mapShortDate(ev.date), 'muted'));
+  badges.appendChild(_mapPopupBadgeEl(_mapUrgencyLabel(urgency), urgency === 'urgent' ? 'danger' : (urgency === 'soon' ? 'accent' : 'muted')));
+  copy.appendChild(badges);
+  copy.appendChild(_mapCreateEl('div', 'map-popup__title', artist));
+  if (ev.eventName && _normText(ev.eventName) !== _normText(artist)) copy.appendChild(_mapCreateEl('div', 'map-popup__subhead', ev.eventName));
+  header.appendChild(copy);
+  body.appendChild(header);
+
+  if (ev.venue) body.appendChild(_mapCreateEl('div', 'map-popup__meta', ev.venue));
+  const location = _mapConcertLocation(ev);
+  if (location) body.appendChild(_mapCreateEl('div', 'map-popup__meta map-popup__meta--secondary', location));
+
+  const linkedFest = _festForConcert(ev);
+  const chips = _mapCreateEl('div', 'map-popup__chips');
+  if (plays > 0) chips.appendChild(_mapCreateEl('span', 'map-popup-chip', `${plays} plays`));
+  if (linkedFest?.name) {
+    const chip = _mapCreateEl('button', 'map-popup-chip map-popup-chip--fest', linkedFest.name);
+    chip.type = 'button';
+    if (linkedFest.id) chip.addEventListener('click', () => openFestDetail(linkedFest.id));
+    chips.appendChild(chip);
+  }
+  if (ev.country) chips.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', flag(ev.country)));
+  if (chips.childNodes.length) body.appendChild(chips);
+
+  const actions = _mapCreateEl('div', 'map-popup__actions');
+  actions.appendChild(_mapPopupActionEl('Open tour', { tone: 'primary', onClick: () => focusConcert(ev) }));
+  if (linkedFest?.id) actions.appendChild(_mapPopupActionEl('Festival', { tone: 'secondary', onClick: () => openFestDetail(linkedFest.id) }));
+  if (ev.url) actions.appendChild(_mapPopupActionEl('Tickets', { href: ev.url, tone: 'ghost' }));
+  body.appendChild(actions);
+
+  root.appendChild(body);
+  return root;
+}
 function _renderFestLabels() {
   if (!lmap) return;
-  // Remove existing fest markers only
   clearFestMarkers();
 
   const today = new Date().toISOString().split('T')[0];
@@ -94,50 +228,43 @@ function _renderFestLabels() {
   const festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
     && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f));
 
-  // High-score fests get label priority in collision resolution
-  festsToRender.sort((a, b) => (b.score||0) - (a.score||0));
+  festsToRender.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  // Occupied rectangles in screen px [x, y, w, h]
   const occupied = [];
   const PX_PAD = 6;
   const rectOverlap = (a, b) =>
-    a[0] < b[0]+b[2]+PX_PAD && a[0]+a[2]+PX_PAD > b[0] &&
-    a[1] < b[1]+b[3]+PX_PAD && a[1]+a[3]+PX_PAD > b[1];
+    a[0] < b[0] + b[2] + PX_PAD && a[0] + a[2] + PX_PAD > b[0] &&
+    a[1] < b[1] + b[3] + PX_PAD && a[1] + a[3] + PX_PAD > b[1];
 
   festsToRender.forEach(f => {
     const score = f.score || 0;
-    const pct   = score / 100;
-    const col   = pct > .6 ? '#c8ff5f' : pct > .25 ? '#ffaa3c' : '#d4813a';
+    const pct = score / 100;
+    const col = pct > .6 ? '#c8ff5f' : pct > .25 ? '#ffaa3c' : '#d4813a';
     const colBg = pct > .6 ? 'rgba(200,255,95,' : pct > .25 ? 'rgba(255,170,60,' : 'rgba(200,120,60,';
-    const fs    = score === 0 ? 10 : score < 25 ? 11 : score < 50 ? 13 : score < 75 ? 15 : 18;
-    const fw    = score >= 50 ? 700 : score >= 25 ? 600 : 500;
     const opacity = score === 0 ? 0.55 : 0.78 + pct * 0.22;
-    const sz    = Math.round(5 + pct * 7);
+    const sz = Math.round(8 + pct * 6);
     const shortName = f.name.length > 24 ? f.name.slice(0, 22) + '\u2026' : f.name;
+    const trackedCount = (f.matched || []).length;
 
-    const labelW = Math.round(shortName.length * fs * 0.62);
-    const labelH = fs + 2;
-    const totalH = labelH + 3 + sz;
-    const totalW = Math.max(labelW, sz + 4);
+    const labelW = Math.max(78, Math.min(220, Math.round(shortName.length * 7.2) + (trackedCount ? 34 : 44)));
+    const labelH = 24;
+    const totalH = labelH + 10;
+    const totalW = labelW;
 
     const pt = lmap.latLngToContainerPoint([f.lat, f.lng]);
-
-    // Candidate offsets: above, below, right, left, lower-right, lower-left
     const offsets = [
       [0, 0],
       [0, totalH + sz],
-      [totalW + 2, -totalH/2],
-      [-(totalW + 2), -totalH/2],
-      [totalW/2, totalH],
-      [-totalW/2, totalH],
+      [totalW + 2, -totalH / 2],
+      [-(totalW + 2), -totalH / 2],
+      [totalW / 2, totalH],
+      [-totalW / 2, totalH],
     ];
 
-    // Base rect when label is above
-    const baseRect = [pt.x - totalW/2, pt.y - totalH, totalW, totalH];
-
+    const baseRect = [pt.x - totalW / 2, pt.y - totalH, totalW, totalH];
     let chosenOffset = null;
     for (const [dx, dy] of offsets) {
-      const rect = [baseRect[0]+dx, baseRect[1]+dy, totalW, totalH];
+      const rect = [baseRect[0] + dx, baseRect[1] + dy, totalW, totalH];
       if (!occupied.some(o => rectOverlap(rect, o))) {
         chosenOffset = [dx, dy];
         occupied.push(rect);
@@ -145,40 +272,34 @@ function _renderFestLabels() {
       }
     }
 
-    // If every position overlaps — render dot only (no label text), so location is still visible
     const renderLabel = chosenOffset !== null;
     const [dx, dy] = chosenOffset || [0, 0];
-
     const html = renderLabel
-      ? `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;pointer-events:none">
-          <div style="font-family:'Syne',sans-serif;font-weight:${fw};font-size:${fs}px;
-            color:${col};opacity:${opacity};white-space:nowrap;
-            text-shadow:0 1px 5px rgba(0,0,0,.95),0 0 10px rgba(0,0,0,.9);
-            letter-spacing:.01em;line-height:1">${shortName}</div>
-          <div style="width:${sz}px;height:${sz}px;border:1.5px solid ${col};
-            transform:rotate(45deg);background:${colBg}.18);border-radius:1px;opacity:${opacity}"></div>
+      ? `<div class="map-fest-marker-wrap" style="opacity:${opacity};--map-fest-color:${col};--map-fest-bg:${colBg}.18)">
+          <div class="map-fest-marker">
+            <span class="map-fest-marker__count">${trackedCount || 'Fest'}</span>
+            <span class="map-fest-marker__name">${esc2(shortName)}</span>
+          </div>
+          <div class="map-fest-marker__pin"></div>
         </div>`
-      // Dot-only when label hidden due to overlap
-      : `<div style="width:${sz}px;height:${sz}px;border:1.5px solid ${col};
-            transform:rotate(45deg);background:${colBg}.18);border-radius:1px;
-            opacity:${Math.max(opacity - 0.1, 0.35)}"></div>`;
+      : `<div class="map-fest-dot" style="width:${sz}px;height:${sz}px;opacity:${Math.max(opacity - 0.1, 0.35)};--map-fest-color:${col};--map-fest-bg:${colBg}.18)"></div>`;
 
-    const dotOnlyW = sz + 4, dotOnlyH = sz + 4;
+    const dotOnlyW = sz + 4;
+    const dotOnlyH = sz + 4;
     const w = renderLabel ? totalW : dotOnlyW;
     const h = renderLabel ? totalH : dotOnlyH;
-    const anchorX = renderLabel ? (totalW/2 - dx) : dotOnlyW/2;
-    const anchorY = renderLabel ? (totalH - dy)   : dotOnlyH;
+    const anchorX = renderLabel ? (totalW / 2 - dx) : dotOnlyW / 2;
+    const anchorY = renderLabel ? (totalH - dy) : dotOnlyH / 2;
 
-    const icon = L.divIcon({ className:'', iconSize:[w, h], iconAnchor:[anchorX, anchorY], html });
-    const popup = _buildFestPopup(f);
+    const icon = L.divIcon({ className: '', iconSize: [w, h], iconAnchor: [anchorX, anchorY], html });
     const mk = L.marker([f.lat, f.lng], { icon, zIndexOffset: Math.round(score * 5) })
-      .addTo(lmap).bindPopup(popup, { maxWidth: 340, className: 'fest-map-popup' });
+      .addTo(lmap)
+      .bindPopup(() => _buildFestPopup(f), { maxWidth: 360, className: 'map-popup-shell map-popup-shell--festival' });
     festMarkers.push(mk);
   });
 
   if (!showMapFests) clearFestMarkers();
 }
-
 function renderOverview(opts = {}) {
   const preserveRoutes = !!opts.preserveRoutes;
   const today = new Date().toISOString().split('T')[0];
@@ -395,54 +516,30 @@ function renderOverview(opts = {}) {
 // ── City cluster bubble marker ───────────────────────────────────
 function _renderCityBubble(lat, lng, city, country, entries, col, urgency, isFav, topArtist) {
   const count  = entries.length;
-  const sz     = Math.min(54, 26 + count * 4);
+  const cityLabel = (city || '?').length > 11 ? `${(city || '?').slice(0, 10)}...` : (city || '?');
+  const width = Math.max(52, Math.min(108, cityLabel.length * 7 + 28));
+  const height = 40;
   const glow   = urgency === 'urgent' ? `0 0 18px ${col}90` :
                  urgency === 'soon'   ? `0 0 10px ${col}60` : 'none';
   const isPulse = urgency === 'urgent';
 
-  const plays = ARTIST_PLAYS[(topArtist||'').toLowerCase()] || 0;
-  const showName = plays >= 5 || isFav;
-
-  const html = `<div style="position:relative;width:${sz}px;height:${sz}px">
-    ${isPulse ? `<div class="map-pulse-ring" style="color:${col}"></div>` : ''}
-    <div class="${isPulse?'map-glow':''}" style="position:absolute;inset:0;border-radius:50%;
-      background:rgba(8,8,10,.96);border:2.5px solid ${col};
-      display:flex;flex-direction:column;align-items:center;justify-content:center;
-      cursor:pointer;box-shadow:${glow};overflow:hidden;gap:0">
-      <span style="font-family:'DM Mono',monospace;font-weight:800;
-        font-size:${count>9?'.5':'.62'}rem;color:${col};line-height:1.1">${count}</span>
-      ${showName ? `<span style="font-size:.27rem;color:${col};opacity:.7;line-height:1.1;
-        text-align:center;max-width:${sz-6}px;overflow:hidden;white-space:nowrap;
-        text-overflow:ellipsis;padding:0 3px">${topArtist}</span>` : ''}
-    </div>
+  const html = `<div class="map-cluster-marker ${isFav ? 'is-fav' : ''} is-${urgency}" style="--map-cluster-color:${col};--map-cluster-shadow:${glow};width:${width}px;height:${height}px">
+    ${isPulse ? `<div class="map-pulse-ring" style="color:${col};border-radius:10px"></div>` : ''}
+    <span class="map-cluster-marker__count">${count}</span>
+    <span class="map-cluster-marker__city">${esc2(cityLabel)}</span>
   </div>`;
 
-  const icon = L.divIcon({ className:'', iconSize:[sz,sz], iconAnchor:[sz/2,sz/2], html });
-
-  const cc = country ? flag(country) : '';
-  const artistLines = entries.slice(0, 8).map(e => {
-    const p = ARTIST_PLAYS[(e.artist||'').toLowerCase()] || 0;
-    return `<span style="color:${getColor(e.artist)}">${e.artist}${p ? ` <span style="opacity:.5;font-size:.58rem">${p}▶</span>` : ''}</span>`;
-  }).join(' · ');
-  const extra = entries.length > 8 ? ` <span style="opacity:.4">+${entries.length-8}</span>` : '';
-  const popup = `<b style="font-family:Syne,sans-serif;color:${col}">${city} ${cc}</b> — ${count} shows<br><span style="font-size:.62rem;line-height:1.9">${artistLines}${extra}</span><br><span style="font-size:.5rem;color:var(--muted2)">Click to zoom in → see individual shows</span>`;
-
-  const mk = L.marker([lat, lng], { icon, zIndexOffset: count * 20 })
-    .addTo(lmap);
-  mk.bindPopup(popup);
-  // Click zooms in to reveal individual pills (don't block on isPopupOpen - just close popup and zoom)
+  const icon = L.divIcon({ className: '', iconSize: [width, height], iconAnchor: [width / 2, height / 2], html });
+  const mk = L.marker([lat, lng], { icon, zIndexOffset: count * 20 }).addTo(lmap);
   mk.on('click', () => {
-    mk.closePopup();
     lmap.flyTo([lat, lng], Math.max(lmap.getZoom() + 3, 8), { duration: .65 });
   });
   tourMarkers.push(mk);
 }
-
-// ── Individual artist pill/dot marker ───────────────────────────
 function _renderArtistPill(artist, ev, rank, today, in7, in30, jitterIdx) {
   const col    = getColor(artist);
-  const plays  = ARTIST_PLAYS[(artist||'').toLowerCase()] || 0;
-  const isFav  = favoriteArtists.has((artist||'').toLowerCase());
+  const plays  = ARTIST_PLAYS[(artist || '').toLowerCase()] || 0;
+  const isFav  = favoriteArtists.has((artist || '').toLowerCase());
   const acc    = isFav ? '#ffd700' : col;
   const urgency = ev.date <= in7  ? 'urgent' :
                   ev.date <= in30 ? 'soon'   : 'far';
@@ -458,62 +555,57 @@ function _renderArtistPill(artist, ev, rank, today, in7, in30, jitterIdx) {
   let html, iconW, iconH, anchorX, anchorY;
 
   if (tierS || tierA) {
-    const ph   = tierS ? 22 : 18;
-    const ds   = tierS ? 8  : 6;
-    const fs   = tierS ? '.55rem' : '.48rem';
-    // Syne is wider than monospace — use 8.5px/char for Syne bold
-    // Width: content-driven, no hard max — short names (e.g. "EDEN") must never truncate
-    const estW = Math.min(220, Math.max(60, artist.length * (tierS ? 8.5 : 7.5) + 46));
+    const metaParts = [_mapShortDate(ev.date)];
+    if (plays > 0) metaParts.push(`${plays} plays`);
+    if (isFav) metaParts.push('Fav');
+    const metaLabel = metaParts.filter(Boolean).join(' / ');
+    const estW = Math.min(240, Math.max(108, artist.length * (tierS ? 7.3 : 6.8) + 84 + (metaLabel.length > 12 ? 22 : 0)));
+    const markerHeight = tierS ? 34 : 30;
 
-    html = `<div style="position:relative;display:inline-flex;align-items:center;gap:4px;
-      padding:3px 8px 3px ${3+ds}px;background:rgba(8,8,10,.94);
-      border:${tierS?1.5:1}px solid ${acc};border-radius:100px;
-      cursor:pointer;white-space:nowrap;box-shadow:${glow};opacity:${dimOp}">
-      ${urgency==='urgent'?`<div class="map-pulse-ring" style="color:${acc};border-radius:100px"></div>`:''}
-      <div style="width:${ds}px;height:${ds}px;border-radius:50%;background:${acc};flex-shrink:0"></div>
-      <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:${fs};
-        color:${acc}">${artist}</span>
-      ${plays > 0 ? `<span style="font-family:'DM Mono',monospace;font-size:.38rem;color:${acc};opacity:.55;flex-shrink:0">${plays}</span>` : ''}
+    html = `<div class="map-tour-marker ${tierS ? 'is-hero' : 'is-strong'} ${isFav ? 'is-fav' : ''} is-${urgency}"
+      style="--map-marker-color:${acc};--map-marker-shadow:${glow};opacity:${dimOp}">
+      ${urgency === 'urgent' ? `<div class="map-pulse-ring" style="color:${acc};border-radius:10px"></div>` : ''}
+      ${_mapMarkerAvatarHtml(artist, acc)}
+      <span class="map-tour-marker__copy">
+        <span class="map-tour-marker__name">${esc2(artist)}</span>
+        <span class="map-tour-marker__meta">${esc2(metaLabel)}</span>
+      </span>
     </div>`;
-    iconW = estW; iconH = ph;
-    anchorX = iconW / 2; anchorY = ph / 2;
-
+    iconW = estW;
+    iconH = markerHeight;
+    anchorX = iconW / 2;
+    anchorY = markerHeight / 2;
   } else {
-    const sz = tierB ? 7 : 5;
-    html = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;
-      background:${col};border:1px solid ${col};cursor:pointer;
-      box-shadow:${glow};opacity:${dimOp}"></div>`;
-    iconW = sz + 2; iconH = sz + 2;
-    anchorX = iconW / 2; anchorY = iconH / 2;
+    const sz = tierB ? 10 : 7;
+    html = `<div class="map-tour-dot ${tierB ? 'is-tracked' : ''} ${isFav ? 'is-fav' : ''} is-${urgency}"
+      style="width:${sz}px;height:${sz}px;--map-marker-color:${acc};--map-marker-shadow:${glow};opacity:${dimOp}"></div>`;
+    iconW = sz + 2;
+    iconH = sz + 2;
+    anchorX = iconW / 2;
+    anchorY = iconH / 2;
   }
 
-  // Jitter overlapping markers so they don't stack on the same pixel.
-  // The offset radius scales with zoom so it always produces ~70px visual
-  // separation regardless of zoom level:
-  //   r_degrees = 70px × 360 / (256 × 2^zoom)
   let jLat = ev.lat, jLng = ev.lng;
   if (jitterIdx && jitterIdx > 0) {
     const zoom  = lmap ? lmap.getZoom() : 5;
     const r     = (70 * 360 / (256 * Math.pow(2, zoom))) * Math.ceil(jitterIdx / 5);
-    const angle = (jitterIdx * 137.5) * (Math.PI / 180); // golden-angle spiral avoids clumping
+    const angle = (jitterIdx * 137.5) * (Math.PI / 180);
     jLat = ev.lat + Math.cos(angle) * r;
     jLng = ev.lng + Math.sin(angle) * r;
   }
 
-  const icon = L.divIcon({ className:'', iconSize:[iconW, iconH], iconAnchor:[anchorX, anchorY], html });
-  const popup = `<b style="font-family:Syne,sans-serif;color:${acc}">${isFav?'★ ':''}${artist}</b><br>
-    ${fmtDate(ev.date)}<br>${ev.venue}<br>
-    <span style="color:var(--muted)">${ev.city}${ev.country?' '+flag(ev.country):''}</span>
-    ${ev.url?`<br><a href="${ev.url}" target="_blank" style="color:${acc}">Tickets →</a>`:''}`;
-
+  const icon = L.divIcon({ className: '', iconSize: [iconW, iconH], iconAnchor: [anchorX, anchorY], html });
   const zIdx = Math.round(rank) + (isFav ? 5000 : 0) +
                (urgency === 'urgent' ? 2000 : urgency === 'soon' ? 800 : 0);
 
   const mk = L.marker([jLat, jLng], { icon, zIndexOffset: zIdx })
-    .addTo(lmap).bindPopup(popup);
-  mk.on('click', () => { mk.closePopup(); focusArtist(artist); });
+    .addTo(lmap)
+    .bindPopup(() => _buildConcertPopup(artist, ev, acc, isFav, plays, in7, in30), {
+      maxWidth: 360,
+      className: 'map-popup-shell map-popup-shell--concert'
+    });
+  mk.on('popupopen', () => {
+    if (typeof primeArtistMediaKnowledge === 'function') primeArtistMediaKnowledge([artist], 1);
+  });
   tourMarkers.push(mk);
 }
-
-// ── FESTIVAL MAP ─────────────────────────────────────────────────
-// ── FESTIVAL DETAIL MODAL ────────────────────────────────────────

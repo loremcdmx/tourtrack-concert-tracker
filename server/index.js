@@ -47,6 +47,7 @@ const STATIC_TYPES = {
 let cachedSessionSecret = '';
 let cachedSessionKey = null;
 let spotifyAppTokenCache = null;
+const SPOTIFY_UPSTREAM_TIMEOUT_MS = 15000;
 
 function loadDotEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -166,7 +167,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.28.0000',
+    appVersion: '2.28.0009',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -331,6 +332,20 @@ function isLocalRequest(req) {
   return isLoopbackHost(host) && (remote === '127.0.0.1' || remote === '::1');
 }
 
+function getLocalhostBaseUrl(req) {
+  const protocol = getRequestProtocol(req);
+  try {
+    const requestOrigin = new URL(`${protocol}://${getRequestHost(req)}`);
+    if (isLoopbackHost(requestOrigin.hostname)) {
+      const port = requestOrigin.port || String(PORT);
+      return `${protocol}://localhost${port ? `:${port}` : ''}`;
+    }
+  } catch (error) {
+    // Fall through to the request host when the header is malformed.
+  }
+  return getExternalBaseUrl(req);
+}
+
 function sanitizeReturnTo(rawValue) {
   if (!rawValue || typeof rawValue !== 'string') return '/';
   if (!rawValue.startsWith('/')) return '/';
@@ -341,7 +356,21 @@ function sanitizeReturnTo(rawValue) {
 function getSpotifyRedirectUri(req) {
   const configured = (process.env.SPOTIFY_REDIRECT_URI || '').trim();
   if (configured) return configured;
-  return `${getExternalBaseUrl(req)}/api/auth/spotify/callback`;
+  return `${getLocalhostBaseUrl(req)}/api/auth/spotify/callback`;
+}
+
+function getCanonicalSpotifyLoginUrl(req, requestUrl) {
+  let redirectUrl;
+  let requestOrigin;
+  try {
+    redirectUrl = new URL(getSpotifyRedirectUri(req));
+    requestOrigin = new URL(`${getRequestProtocol(req)}://${getRequestHost(req)}`);
+  } catch (error) {
+    return '';
+  }
+  if (!isLoopbackHost(redirectUrl.hostname) || !isLoopbackHost(requestOrigin.hostname)) return '';
+  if (redirectUrl.origin === requestOrigin.origin) return '';
+  return new URL(`${requestUrl.pathname}${requestUrl.search}`, redirectUrl.origin).toString();
 }
 
 function isSecureRequest(req) {
@@ -522,14 +551,30 @@ async function requestSpotifyToken(formParams) {
     throw error;
   }
 
-  const upstream = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams(formParams),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SPOTIFY_UPSTREAM_TIMEOUT_MS);
+  let upstream;
+  try {
+    upstream = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams(formParams),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      const timeoutError = new Error(`Spotify token request timed out after ${Math.round(SPOTIFY_UPSTREAM_TIMEOUT_MS / 1000)}s.`);
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
   const rawBody = await upstream.text();
 
   let payload = {};
@@ -581,14 +626,30 @@ async function getSpotifyAppTokenPayload() {
 }
 
 async function spotifyApiFetch(url, options = {}) {
-  const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: {
-      Authorization: `Bearer ${options.accessToken}`,
-      ...(options.headers || {}),
-    },
-    body: options.body,
-  });
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : SPOTIFY_UPSTREAM_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: options.method || 'GET',
+      headers: {
+        Authorization: `Bearer ${options.accessToken}`,
+        ...(options.headers || {}),
+      },
+      body: options.body,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      const timeoutError = new Error(`Spotify request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const rawBody = await response.text();
@@ -894,6 +955,12 @@ async function handleSpotifyLogin(req, res, requestUrl) {
     return;
   }
 
+  const canonicalLoginUrl = getCanonicalSpotifyLoginUrl(req, requestUrl);
+  if (canonicalLoginUrl) {
+    sendRedirect(res, 302, canonicalLoginUrl);
+    return;
+  }
+
   const { clientId } = getSpotifyCredentials();
   const state = crypto.randomBytes(18).toString('hex');
   const returnTo = sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/');
@@ -1081,7 +1148,7 @@ async function handleLocalSetup(req, res) {
     return;
   }
 
-  const redirectUri = `${getExternalBaseUrl(req)}/api/auth/spotify/callback`;
+  const redirectUri = getSpotifyRedirectUri(req);
 
   try {
     const updates = { PORT: String(PORT) };

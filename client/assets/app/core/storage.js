@@ -64,6 +64,7 @@ async function clearArtistCache() {
     await DB.clear('artists');
     await DB.clear('artistKnowledge');
     await DB.delete('meta', 'festivals');
+    if (typeof clearOnboardCacheSummary === 'function') clearOnboardCacheSummary();
     softNotice('Cache cleared - next scan will re-fetch everything.', 'ok');
   } catch(e) { softNotice('Could not clear cache: ' + e.message, 'error'); }
 }
@@ -109,6 +110,7 @@ function persistData() {
     localStorage.setItem('tt_concerts',  JSON.stringify(concerts));
     localStorage.setItem('tt_festivals', JSON.stringify(festivals));
   } catch(e) {}
+  if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
 }
 
 function restore() {
@@ -165,6 +167,7 @@ function restore() {
     favoriteArtists = new Set(JSON.parse(localStorage.getItem('tt_favs') || '[]'));
     // Re-apply dedup to cached data (catches duplicates from old scans)
     if (concerts.length) concerts = deduplicateConcerts(concerts);
+    if (festivals.length && typeof normalizeFestivalLabels === 'function') festivals = normalizeFestivalLabels(festivals);
   } catch(e) { hiddenArtists = {}; ARTIST_PLAYS = {}; favoriteArtists = new Set(); geoPreset = 'all'; artistPreset = 'all'; }
 }
 

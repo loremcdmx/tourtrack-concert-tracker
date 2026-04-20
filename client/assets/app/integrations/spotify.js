@@ -84,10 +84,10 @@ function renderOnboardSpotifyAuth() {
     tone = 'error';
   } else if (spotifyAccountState.connected) {
     const name = spotifyAccountState.user?.displayName || 'Spotify';
-    message = `${name} connected. Pick one of your playlists or open the sample below.`;
+    message = `${name} connected. Choose a playlist or open the sample.`;
     tone = 'ok';
   } else {
-    message = 'Connect Spotify to browse your playlists, or open the sample below.';
+    message = 'Connect Spotify to browse your playlists, or paste any playlist link.';
   }
 
   status.textContent = message;
@@ -115,6 +115,35 @@ function renderOnboardSetupNotice() {
   btn.textContent = 'Add Ticketmaster key';
 }
 
+async function fetchSpotifyUiJson(url, fetchOptions = {}, opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 15000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.error || `${opts.label || 'Spotify request'} failed (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      const timeoutError = new Error(`${opts.label || 'Spotify request'} timed out after ${Math.round(timeoutMs / 1000)}s.`);
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function refreshSpotifyAccount(opts = {}) {
   if (!SERVER_MANAGED_SPOTIFY_LOGIN) return null;
 
@@ -123,15 +152,12 @@ async function refreshSpotifyAccount(opts = {}) {
   renderOnboardSpotifyAuth();
 
   try {
-    const res = await fetch('/api/auth/spotify/session', {
+    const data = await fetchSpotifyUiJson('/api/auth/spotify/session', {
       credentials: 'same-origin',
+    }, {
+      label: 'Spotify session check',
+      timeoutMs: 12000,
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const error = new Error(data.error || `Spotify session check failed (${res.status}).`);
-      error.status = res.status;
-      throw error;
-    }
 
     spotifyAccountState.loaded = true;
     spotifyAccountState.connected = !!data.connected;
@@ -174,15 +200,12 @@ async function loadSpotifyAccountPlaylists(force = false) {
   renderOnboardSpotifyAuth();
 
   try {
-    const res = await fetch('/api/spotify/me/playlists', {
+    const data = await fetchSpotifyUiJson('/api/spotify/me/playlists', {
       credentials: 'same-origin',
+    }, {
+      label: 'Spotify playlists',
+      timeoutMs: 20000,
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const error = new Error(data.error || `Spotify playlists failed (${res.status}).`);
-      error.status = res.status;
-      throw error;
-    }
     spotifyAccountState.playlists = Array.isArray(data.items) ? data.items : [];
     spotifyAccountState.playlistsLoaded = true;
     spotifyAccountState.error = '';
@@ -210,7 +233,7 @@ function handleSpotifyAuthReturnFlag() {
   if (!status) return;
 
   if (status === 'connected') {
-    setSpotifyAuthFlash('Spotify connected. Pick a playlist or open the sample below.', 'ok');
+    setSpotifyAuthFlash('Spotify connected. Choose a playlist or open the sample.', 'ok');
   } else {
     setSpotifyAuthFlash(
       getSpotifyAuthErrorMessage(url.searchParams.get('code')),
@@ -224,6 +247,7 @@ function handleSpotifyAuthReturnFlag() {
 }
 
 async function onboardSpotifyAuthAction() {
+  markOnboardManualIntent();
   if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
     setSpotifyAuthFlash('Spotify login is not configured yet. Finish server setup, then reload this page.', 'error');
     renderOnboardSpotifyAuth();
@@ -243,6 +267,7 @@ async function onboardSpotifyAuthAction() {
 }
 
 function openSpotifyAccess() {
+  markOnboardManualIntent();
   if (!SERVER_MANAGED_SPOTIFY_LOGIN) {
     setSpotifyAuthFlash('Spotify login is not configured yet. Finish server setup, then reload this page.', 'error');
     showOnboard();
@@ -295,30 +320,61 @@ function samePlaylistUrl(a, b) {
   return !!aId && aId === bId;
 }
 
-function getDefaultOnboardPlaylistUrl() {
-  return getOnboardHistory()[0]?.url || PINNED_PLAYLIST.url;
+const ONBOARD_CACHE_SUMMARY_KEY = 'tt_onboard_cache_summary';
+
+function markOnboardManualIntent() {
+  window.__ttOnboardManualIntent = true;
 }
 
-function syncOnboardPrimaryAction() {
-  const inp = document.getElementById('onboard-url');
-  const btn = document.getElementById('onboard-btn');
-  if (!btn) return;
-  const raw = (inp?.value || '').trim();
-  const latestUrl = getOnboardHistory()[0]?.url || '';
-  if (samePlaylistUrl(raw, latestUrl)) {
-    btn.textContent = '→ Open last';
-  } else if (samePlaylistUrl(raw, PINNED_PLAYLIST.url)) {
-    btn.textContent = '→ Open sample';
-  } else {
-    btn.textContent = '→ Start scan';
+function hasOnboardManualIntent() {
+  return window.__ttOnboardManualIntent === true;
+}
+
+function clearOnboardManualIntent() {
+  window.__ttOnboardManualIntent = false;
+}
+
+function readOnboardCacheSummary() {
+  try {
+    const raw = localStorage.getItem(ONBOARD_CACHE_SUMMARY_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
-function primeOnboardPlaylistInput() {
-  const inp = document.getElementById('onboard-url');
-  if (!inp) return;
-  if (!inp.value.trim()) inp.value = getDefaultOnboardPlaylistUrl();
-  syncOnboardPrimaryAction();
+function syncOnboardCacheSummary() {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const summary = {
+      artistCount: Array.isArray(ARTISTS) ? ARTISTS.length : 0,
+      concertCount: Array.isArray(concerts)
+        ? concerts.filter(show => show?.date && show.date >= today).length
+        : 0,
+      festCount: Array.isArray(festivals)
+        ? festivals.filter(fest => fest?.date && fest.date >= today).length
+        : 0,
+      cacheTimestamp: Number(cacheTimestamp) || 0,
+      latestPlaylistUrl: getOnboardHistory()[0]?.url || '',
+      ts: Date.now(),
+    };
+    localStorage.setItem(ONBOARD_CACHE_SUMMARY_KEY, JSON.stringify(summary));
+    return summary;
+  } catch {
+    return null;
+  }
+}
+
+function clearOnboardCacheSummary() {
+  try {
+    localStorage.removeItem(ONBOARD_CACHE_SUMMARY_KEY);
+  } catch {}
+}
+
+function getDefaultOnboardPlaylistUrl() {
+  return getOnboardHistory()[0]?.url || PINNED_PLAYLIST.url;
 }
 
 function focusOnboardPlaylistInput(selectText = false) {
@@ -332,22 +388,157 @@ function usePinnedPlaylist(opts = {}) {
   const inp = document.getElementById('onboard-url');
   if (inp) inp.value = PINNED_PLAYLIST.url;
   syncOnboardPrimaryAction();
-  if (opts.start) return handleOnboardPrimaryAction();
+  if (opts.start) {
+    return startOnboardPlaylistUrl(PINNED_PLAYLIST.url, PINNED_PLAYLIST.name || 'playlist');
+  }
   focusOnboardPlaylistInput();
   return Promise.resolve(false);
+}
+
+async function handleOnboardPrimaryAction() {
+  markOnboardManualIntent();
+  primeOnboardPlaylistInput();
+  return resumeOrImport();
+}
+
+function bindOnboardCardAction(el, handler, opts = {}) {
+  if (!el || typeof handler !== 'function') return;
+
+  let lastActivationTs = 0;
+  const ignoredSelector = opts.ignoredSelector || '';
+  const isIgnored = event => {
+    if (!ignoredSelector || !event?.target?.closest) return false;
+    return !!event.target.closest(ignoredSelector);
+  };
+
+  const activate = event => {
+    if (event?.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    if (isIgnored(event)) return;
+
+    const now = Date.now();
+    if (now - lastActivationTs < 450) return;
+    lastActivationTs = now;
+
+    if (event?.preventDefault) event.preventDefault();
+    handler(event);
+  };
+
+  el.addEventListener('click', activate);
+  el.addEventListener('pointerup', event => {
+    if (event.pointerType === 'touch' || event.pointerType === 'pen') activate(event);
+  });
+  el.addEventListener('keydown', activate);
+}
+
+function startOnboardPlaylistUrl(url, label = 'playlist') {
+  const cleanUrl = String(url || '').trim();
+  const input = document.getElementById('onboard-url');
+  if (input) input.value = cleanUrl;
+
+  markOnboardManualIntent();
+  syncOnboardPrimaryAction();
+
+  const latestUrl = getOnboardHistory()[0]?.url || '';
+  const cacheInfo = readOnboardCacheSummary();
+  const canResume =
+    samePlaylistUrl(cleanUrl, latestUrl) &&
+    Number(cacheInfo?.artistCount) > 0;
+
+  if (typeof onboardSetStatus === 'function') {
+    onboardSetStatus(`Opening "${label || 'playlist'}"...`);
+  }
+  if (!canResume && typeof onboardShowProgress === 'function') {
+    onboardShowProgress('Loading playlist...');
+  }
+  if (typeof onboardLog === 'function') {
+    onboardLog(`Opening playlist: ${label || cleanUrl || 'playlist'}`, 'ok');
+  }
+
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      Promise.resolve(handleOnboardPrimaryAction()).catch(error => {
+        if (typeof onboardSetStatus === 'function') {
+          onboardSetStatus(error?.message || 'Playlist import failed.', '#ff7070');
+        }
+      });
+    }, 16);
+  });
+
+  return Promise.resolve(true);
+}
+
+function installOnboardCardDelegates() {
+  if (window.__ttOnboardCardDelegatesInstalled) return;
+  const root = document.getElementById('onboard');
+  if (!root) return;
+  window.__ttOnboardCardDelegatesInstalled = true;
+
+  const triggerFromTarget = target => {
+    if (!target?.closest) return false;
+    if (target.closest('.onboard-pl-del')) return false;
+
+    const card = target.closest('.onboard-pl');
+    if (!card || !root.contains(card)) return false;
+
+    if (card.closest('#onboard-auth-list')) {
+      const playlistId = card.dataset.playlistId || '';
+      const item = (spotifyAccountState.playlists || []).find(entry => getOnboardSpotifyPlaylistId(entry) === playlistId);
+      if (!item) return false;
+      startOnboardSpotifyPlaylistSelection(item);
+      return true;
+    }
+
+    const url = card.dataset.playlistUrl || '';
+    const name = card.dataset.playlistName || 'playlist';
+    if (!url) return false;
+    startOnboardPlaylistUrl(url, name);
+    return true;
+  };
+
+  const handle = event => {
+    if (event.type === 'pointerup' && event.pointerType === 'mouse') return;
+    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+
+    if (triggerFromTarget(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+
+  root.addEventListener('click', handle, true);
+  root.addEventListener('pointerup', handle, true);
+  root.addEventListener('keydown', handle, true);
+}
+
+function syncOnboardPrimaryAction() {
+  const inp = document.getElementById('onboard-url');
+  const btn = document.getElementById('onboard-btn');
+  if (!btn) return;
+  const raw = (inp?.value || '').trim();
+  const latestUrl = getOnboardHistory()[0]?.url || '';
+  if (samePlaylistUrl(raw, latestUrl)) {
+    btn.textContent = 'Open last result';
+  } else if (samePlaylistUrl(raw, PINNED_PLAYLIST.url)) {
+    btn.textContent = 'Open sample';
+  } else {
+    btn.textContent = 'Scan playlist';
+  }
+}
+
+function primeOnboardPlaylistInput() {
+  const inp = document.getElementById('onboard-url');
+  if (!inp) return;
+  inp.placeholder = 'https://open.spotify.com/playlist/...';
+  if (!inp.value.trim()) inp.value = getDefaultOnboardPlaylistUrl();
+  syncOnboardPrimaryAction();
 }
 
 function canInstantResumeFor(rawValue, info) {
   if (!info || info.artistCount <= 0) return false;
   const latestUrl = getOnboardHistory()[0]?.url || '';
   if (!rawValue) return true;
-  if (!latestUrl) return true;
+  if (!latestUrl) return false;
   return samePlaylistUrl(rawValue, latestUrl);
-}
-
-async function handleOnboardPrimaryAction() {
-  primeOnboardPlaylistInput();
-  return resumeOrImport();
 }
 
 let _obGeo   = 'nousa';  // mirrors geoQuick
@@ -368,32 +559,40 @@ function obSetScore(level) {
 
 // Check IDB for cached artist data — returns summary or null
 async function checkIDBCache() {
+  const cachedSummary = readOnboardCacheSummary();
   try {
     const keys = await DB.keys('artists');
-    // Filter out special keys
-    const artistKeys = keys.filter(k => k !== '__ping__');
-    if (!artistKeys.length) return null;
-    // Count total cached shows
-    let concertCount = 0;
-    const today = new Date().toISOString().split('T')[0];
-    for (const key of artistKeys) {
-      try {
-        const rec = await DB.get('artists', key);
-        if (rec?.shows) concertCount += rec.shows.filter(s => s.date >= today).length;
-      } catch {}
+    const artistKeys = keys.filter(key => key !== '__ping__');
+    if (!artistKeys.length) {
+      clearOnboardCacheSummary();
+      return null;
     }
-    // Get festival cache
-    let festCount = 0;
+
+    const today = new Date().toISOString().split('T')[0];
+    let festCount = Number(cachedSummary?.festCount) || 0;
     try {
       const fc = await DB.get('meta', 'festivals');
-      if (fc?.data) festCount = fc.data.filter(f => f.date >= today).length;
+      if (Array.isArray(fc?.data)) {
+        festCount = fc.data.filter(fest => fest?.date && fest.date >= today).length;
+      }
     } catch {}
-    return { artistCount: artistKeys.length, concertCount, festCount };
-  } catch { return null; }
+    return {
+      artistCount: artistKeys.length,
+      concertCount: Number(cachedSummary?.concertCount) || 0,
+      festCount,
+      cacheTimestamp: Number(cachedSummary?.cacheTimestamp) || 0,
+      latestPlaylistUrl: cachedSummary?.latestPlaylistUrl || '',
+      ts: Number(cachedSummary?.ts) || 0,
+    };
+  } catch {
+    return cachedSummary || null;
+  }
 }
 
 // Rebuild concerts + festivals from IDB cache instantly
 async function instantResume(opts = {}) {
+  if (!opts.manual && hasOnboardManualIntent()) return false;
+
   const btn = document.getElementById('onboard-resume-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⟳ Loading…'; }
 
@@ -456,6 +655,8 @@ async function instantResume(opts = {}) {
     cacheTimestamp = Date.now();
 
     if (festivals.length && ARTISTS.length) scoreFestivals();
+    persistData();
+    clearOnboardManualIntent();
 
     const age = cacheAge() || 'cached';
     setStatus(`↻ Resumed · ${concerts.length} concerts · ${festivals.length} festivals · ${age} — use ↻ Merge rescan to refresh`, true);
@@ -477,6 +678,7 @@ async function instantResume(opts = {}) {
 
 // Show new import panel (switch from resume UI)
 function showNewImport() {
+  markOnboardManualIntent();
   document.getElementById('onboard-resume').style.display = 'none';
   document.getElementById('onboard-import-panel').style.display = '';
   renderOnboardSpotifyAuth();
@@ -542,6 +744,10 @@ function renderOnboardHistory() {
     list.forEach((p, i) => {
       const el = document.createElement('div');
       el.className = 'onboard-pl';
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+      el.dataset.playlistUrl = p.url || '';
+      el.dataset.playlistName = p.name || 'playlist';
       const ago = tsAgo(p.ts);
       const artists = (p.topArtists || []).slice(0, 4);
       const chips = artists.map(a => `<span class="onboard-pl-chip">${esc2(a)}</span>`).join('');
@@ -557,12 +763,9 @@ function renderOnboardHistory() {
         <button class="onboard-pl-del" title="Remove from history" onclick="removeOnboardHistory(event,${i})">&#xd7;</button>`;
       // Draw mosaic on the canvas
       _drawPlaylistMosaic(el.querySelector('canvas'), artists);
-      el.onclick = e => {
-        if (e.target.classList.contains('onboard-pl-del')) return;
-        document.getElementById('onboard-url').value = p.url;
-        syncOnboardPrimaryAction();
-        handleOnboardPrimaryAction();
-      };
+      bindOnboardCardAction(el, () => {
+        startOnboardPlaylistUrl(p.url, p.name || 'playlist');
+      }, { ignoredSelector: '.onboard-pl-del' });
       hist.appendChild(el);
     });
   }
@@ -591,15 +794,8 @@ let _onboardAborted  = false;
 function onboardSetStatus(msg, color) {
   const el = document.getElementById('onboard-status-text');
   if (!el) return;
-  el.textContent = msg;
+  el.textContent = msg || '';
   el.style.color = color || '';
-  // Auto-show proxy row on error
-  const proxyRow = document.getElementById('onboard-proxy-row');
-  if (proxyRow) {
-    const isError = color === '#ff7070' || (msg && msg.startsWith('⚠'));
-    proxyRow.style.display = isError ? '' : 'none';
-    if (isError) syncOnboardProxyBtns();
-  }
 }
 
 let _minTracksFilter = 1; // global: min track count for artist to be included in scan
@@ -649,12 +845,12 @@ function onboardShowProgress(label) {
   const wrap = document.getElementById('onboard-prog-wrap');
   if (wrap) wrap.classList.add('visible');
   const fill = document.getElementById('onboard-prog-fill');
-  if (fill) fill.style.width = '5%';
+  if (fill) fill.style.width = '8%';
   const lbl = document.getElementById('onboard-prog-label');
-  if (lbl) lbl.textContent = label || 'Connecting…';
+  if (lbl) lbl.textContent = label || 'Loading playlist...';
   _onboardStartTs = Date.now();
   _onboardAborted = false;
-  // Clear minilog
+
   const logBox = document.getElementById('onboard-minilog');
   if (logBox) logBox.innerHTML = '';
   const logWrap = document.getElementById('onboard-minilog-wrap');
@@ -664,18 +860,19 @@ function onboardShowProgress(label) {
   _onboardTimerInt = setInterval(() => {
     const elapsed = Math.round((Date.now() - _onboardStartTs) / 1000);
     const el = document.getElementById('onboard-prog-timer');
-    if (el) el.textContent = elapsed + 's';
-    // Show log after 5 seconds
+    if (el) el.textContent = `${elapsed}s`;
     if (elapsed >= 5 && logWrap) logWrap.style.display = '';
-    // Only warn if genuinely stuck — progress bar still at 5% (no tracks fetched yet)
-    const fill = document.getElementById('onboard-prog-fill');
-    const pct = fill ? parseFloat(fill.style.width) : 0;
-    if (elapsed === 10 && pct < 10) {
-      onboardLog('Still on auth/first page after 10s — possible IP block', 'warn');
-      onboardLog('Try: cancel → enable ⚡ Auto-fallback proxy → retry', 'warn');
-      // Auto-show proxy row
-      const pr = document.getElementById('onboard-proxy-row');
-      if (pr) { pr.style.display = ''; syncOnboardProxyBtns(); }
+    const currentFill = document.getElementById('onboard-prog-fill');
+    const pct = currentFill ? parseFloat(currentFill.style.width) : 0;
+    if (currentFill && Number.isFinite(pct) && pct < 68) {
+      const nextPct = Math.min(68, pct + (elapsed < 12 ? 1.6 : 0.7));
+      currentFill.style.width = `${nextPct}%`;
+    }
+    if (elapsed === 10 && pct < 15) {
+      onboardLog('Still waiting for Spotify. The server request is taking longer than usual.', 'warn');
+    }
+    if (elapsed === 20 && pct < 15) {
+      onboardLog('You can keep waiting or cancel and try again. Cached results are not affected.', 'warn');
     }
   }, 1000);
 }
@@ -691,10 +888,14 @@ function onboardHideProgress() {
 
 function onboardSetProgress(done, total) {
   const fill = document.getElementById('onboard-prog-fill');
-  const lbl  = document.getElementById('onboard-prog-label');
-  const pct  = total ? Math.round(done / total * 100) : 20;
-  if (fill) fill.style.width = pct + '%';
-  if (lbl)  lbl.textContent = total ? `Fetched ${done} / ${total} tracks…` : 'Authenticating…';
+  const lbl = document.getElementById('onboard-prog-label');
+  const pct = total ? Math.round(done / total * 100) : 28;
+  if (fill) fill.style.width = `${Math.max(8, Math.min(100, pct))}%`;
+  if (lbl) {
+    lbl.textContent = total
+      ? `Imported ${done} / ${total} tracks`
+      : 'Preparing artist list...';
+  }
 }
 
 function onboardClearProgress() {
@@ -704,8 +905,10 @@ function onboardClearProgress() {
 function onboardCancel() {
   _onboardAborted = true;
   onboardHideProgress();
-  onboardSetStatus('Cancelled.');
-  spTokenCache = null; // force fresh token next attempt
+  onboardSetStatus('Import canceled.');
+  spTokenCache = null;
+  spotifyAccountState.pendingPlaylistId = '';
+  renderSpotifyPlaylistChoices();
   const btn = document.getElementById('onboard-btn');
   if (btn) btn.disabled = false;
   syncOnboardPrimaryAction();
@@ -716,7 +919,7 @@ function onboardCancel() {
 // Used by both onboarding screen and settings modal.
 // opts.mode: 'onboard' | 'settings'
 // Returns true on success, false on failure.
-async function runSpotifyImport(opts = {}) {
+async function legacyRunSpotifyImport(opts = {}) {
   const mode = opts.mode || 'onboard';
   const isOnboard = mode === 'onboard';
 
@@ -823,6 +1026,132 @@ async function runSpotifyImport(opts = {}) {
   }
 }
 
+async function runSpotifyImport(opts = {}) {
+  const mode = opts.mode || 'onboard';
+  const isOnboard = mode === 'onboard';
+  const urlInputId = isOnboard ? 'onboard-url' : 'sp-playlist-url';
+  const btnId = isOnboard ? 'onboard-btn' : 'sp-import-btn';
+  const raw = ((document.getElementById(urlInputId)?.value || '').trim()) || (isOnboard ? getDefaultOnboardPlaylistUrl() : '');
+  const pid = spExtractId(raw);
+
+  if (!pid) {
+    if (isOnboard) onboardSetStatus('Paste a valid Spotify playlist URL.', '#ff7070');
+    else spSetError("Couldn't parse playlist ID. Paste the full Spotify URL.");
+    return false;
+  }
+
+  const btn = document.getElementById(btnId);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = isOnboard ? 'Loading...' : 'Importing...';
+  }
+
+  spotifyAccountState.pendingPlaylistId = pid;
+  renderSpotifyPlaylistChoices();
+
+  if (isOnboard) onboardShowProgress('Loading playlist...');
+  if (isOnboard) {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  const setStatus = isOnboard
+    ? (msg, color) => onboardSetStatus(msg, color)
+    : (msg, color) => {
+        const el = document.getElementById('hero-status-text');
+        if (!el) return;
+        el.style.color = color || '';
+        el.textContent = msg;
+      };
+  const setProgress = isOnboard
+    ? (done, total) => {
+        if (_onboardAborted) return;
+        onboardSetProgress(done, total);
+      }
+    : (done, total) => spSetProgress(done, total);
+  const clearProgress = isOnboard ? onboardClearProgress : spClearProgress;
+
+  let success = false;
+  try {
+    setStatus('Loading playlist from Spotify...', '');
+    setProgress(1, 4);
+    onboardLog('Requesting playlist from the local server...', 'ok');
+
+    const payload = await spFetchPlaylistImport(pid);
+    if (isOnboard && _onboardAborted) return false;
+
+    const pl = payload?.playlist || {};
+    const tracks = Array.isArray(payload?.tracks) ? payload.tracks : [];
+    if (!tracks.length) {
+      throw new Error('This playlist has no tracks to scan.');
+    }
+
+    setProgress(3, 4);
+    onboardLog(`Playlist loaded: ${tracks.length} tracks`, 'ok');
+
+    const artistMap = spBuildArtistMap(tracks);
+    const allArtists = Object.values(artistMap).sort((a, b) => b.count - a.count);
+    if (!allArtists.length) {
+      throw new Error('This playlist has no scannable artist data.');
+    }
+
+    const minT = _minTracksFilter || 1;
+    const artists = minT > 1 ? allArtists.filter(a => a.count >= minT) : allArtists;
+    if (!artists.length) {
+      throw new Error(`No artists matched the current threshold (${minT}+ tracks).`);
+    }
+
+    const skipped = allArtists.length - artists.length;
+    if (skipped > 0) {
+      dblog('info', `Min-tracks filter (>=${minT}): kept ${artists.length} artists, skipped ${skipped} with fewer tracks`);
+    }
+
+    const lines = artists.map(a => `${a.name} ${a.count}`);
+    const ta = document.getElementById('artists-ta');
+    if (ta) ta.value = lines.join('\n');
+    updateArtistCount();
+
+    const coverUrl = pl.images?.[0]?.url || '';
+    const topArtists = artists.slice(0, 8).map(a => a.name);
+    addToOnboardHistory(pl.name || 'Playlist', raw, tracks.length, artists.length, coverUrl, topArtists);
+    renderOnboardHistory();
+
+    const onboardInput = document.getElementById('onboard-url');
+    const settingsInput = document.getElementById('sp-playlist-url');
+    if (onboardInput && onboardInput.value !== raw) onboardInput.value = raw;
+    if (settingsInput && settingsInput.value !== raw) settingsInput.value = raw;
+
+    setProgress(4, 4);
+    clearProgress();
+    const skipNote = skipped > 0 ? ` (${skipped} skipped below ${minT})` : '';
+    setStatus(`"${pl.name || 'Playlist'}" loaded. ${artists.length} artists${skipNote}. Starting concert scan...`, 'var(--accent)');
+
+    setTimeout(() => {
+      if (isOnboard) profHideEmpty();
+      else closeSettings();
+      saveAndFetch(false);
+    }, 500);
+
+    success = true;
+    return true;
+  } catch (error) {
+    clearProgress();
+    onboardLog(error.message || 'Playlist import failed.', 'err');
+    setStatus(error.message || 'Playlist import failed.', '#ff7070');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = isOnboard ? 'Try again' : 'Import & Scan';
+    }
+    if (isOnboard) syncOnboardPrimaryAction();
+    return false;
+  } finally {
+    spotifyAccountState.pendingPlaylistId = '';
+    renderSpotifyPlaylistChoices();
+    if (!success && !isOnboard && btn) {
+      btn.disabled = false;
+    }
+  }
+}
+
 async function runSpotifyImportV2(opts = {}) {
   return runSpotifyImport(opts);
 }
@@ -830,11 +1159,15 @@ async function runSpotifyImportV2(opts = {}) {
 // Smart entry point: if IDB has cached data, resume instantly; otherwise run full Spotify import
 async function resumeOrImport() {
   const raw = (document.getElementById('onboard-url')?.value || '').trim();
+  const latestUrl = getOnboardHistory()[0]?.url || '';
+  if (raw && (!latestUrl || !samePlaylistUrl(raw, latestUrl))) {
+    return onboardImport();
+  }
   const info = await checkIDBCache().catch(() => null);
   if (canInstantResumeFor(raw, info)) {
-    instantResume();
+    return instantResume({ manual: true });
   } else {
-    onboardImport();
+    return onboardImport();
   }
 }
 

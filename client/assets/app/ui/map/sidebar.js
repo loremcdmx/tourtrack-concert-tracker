@@ -17,19 +17,19 @@ function buildSidebarArtistRow(artist, evs, ctx) {
   const isEndingSoon = evs.length >= 3 && lastDate >= ctx.today && lastDate <= ctx.in90s;
   const nextShow = evs.find(e => e.date >= ctx.today);
   const metaText = nextShow
-    ? `${nextShow.city || nextShow.venue || 'â€”'}${nextShow.country ? ' ' + flag(nextShow.country) : ''}`
-    : evs[0]?.city || 'â€”';
+    ? `${nextShow.city || nextShow.venue || '—'}${nextShow.country ? ' ' + flag(nextShow.country) : ''}`
+    : evs[0]?.city || '—';
 
   const plays = ARTIST_PLAYS[artist.toLowerCase()] || 0;
   const playBarPct = (artistSort === 'list' && plays > 0)
     ? Math.round(plays / ctx.topPlays * 100)
     : 0;
   const playsLabel = (artistSort === 'list' && plays > 0)
-    ? `<span style="font-size:.48rem;color:var(--accent);font-family:'DM Mono',monospace;opacity:.9">${plays}â–¶</span>`
+    ? `<span style="font-size:.48rem;color:var(--accent);font-family:'DM Mono',monospace;opacity:.9">${plays}?</span>`
     : '';
 
   row.innerHTML = `
-    <button class="msb-star ${isFav ? 'on' : ''}" title="${isFav ? 'Unfavorite' : 'Favorite'}">â˜…</button>
+    <button class="msb-star ${isFav ? 'on' : ''}" title="${isFav ? 'Unfavorite' : 'Favorite'}">★</button>
     <div class="msb-dot" style="background:${col}${isFav ? ';box-shadow:0 0 7px rgba(255,215,0,.55)' : ''}"></div>
     <div class="msb-ainfo">
       <div class="msb-aname">${artist}</div>
@@ -38,10 +38,10 @@ function buildSidebarArtistRow(artist, evs, ctx) {
     </div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0">
       ${playsLabel}
-      <span style="font-size:.54rem;color:${badgeCol};font-family:'DM Mono',monospace">${showCount}Ã—</span>
+      <span style="font-size:.54rem;color:${badgeCol};font-family:'DM Mono',monospace">${showCount}×</span>
       ${isEndingSoon ? '<span style="font-size:.44rem;color:#ff8080;letter-spacing:.04em">ENDING</span>' : ''}
     </div>
-    <button class="msb-focus">â†’</button>`;
+    <button class="msb-focus">→</button>`;
   row.querySelector('.msb-star').onclick  = e => toggleFavorite(artist, e);
   row.querySelector('.msb-focus').onclick = e => { e.stopPropagation(); focusArtist(artist); };
   row.onclick = () => focusArtist(artist);
@@ -637,7 +637,7 @@ function createFestCardNode(festival) {
     matched.length ? `${matched.length} tracked` : '',
     lineup.length ? `lineup ${lineup.length}` : '',
     linkedShows ? `${linkedShows} linked` : '',
-  ].filter(Boolean).join(' Â· ');
+  ].filter(Boolean).join(' · ');
 
   const card = document.createElement('div');
   card.className = 'fcard' + (festival.id === focusedFest ? ' hl' : '');
@@ -649,13 +649,13 @@ function createFestCardNode(festival) {
     return `<span class="fcard-chip${i < 2 ? ' top' : ''}">${m.artist}${playsTag}</span>`;
   }).join('');
 
-  const ringLabel = score > 0 ? score : 'â€”';
+  const ringLabel = score > 0 ? score : '—';
   card.innerHTML = `
     <div class="fcard-top">
       <div class="fcard-ring ${ringCls}" title="${score}/100">${ringLabel}</div>
       <div class="fcard-info">
         <div class="fcard-name">${festival.name}</div>
-        <div class="fcard-meta">${fmtDateRange(festival)}${festival.endDate ? '<span style="font-size:.5rem;margin-left:4px;opacity:.6;vertical-align:middle">' + (Math.round((new Date(festival.endDate) - new Date(festival.date)) / 86400000) + 1) + 'd</span>' : ''} Â· ${loc}</div>
+        <div class="fcard-meta">${fmtDateRange(festival)}${festival.endDate ? '<span style="font-size:.5rem;margin-left:4px;opacity:.6;vertical-align:middle">' + (Math.round((new Date(festival.endDate) - new Date(festival.date)) / 86400000) + 1) + 'd</span>' : ''} · ${loc}</div>
         ${lineupMeta ? `<div class="fcard-meta" style="opacity:.72">${lineupMeta}</div>` : ''}
       </div>
       ${festival.url ? `<a class="fcard-tkt" href="${festival.url}" target="_blank">Tickets</a>` : ''}
