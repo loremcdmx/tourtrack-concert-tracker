@@ -262,12 +262,18 @@ function artistRankFallbackLevel(artistName) {
   return 1;
 }
 
+function artistIsTracked(artistName) {
+  return artistListPosition(artistName) >= 0;
+}
+
 function artistScoreLevel(artistName) {
   const plays = artistPlayCount(artistName);
+  if (plays >= SCORE_ARTIST_MIN[4]) return 4;
   if (plays >= SCORE_ARTIST_MIN[3]) return 3;
   if (plays >= SCORE_ARTIST_MIN[2]) return 2;
   if (plays >= SCORE_ARTIST_MIN[1]) return 1;
-  return hasArtistPlayData() ? 0 : artistRankFallbackLevel(artistName);
+  if (!hasArtistPlayData()) return artistRankFallbackLevel(artistName);
+  return artistIsTracked(artistName) ? 1 : 0;
 }
 
 function artistScoreOk(artistName, level) {
@@ -715,9 +721,9 @@ function dateFilter_(arr) {
 
 // ── SCORE FILTER ─────────────────────────────────────────────────
 // Level 0 = all, 1 = low+, 2 = mid+, 3 = high+, 4 = top+
-// For artists (tracks in playlist): 0, >3, >5, >10, >20
+// For artists (tracks in playlist): 0, >=1/tracked, >=5, >=10, >=20
 // For festivals (0-100 score):      0, >20, >30, >50, >70
-const SCORE_ARTIST_MIN = [0, 3, 5, 10, 20];  // min ARTIST_PLAYS tracks per level
+const SCORE_ARTIST_MIN = [0, 1, 5, 10, 20];  // min ARTIST_PLAYS tracks per level
 const SCORE_FEST_MIN   = [0, 20, 30, 50, 70]; // min f.score per level
 let calScoreFilter = 0;   // 0–4
 
