@@ -393,8 +393,9 @@ function artistRankFallbackLevel(artistName) {
   const total = getArtistScoringMeta().list.length || 0;
   if (idx < 0 || !total) return 0;
   const rank = idx + 1;
-  if (rank <= Math.max(1, Math.ceil(total * 0.15))) return 3;
-  if (rank <= Math.max(1, Math.ceil(total * 0.35))) return 2;
+  if (rank <= Math.max(1, Math.ceil(total * 0.05))) return 4;
+  if (rank <= Math.max(1, Math.ceil(total * 0.12))) return 3;
+  if (rank <= Math.max(1, Math.ceil(total * 0.32))) return 2;
   return 1;
 }
 
@@ -900,13 +901,13 @@ function dateFilter_(arr) {
 
 // ── SCORE FILTER ─────────────────────────────────────────────────
 // Level 0 = all, 1 = low+, 2 = mid+, 3 = high+, 4 = top+
-// Artists use relaxed absolute play floors plus playlist-relative rank promotion.
-// Absolute floors:                 0, >=1/tracked, >=2, >=4, >=8
-// Rank promotion: mid top 65%+1 play, high top 30%+2 plays, top top 12%+4 plays
+// Artists use relaxed low/mid floors, but high/top stay much tighter.
+// Absolute floors:                 0, >=1/tracked, >=2, >=6, >=12
+// Rank promotion: mid top 55%+2 plays, high top 18%+4 plays, top top 7%+7 plays
 // For festivals (0-100 score):      0, >20, >30, >50, >70
-const SCORE_ARTIST_MIN = [0, 1, 2, 4, 8];  // absolute min ARTIST_PLAYS tracks per level
-const SCORE_ARTIST_RANK_PCT = [1, 1, 0.65, 0.30, 0.12];
-const SCORE_ARTIST_RANK_MIN = [0, 1, 1, 2, 4];
+const SCORE_ARTIST_MIN = [0, 1, 2, 6, 12];  // absolute min ARTIST_PLAYS tracks per level
+const SCORE_ARTIST_RANK_PCT = [1, 1, 0.55, 0.18, 0.07];
+const SCORE_ARTIST_RANK_MIN = [0, 1, 2, 4, 7];
 const SCORE_FEST_MIN   = [0, 20, 30, 50, 70]; // min f.score per level
 let calScoreFilter = 0;   // 0–4
 

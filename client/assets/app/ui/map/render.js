@@ -19,7 +19,9 @@ function _mapArtistVisualLevel(artist, plays, isFav) {
   const scoreLevel = typeof artistScoreLevel === 'function'
     ? Number(artistScoreLevel(artist)) || 0
     : 0;
-  const playLevel = plays >= 20 ? 4 : plays >= 5 ? 3 : plays >= 1 ? 1 : 0;
+  const playLevel = typeof artistAbsoluteScoreLevel === 'function'
+    ? Number(artistAbsoluteScoreLevel(plays)) || 0
+    : (plays >= 12 ? 4 : plays >= 6 ? 3 : plays >= 2 ? 2 : plays >= 1 ? 1 : 0);
   return Math.max(scoreLevel, playLevel);
 }
 
