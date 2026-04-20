@@ -1,6 +1,6 @@
 'use strict';
 
-const SIDEBAR_BATCH_SIZE = 120;
+const SIDEBAR_BATCH_SIZE = 60;
 let _sidebarBuildToken = 0;
 
 function buildSidebarArtistRow(artist, evs, ctx) {
@@ -645,7 +645,7 @@ function filterArtists() {
   });
 }
 
-const FEST_PANEL_BATCH_SIZE = 48;
+const FEST_PANEL_BATCH_SIZE = 30;
 let _festPanelBuildToken = 0;
 
 function setFestPanelMessage(container, message) {

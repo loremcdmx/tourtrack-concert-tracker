@@ -42,7 +42,7 @@ function buildCalChips() {
   allChip.dataset.geo = '__all__';
   const totalEv = [...ccCount.values()].reduce((a,b)=>a+b,0);
   allChip.innerHTML = `All <span class="geo-cnt">${totalEv}</span>`;
-  allChip.onclick = () => { calGeoFilter.clear(); calGeoExpanded = null; buildCalChips(); renderCalendar(); };
+  allChip.onclick = () => { calGeoFilter.clear(); calGeoExpanded = null; scheduleFilterRefresh({ buildChips: true, map: false }); };
   wrap.appendChild(allChip);
 
   // Region chips — only show regions that have events
@@ -57,7 +57,7 @@ function buildCalChips() {
     chip.onclick = () => {
       if (calGeoFilter.has(r.id)) { calGeoFilter.delete(r.id); calGeoExpanded = null; }
       else { calGeoFilter.add(r.id); calGeoExpanded = r.id; }
-      buildCalChips(); renderCalendar();
+      scheduleFilterRefresh({ buildChips: true, map: false });
     };
     wrap.appendChild(chip);
   });
@@ -78,7 +78,7 @@ function buildCalChips() {
       sub.innerHTML = `${m.f} ${m.n} <span style="color:var(--muted2);font-size:.52rem">${cnt}</span>`;
       sub.onclick = () => {
         if (calGeoFilter.has(key)) calGeoFilter.delete(key); else calGeoFilter.add(key);
-        buildCalChips(); renderCalendar();
+        scheduleFilterRefresh({ buildChips: true, map: false });
       };
       subRow.appendChild(sub);
     });
@@ -115,14 +115,14 @@ function setCalView(view) {
   const typeRow = document.getElementById('cal-type-row');
   if (mxRow) mxRow.style.display = view === 'mx' ? 'flex' : 'none';
   if (typeRow) typeRow.style.display = view === 'mx' ? 'none' : '';
-  renderCalendar();
+  scheduleFilterRefresh({ map: false });
 }
 
 function setMxSort(sort) {
   mxSort = sort;
   document.getElementById('mxsort-date').classList.toggle('on', sort === 'date');
   document.getElementById('mxsort-rank').classList.toggle('on', sort === 'rank');
-  renderCalendar();
+  scheduleFilterRefresh({ map: false });
 }
 
 // CDMX city detection — handles common Ticketmaster city name variants
@@ -850,7 +850,7 @@ function applyDateFilterValue(f, fromDate, toDate) {
 
 function setDateFilter(f, fromDate, toDate) {
   applyDateFilterValue(f, fromDate, toDate);
-  renderCalendar(); refreshFilteredMap(); _updateTally();
+  scheduleFilterRefresh();
 }
 
 // setPlaysFilter removed — use setScoreFilter instead
@@ -892,7 +892,7 @@ function resetFavorites() {
 function toggleType(t) {
   if (t === 'shows') { showShows = !showShows; document.querySelector('[data-t=shows]').classList.toggle('on', showShows); }
   else               { showFests  = !showFests;  document.querySelector('[data-t=fests]').classList.toggle('on', showFests); }
-  renderCalendar(); refreshFilteredMap();
+  scheduleFilterRefresh();
 }
 
 function dateFilter_(arr) {
@@ -925,7 +925,7 @@ function applyScoreFilterLevel(level) {
 
 function setScoreFilter(level) {
   applyScoreFilterLevel(level);
-  renderCalendar(); refreshFilteredMap(); _updateTally();
+  scheduleFilterRefresh();
 }
 
 // ── MAP-SPECIFIC FILTER HELPERS ──────────────────────────────────────
@@ -1019,21 +1019,61 @@ function withMapSpinner(workFn) {
 
 function refreshFilteredMap(opts = {}) {
   const smartFit = opts.smartFit !== false;
+  const withSpinner = opts.withSpinner !== false;
   if (focusedArtist || focusedFest) {
     renderMap({ smartFit });
     return;
   }
-  withMapSpinner(() => {
+  const work = () => {
     _rebuildMapData();
     buildSidebar();
     clearMapLayers();
     renderOverview({ smartFit });
+  };
+  if (withSpinner) withMapSpinner(work);
+  else work();
+}
+
+let _scheduledFilterRefreshRaf = 0;
+let _scheduledFilterRefreshQueued = false;
+let _scheduledFilterRefreshBuildChips = false;
+let _scheduledFilterRefreshMap = true;
+let _scheduledFilterRefreshSmartFit = true;
+
+function flushScheduledFilterRefresh() {
+  _scheduledFilterRefreshRaf = 0;
+  if (!_scheduledFilterRefreshQueued) return;
+
+  const buildChips = _scheduledFilterRefreshBuildChips;
+  const refreshMap = _scheduledFilterRefreshMap;
+  const smartFit = _scheduledFilterRefreshSmartFit;
+
+  _scheduledFilterRefreshQueued = false;
+  _scheduledFilterRefreshBuildChips = false;
+  _scheduledFilterRefreshMap = true;
+  _scheduledFilterRefreshSmartFit = true;
+
+  if (buildChips) buildCalChips();
+  renderCalendar();
+  if (refreshMap) refreshFilteredMap({ smartFit, withSpinner: false });
+}
+
+function scheduleFilterRefresh(opts = {}) {
+  _scheduledFilterRefreshQueued = true;
+  if (opts.buildChips) _scheduledFilterRefreshBuildChips = true;
+  if (opts.map === false) _scheduledFilterRefreshMap = false;
+  if (opts.smartFit === false) _scheduledFilterRefreshSmartFit = false;
+  if (_scheduledFilterRefreshRaf) return;
+
+  // Let the pressed-state paint before we start the expensive list/map rebuild.
+  requestAnimationFrame(() => {
+    _scheduledFilterRefreshRaf = requestAnimationFrame(flushScheduledFilterRefresh);
   });
 }
 
 let _scheduledUiRefreshRaf = 0;
 let _scheduledUiRefreshPending = false;
-const CALENDAR_RENDER_BATCH_SIZE = 60;
+const CALENDAR_RENDER_BATCH_SIZE = 36;
 let _calendarRenderToken = 0;
 
 function flushScheduledUiRefresh() {
@@ -1072,13 +1112,11 @@ function setMapType(t) {
   // Sync sidebar tab to match map type
   if (t === 'fests' && sidebarTab === 'tours') setTab('fests');
   else if (t === 'tours' && sidebarTab === 'fests') setTab('tours');
-  refreshFilteredMap();
+  scheduleFilterRefresh();
 }
 function setMapScore(s) {
   applyScoreFilterLevel(s);
-  renderCalendar();
-  _updateTally();
-  refreshFilteredMap();
+  scheduleFilterRefresh();
 }
 function setMapDate(d) {
   mapDateMode = d;
@@ -1098,17 +1136,13 @@ function setMapDate(d) {
   } else {
     applyDateFilterValue(preset);
   }
-  renderCalendar();
-  _updateTally();
-  refreshFilteredMap();
+  scheduleFilterRefresh();
 }
 function applyMapRange() {
   mapDateFrom = document.getElementById('mfilt-from')?.value || '';
   mapDateTo   = document.getElementById('mfilt-to')?.value   || '';
   applyDateFilterValue('range', mapDateFrom, mapDateTo);
-  renderCalendar();
-  _updateTally();
-  refreshFilteredMap();
+  scheduleFilterRefresh();
 }
 
 function setMapMaxArtists(n) {
@@ -1141,7 +1175,7 @@ function setGeoQuick(mode) {
   geoNoCA  = (mode === 'nocanada' || mode === 'nousacanada');
   geoQuick = mode;
   _syncGeoButtons();
-  renderCalendar(); refreshFilteredMap(); _updateTally();
+  scheduleFilterRefresh();
 }
 
 function toggleGeoExclude(cc) {
@@ -1149,7 +1183,7 @@ function toggleGeoExclude(cc) {
   if (cc === 'CA') geoNoCA  = !geoNoCA;
   if (cc === 'GB') geoNoGB  = !geoNoGB;
   _syncGeoButtons();
-  renderCalendar(); refreshFilteredMap(); _updateTally();
+  scheduleFilterRefresh();
 }
 
 function _syncGeoButtons() {
@@ -1181,9 +1215,7 @@ function setGeoPreset(preset) {
   geoPreset = preset;
   _syncGeoButtons();
   persistSettings();
-  renderCalendar();
-  refreshFilteredMap();
-  _updateTally();
+  scheduleFilterRefresh();
 }
 
 function _updateTally() {
