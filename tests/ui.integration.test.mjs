@@ -756,3 +756,36 @@ test('renderOverview skips visible-panel scan when the panel is collapsed', { co
   assert.ok(Number(result.badgeText) >= 1);
   assert.notEqual(result.panelDisplay, 'none');
 });
+
+test('renderOverview keeps secondary future shows off the DOM marker path', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Drift'],
+    artistPlays: { drift: 9 },
+    concerts: [
+      makeConcert('Drift', 4, 'Forum', 'London', 'GB', 51.5074, -0.1278),
+      makeConcert('Drift', 7, 'Roundhouse', 'London', 'GB', 51.5432, -0.1512),
+      makeConcert('Drift', 10, 'Brixton Academy', 'London', 'GB', 51.4653, -0.1156),
+      makeConcert('Drift', 13, 'Alexandra Palace', 'London', 'GB', 51.5942, -0.1292),
+      makeConcert('Drift', 16, 'Eventim Apollo', 'London', 'GB', 51.4907, -0.2254),
+    ],
+  });
+
+  const result = await page.evaluate(async () => {
+    lmap.setView([51.5074, -0.1278], 8, { animate: false });
+    clearMapLayers();
+    renderOverview({ smartFit: false });
+    await new Promise(resolve => setTimeout(resolve, 120));
+
+    return {
+      markerLayers: tourMarkers.length,
+      domTourMarkers: document.querySelectorAll('.map-tour-marker, .map-tour-dot').length,
+      leafletMarkerIcons: document.querySelectorAll('.leaflet-marker-icon').length,
+      overlayCanvases: document.querySelectorAll('.leaflet-overlay-pane canvas').length,
+    };
+  });
+
+  assert.equal(result.markerLayers, 5);
+  assert.equal(result.domTourMarkers, 1);
+  assert.ok(result.leafletMarkerIcons <= 1);
+  assert.ok(result.overlayCanvases >= 1);
+});

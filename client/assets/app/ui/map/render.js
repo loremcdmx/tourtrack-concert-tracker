@@ -6,6 +6,7 @@ let _mapWasCapped = false;   // true when last render trimmed to top 20
 let _mapFirstFit  = false;   // becomes true after the first fitBounds — prevents jumping on filter changes
 
 let _mapRenderedTourArtists = new Set();
+let _mapCanvasRenderer = null;
 
 function _mapArtistQualityLabel(level) {
   if (level >= 4) return 'Top+';
@@ -94,6 +95,36 @@ function _refreshVisiblePanelAfterRender() {
   badge.textContent = total;
   panel.style.display = total > 0 || Object.keys(allTourData).length > 0 ? '' : 'none';
   if (_visiblePanelOpen) updateVisiblePanel();
+}
+
+function _mapGetCanvasRenderer() {
+  if (!_mapCanvasRenderer && lmap && typeof L?.canvas === 'function') {
+    _mapCanvasRenderer = L.canvas({ padding: 0.35 });
+  }
+  return _mapCanvasRenderer;
+}
+
+function _mapAddFutureDot(lat, lng, col) {
+  const renderer = _mapGetCanvasRenderer();
+  const layer = renderer
+    ? L.circleMarker([lat, lng], {
+        radius: 2,
+        stroke: false,
+        fill: true,
+        fillColor: col,
+        fillOpacity: 0.35,
+        interactive: false,
+        renderer,
+      })
+    : L.marker([lat, lng], {
+        icon: L.divIcon({
+          className: '',
+          iconSize: [3, 3],
+          iconAnchor: [1.5, 1.5],
+          html: `<div style="width:3px;height:3px;border-radius:50%;background:${col};opacity:.35"></div>`,
+        }),
+      });
+  tourMarkers.push(layer.addTo(lmap));
 }
 
 function _mapCreateEl(tag, className, text) {
@@ -630,6 +661,7 @@ function renderOverview(opts = {}) {
   const zoom  = lmap ? lmap.getZoom() : 3;
   const shouldCullTours = _mapFirstFit && !smartFit && typeof lmap?.getBounds === 'function';
   const renderBounds = shouldCullTours ? lmap.getBounds().pad(0.24) : null;
+  const canvasRenderer = _mapGetCanvasRenderer();
   const rankCache = new Map();
   const rankOf = artist => {
     if (!rankCache.has(artist)) rankCache.set(artist, _rankScore(artist));
@@ -640,51 +672,55 @@ function renderOverview(opts = {}) {
   let tourEntries = Object.entries(allTourData).filter(([a]) =>
     !showFavOnly || favoriteArtists.has(a.toLowerCase())
   );
+  let artistStates = tourEntries.map(([artist, evs]) => ({
+    artist,
+    evs,
+    rank: rankOf(artist),
+    futureGeo: evs.filter(e => e.lat && e.date >= today),
+  }));
 
   // ── Top-N cap ─────────────────────────────────────────────────
   // When too many artists pass all the map filters, showing all of them
   // produces a noisy unreadable dot-cloud. Cap the map to the top 20 by
   // rank score so the most relevant artists are always visible.
-  const totalPassing = tourEntries.length;
-  const totalPassingConcerts = tourEntries.reduce(
-    (sum, [, evs]) => sum + evs.filter(e => e.lat && e.date >= today).length,
+  const totalPassing = artistStates.length;
+  const totalPassingConcerts = artistStates.reduce(
+    (sum, { futureGeo }) => sum + futureGeo.length,
     0
   );
-  if (totalPassing > MAP_MAX_ARTISTS) {
+  if (artistStates.length > MAP_MAX_ARTISTS) {
     // Sort descending by rank
-    const ranked = tourEntries
-      .map(([a, evs]) => ({ artist: a, evs, rank: rankOf(a) }))
-      .sort((a, b) => b.rank - a.rank);
+    const ranked = [...artistStates].sort((a, b) => b.rank - a.rank);
 
     // Take top N
     const top = ranked.slice(0, MAP_MAX_ARTISTS);
 
     // Country coverage: for each country that has concerts but no artist in top N,
     // add the highest-ranked artist from that country
-    const today2 = new Date().toISOString().split('T')[0];
     const coveredCountries = new Set();
-    top.forEach(({ evs }) => evs.forEach(e => { if (e.date >= today2 && e.country) coveredCountries.add(e.country); }));
+    top.forEach(({ futureGeo }) => futureGeo.forEach(e => { if (e.country) coveredCountries.add(e.country); }));
 
-    ranked.slice(MAP_MAX_ARTISTS).forEach(({ artist, evs, rank }) => {
-      const artistCountries = new Set(evs.filter(e => e.date >= today2 && e.country).map(e => e.country));
+    ranked.slice(MAP_MAX_ARTISTS).forEach(state => {
+      const artistCountries = new Set(state.futureGeo.map(e => e.country).filter(Boolean));
       const uncovered = [...artistCountries].filter(cc => !coveredCountries.has(cc));
       if (uncovered.length > 0) {
-        top.push({ artist, evs, rank });
+        top.push(state);
         uncovered.forEach(cc => coveredCountries.add(cc));
       }
     });
 
-    tourEntries = top.map(({ artist, evs }) => [artist, evs]);
+    artistStates = top;
     _mapWasCapped = true;
   } else {
     _mapWasCapped = false;
   }
+  tourEntries = artistStates.map(({ artist, evs }) => [artist, evs]);
   // Update sidebar cap notice
   const capNotice = document.getElementById('map-cap-notice');
   if (capNotice) {
     if (_mapWasCapped) {
       capNotice.style.display = '';
-      capNotice.textContent = `Map cap: ${tourEntries.length} of ${totalPassing} artists shown (${totalPassingConcerts} geolocated concerts match filters)`;
+      capNotice.textContent = `Map cap: ${artistStates.length} of ${totalPassing} artists shown (${totalPassingConcerts} geolocated concerts match filters)`;
     } else {
       capNotice.style.display = 'none';
     }
@@ -694,13 +730,13 @@ function renderOverview(opts = {}) {
   // We clip each artist's route to only include points that are within
   // the viewport (padded 80%) so zooming into a region doesn't show
   // dangling lines flying off to distant continents.
-  _mapRenderedTourArtists = new Set(tourEntries.map(([artist]) => artist));
+  _mapRenderedTourArtists = new Set(artistStates.map(({ artist }) => artist));
 
   if (!preserveRoutes) {
     clearRouteLines();
     const bounds = lmap.getBounds().pad(0.8);
-  tourEntries.forEach(([artist, evs]) => {
-    const pts = evs.filter(e => e.lat && e.date >= today);
+  artistStates.forEach(({ artist, futureGeo, rank }) => {
+    const pts = futureGeo;
     if (pts.length < 2) return;
 
     // Only keep points within the padded viewport, OR that are adjacent
@@ -728,7 +764,6 @@ function renderOverview(opts = {}) {
 
     if (!segments.length) return;
     const isFav = favoriteArtists.has(artist.toLowerCase());
-    const rank  = rankOf(artist);
     const col   = getColor(artist);
     segments.forEach(segPts => {
       if (segPts.length < 2) return;
@@ -736,7 +771,9 @@ function renderOverview(opts = {}) {
         color: col,
         weight:  isFav ? 2 : rank > 150 ? 1.5 : 0.9,
         opacity: isFav ? .45 : rank > 150 ? .22 : rank > 50 ? .14 : .08,
-        dashArray: '4 9'
+        dashArray: '4 9',
+        interactive: false,
+        renderer: canvasRenderer || undefined
       }).addTo(lmap));
     });
   });
@@ -746,26 +783,17 @@ function renderOverview(opts = {}) {
   clearTourMarkers();
   if (zoom > 7) {
     let futureDotCount = 0;
-    tourEntries.forEach(([artist, evs]) => {
+    artistStates.forEach(({ artist, futureGeo }) => {
       if (futureDotCount >= MAP_MAX_FUTURE_DOTS) return;
       const col = getColor(artist);
-      const nextGeo = evs.find(e => e.date >= today && e.lat);
-      evs
-        .filter(e =>
-          e.lat &&
-          e.date >= today &&
-          e !== nextGeo &&
-          (!renderBounds || renderBounds.contains([e.lat, e.lng]))
-        )
-        .slice(0, Math.max(0, MAP_MAX_FUTURE_DOTS - futureDotCount))
-        .forEach(ev => {
-          const sz = 3;
-          tourMarkers.push(L.marker([ev.lat, ev.lng], { icon: L.divIcon({
-            className:'', iconSize:[sz,sz], iconAnchor:[sz/2,sz/2],
-            html:`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${col};opacity:.35"></div>`
-          })}).addTo(lmap));
-          futureDotCount += 1;
-        });
+      const nextGeo = futureGeo[0];
+      futureGeo.forEach(ev => {
+        if (futureDotCount >= MAP_MAX_FUTURE_DOTS) return;
+        if (ev === nextGeo) return;
+        if (renderBounds && !renderBounds.contains([ev.lat, ev.lng])) return;
+        _mapAddFutureDot(ev.lat, ev.lng, col);
+        futureDotCount += 1;
+      });
     });
   }
 
@@ -776,8 +804,7 @@ function renderOverview(opts = {}) {
   // marker is off-screen because the artist's next show is in a different region.
   const vpBounds = lmap.getBounds().pad(0.15); // tighter than route-line padding
   const cityMap = new Map();
-  tourEntries.forEach(([artist, evs]) => {
-    const futureGeo = evs.filter(e => e.date >= today && e.lat);
+  artistStates.forEach(({ artist, futureGeo, rank }) => {
     if (!futureGeo.length) return;
     // Prefer first in-viewport show; when culling, use the first nearby show
     // instead of keeping distant offscreen markers alive.
@@ -785,7 +812,6 @@ function renderOverview(opts = {}) {
     const inRenderBounds = renderBounds ? futureGeo.find(e => renderBounds.contains([e.lat, e.lng])) : null;
     if (renderBounds && !inViewport && !inRenderBounds) return;
     const nextGeo = inViewport || inRenderBounds || futureGeo[0];
-    const rank = rankOf(artist);
     const cityKey = `${(nextGeo.city||'?').toLowerCase().trim().slice(0,13)}|${nextGeo.country||''}`;
     if (!cityMap.has(cityKey)) cityMap.set(cityKey, {
       lat: nextGeo.lat, lng: nextGeo.lng,
