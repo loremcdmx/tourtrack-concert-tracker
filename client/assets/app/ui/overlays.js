@@ -1,5 +1,16 @@
 'use strict';
 
+function _overlayEsc(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const esc = _overlayEsc;
+
 function openFestDetail(festId) {
   const f = festivals.find(x => x.id === festId);
   if (!f) return;
@@ -83,6 +94,9 @@ function openFestDetail(festId) {
 
   document.getElementById('fd-body').innerHTML = bodyHtml;
 
+  const overlay = document.getElementById('fd-overlay');
+  if (overlay) overlay.dataset.ticketUrl = f.url || '';
+
   // Open with animation
   document.getElementById('fd-overlay').classList.add('open');
   document.addEventListener('keydown', _fdKeyHandler);
@@ -96,6 +110,17 @@ function closeFestDetail() {
 function _fdKeyHandler(e) {
   if (e.key === 'Escape') closeFestDetail();
 }
+
+document.getElementById('fd-overlay')?.addEventListener('click', event => {
+  const ticketBtn = event.target.closest('.fd-tkt-btn');
+  if (!ticketBtn) return;
+  const overlay = document.getElementById('fd-overlay');
+  const url = ticketBtn.getAttribute('href') || overlay?.dataset.ticketUrl || '';
+  if (!url) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openExternalUrl(url);
+});
 
 function renderFestMap(hlId) {
   festMarkers.forEach(m => m.remove()); festMarkers = [];

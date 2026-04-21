@@ -186,7 +186,8 @@ function renderFestCardChunks(container, festivalsList) {
   renderChunk(0);
 }
 
-function setTab(tab) {
+function setTab(tab, opts = {}) {
+  const deferRender = !!opts.deferRender;
   sidebarTab = tab;
   document.getElementById('tab-tours').className   = 'msb-tab' + (tab === 'tours'  ? ' t-on' : '');
   document.getElementById('tab-fests').className   = 'msb-tab' + (tab === 'fests'  ? ' f-on' : '');
@@ -215,11 +216,13 @@ function setTab(tab) {
       sidebar.classList.remove('collapsed');
       if (floatTabs) { floatTabs.style.opacity = '0'; floatTabs.style.pointerEvents = 'none'; }
     }
+    if (deferRender) return;
     buildHonestyPane(); return;
   }
   if (tab === 'errors') {
     _sidebarBuildToken++;
     _festPanelBuildToken++;
+    if (deferRender) return;
     updateErrorTab();
     return;
   }  // just refresh error list, don't touch map
@@ -229,6 +232,7 @@ function setTab(tab) {
     focusedArtist = null;
     { const _fo1 = document.getElementById('focus-overlay'); if (_fo1) _fo1.style.display = 'none'; }
     { const _mr1 = document.getElementById('map-reset'); if (_mr1) _mr1.style.display = 'none'; }
+    if (deferRender) return;
     if (matchHerMap && Object.keys(matchHerMap).length) renderMatchMap();
     else { clearMapLayers(); lmap && lmap.flyTo && lmap.flyTo([30, 10], 2, { duration:1 }); }
     return;
@@ -248,6 +252,7 @@ function setTab(tab) {
         if (b) { b.classList.remove('on','on-f'); if (v==='both') b.classList.add('on'); }
       });
     }
+    if (deferRender) return;
     clearMapLayers();
     renderFestMap(null);
     buildFestPanel();
@@ -263,6 +268,7 @@ function setTab(tab) {
         if (b) { b.classList.remove('on','on-f'); if (v==='both') b.classList.add('on'); }
       });
     }
+    if (deferRender) return;
     clearMapLayers();
     _rebuildMapData();
     if (focusedArtist && allTourData[focusedArtist]) renderFocusMode(focusedArtist);

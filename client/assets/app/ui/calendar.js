@@ -1110,8 +1110,8 @@ function setMapType(t) {
   const scoreRow = document.getElementById('mfilt-score-row');
   if (scoreRow) scoreRow.style.display = '';
   // Sync sidebar tab to match map type
-  if (t === 'fests' && sidebarTab === 'tours') setTab('fests');
-  else if (t === 'tours' && sidebarTab === 'fests') setTab('tours');
+  if (t === 'fests' && sidebarTab === 'tours') setTab('fests', { deferRender: true });
+  else if (t === 'tours' && sidebarTab === 'fests') setTab('tours', { deferRender: true });
   scheduleFilterRefresh();
 }
 function setMapScore(s) {
