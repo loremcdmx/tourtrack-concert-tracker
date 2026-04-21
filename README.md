@@ -48,59 +48,30 @@ npm start
 
 ## Continue On Mac With Codex
 
-Use this path to resume development from a clean Mac checkout.
+Use the dedicated handoff guide in [MAC_HANDOFF.md](./MAC_HANDOFF.md).
 
-1. Install prerequisites:
+Short version:
 
-```bash
-brew install git node
-node -v
-```
-
-Node must be 20 or newer.
-
-2. Clone and enter the repo:
-
-```bash
-git clone https://github.com/loremcdmx/tourtrack-concert-tracker.git
-cd tourtrack-concert-tracker
-```
-
-3. Create `.env` from the template:
-
-```bash
-cp .env.example .env
-```
-
-Fill these values in `.env`:
-
-```env
-TICKETMASTER_API_KEYS=your_ticketmaster_key
-SPOTIFY_CLIENT_ID=your_spotify_client_id
-SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SPOTIFY_REDIRECT_URI=http://localhost:3002/api/auth/spotify/callback
-SESSION_SECRET=replace_with_a_long_random_secret
-```
-
-Register the same Spotify redirect URI in the Spotify developer dashboard:
+1. Install Node 20+, Git, and Chrome.
+2. Clone the repo and copy `.env.example` to `.env`.
+3. Keep Spotify redirect canonical:
 
 ```text
 http://localhost:3002/api/auth/spotify/callback
 ```
 
-4. Verify and run:
+4. Run:
 
 ```bash
 npm run check
+npm test
 npm start
 ```
 
-Open [http://localhost:3002](http://localhost:3002).
-
-5. In Codex on Mac, open this repo folder and start with:
+5. Open this repo in Codex and start with:
 
 ```text
-прочитай AGENTS.md и README.md, проверь git status и npm run check, продолжим работу над ConcertTracker. Не трогай .env и не коммить секреты.
+Read AGENTS.md, README.md, and MAC_HANDOFF.md. Check git status, run npm run check, and continue working on ConcertTracker. Do not edit .env and do not commit secrets.
 ```
 
 ## Scripts
@@ -108,6 +79,7 @@ Open [http://localhost:3002](http://localhost:3002).
 - `npm start` - start the local server
 - `npm run dev` - start the server with Node watch mode
 - `npm run check` - syntax check server and client code
+- `npm test` - run the UI regression suite
 
 ## External-user readiness
 
@@ -153,6 +125,8 @@ client/
     styles.css
 server/
   index.js
+tests/
+  ui.integration.test.mjs
 vercel.json
 ```
 
