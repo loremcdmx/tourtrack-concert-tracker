@@ -441,6 +441,85 @@ function artistScoreLevel(artistName) {
   );
 }
 
+function artistQualityLabel(level) {
+  if (level >= 4) return 'Top+';
+  if (level >= 3) return 'High+';
+  if (level >= 2) return 'Mid+';
+  if (level >= 1) return 'Low+';
+  return '';
+}
+
+function _artistScoreTopPercent(rank, total) {
+  if (!(rank > 0) || !(total > 0)) return '';
+  return `top ${Math.max(1, Math.round((rank / total) * 100))}%`;
+}
+
+function artistScoreBreakdown(artistName) {
+  const meta = getArtistScoringMeta();
+  const plays = artistPlayCount(artistName);
+  const tracked = artistIsTracked(artistName);
+  const hasPlayData = hasArtistPlayData();
+  const finalLevel = artistScoreLevel(artistName);
+  const absoluteLevel = hasPlayData ? artistAbsoluteScoreLevel(plays) : 0;
+  const relativeLevel = hasPlayData ? artistRelativeScoreLevel(artistName, plays) : 0;
+  const fallbackLevel = hasPlayData ? 0 : artistRankFallbackLevel(artistName);
+  const positiveRank = hasPlayData ? artistPositiveRank(artistName) : -1;
+  const positiveCount = hasPlayData ? meta.positiveCount : 0;
+  const listRank = hasPlayData ? -1 : artistScoringPosition(artistName) + 1;
+  const listCount = meta.list.length || 0;
+  const label = artistQualityLabel(finalLevel) || 'Unranked';
+  const chips = [
+    { kind: 'final', tone: `level-${finalLevel}`, text: label },
+  ];
+
+  if (plays > 0) chips.push({ kind: 'plays', tone: 'plays', text: `${plays} plays` });
+  else if (tracked) chips.push({ kind: 'tracked', tone: 'tracked', text: 'tracked' });
+  else chips.push({ kind: 'plays', tone: 'muted', text: '0 plays' });
+
+  if (hasPlayData && relativeLevel > absoluteLevel && positiveRank > 0 && positiveCount > 0) {
+    chips.push({
+      kind: 'rank',
+      tone: 'rank',
+      text: _artistScoreTopPercent(positiveRank, positiveCount),
+    });
+  } else if (!hasPlayData && fallbackLevel > 0 && listRank > 0 && listCount > 0) {
+    chips.push({
+      kind: 'rank',
+      tone: 'rank',
+      text: `list ${_artistScoreTopPercent(listRank, listCount)}`,
+    });
+  }
+
+  const titleParts = [`${label} filter level`];
+  if (plays > 0) titleParts.push(`${plays} plays`);
+  else if (tracked) titleParts.push('tracked artist');
+  else titleParts.push('untracked artist');
+
+  if (hasPlayData) {
+    titleParts.push(`absolute ${artistQualityLabel(absoluteLevel) || 'none'}`);
+    if (positiveRank > 0 && positiveCount > 0) titleParts.push(`positive rank ${positiveRank}/${positiveCount}`);
+    if (relativeLevel > 0) titleParts.push(`relative ${artistQualityLabel(relativeLevel)}`);
+  } else if (listRank > 0 && listCount > 0) {
+    titleParts.push(`list rank ${listRank}/${listCount}`);
+  }
+
+  return {
+    label,
+    chips,
+    title: titleParts.join(' · '),
+    plays,
+    tracked,
+    finalLevel,
+    absoluteLevel,
+    relativeLevel,
+    fallbackLevel,
+    positiveRank,
+    positiveCount,
+    listRank,
+    listCount,
+  };
+}
+
 function artistScoreOk(artistName, level) {
   const scoreLevel = Number(level) || 0;
   if (!scoreLevel) return true;
@@ -1631,6 +1710,24 @@ function createCalendarMonthSeparator(month) {
   return sep;
 }
 
+function createCalendarScoreRow(artistName) {
+  if (!artistName) return null;
+  const breakdown = artistScoreBreakdown(artistName);
+  const row = document.createElement('div');
+  row.className = 'ev-score-row';
+  row.title = breakdown.title;
+
+  breakdown.chips.forEach(chipMeta => {
+    const chip = document.createElement('span');
+    chip.className = `ev-score-chip is-${chipMeta.tone}${chipMeta.kind === 'final' ? ' is-final' : ''}`;
+    chip.textContent = chipMeta.text;
+    chip.title = breakdown.title;
+    row.appendChild(chip);
+  });
+
+  return row;
+}
+
 function buildCalendarEventRow(ev, ctx) {
   const { today, lastShowByArtist, primeArtists, trackedArtistKeys, tourCountsByArtist } = ctx;
   const d = ev.date.split('-');
@@ -1801,6 +1898,9 @@ function buildCalendarEventRow(ev, ctx) {
     }
     main.appendChild(headline);
     main.appendChild(sub);
+
+    const scoreRow = createCalendarScoreRow(ev.artist);
+    if (scoreRow) main.appendChild(scoreRow);
 
     const fest = _festForConcert(ev);
     const metaRow = document.createElement('div');

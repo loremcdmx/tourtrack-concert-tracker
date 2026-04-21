@@ -789,3 +789,52 @@ test('renderOverview keeps secondary future shows off the DOM marker path', { co
   assert.ok(result.leafletMarkerIcons <= 1);
   assert.ok(result.overlayCanvases >= 1);
 });
+
+test('concert feed exposes artist score breakdown for filter tuning', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Delta', 'Atlas', 'Beacon', 'Pulse', 'Quill', 'Rivet', 'Cipher'],
+    artistPlays: {
+      delta: 4,
+      atlas: 7,
+      beacon: 1,
+      pulse: 3,
+      quill: 2,
+      rivet: 2,
+    },
+    concerts: [
+      makeConcert('Delta', 3, 'Forum', 'London', 'GB', 51.5074, -0.1278),
+      makeConcert('Atlas', 5, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+      makeConcert('Beacon', 7, 'Tempodrom', 'Berlin', 'DE', 52.499, 13.374),
+      makeConcert('Cipher', 9, 'Ancienne Belgique', 'Brussels', 'BE', 50.8478, 4.3499),
+    ],
+  });
+
+  const result = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.ev-row')].map(row => ({
+      artist: row.querySelector('.ev-name')?.childNodes?.[0]?.textContent?.trim() || '',
+      chips: [...row.querySelectorAll('.ev-score-chip')].map(el => el.textContent.trim()),
+      title: row.querySelector('.ev-score-row')?.getAttribute('title') || '',
+    }));
+    return {
+      delta: artistScoreBreakdown('Delta'),
+      atlas: artistScoreBreakdown('Atlas'),
+      beacon: artistScoreBreakdown('Beacon'),
+      cipher: artistScoreBreakdown('Cipher'),
+      rows,
+    };
+  });
+
+  assert.equal(result.delta.label, 'High+');
+  assert.equal(result.atlas.label, 'High+');
+  assert.equal(result.beacon.label, 'Low+');
+  assert.equal(result.cipher.label, 'Low+');
+  assert.equal(result.delta.chips[2].text, 'top 17%');
+
+  const deltaRow = result.rows.find(row => row.artist === 'Delta');
+  const cipherRow = result.rows.find(row => row.artist === 'Cipher');
+  assert.ok(deltaRow);
+  assert.deepEqual(deltaRow.chips, ['High+', '4 plays', 'top 17%']);
+  assert.match(deltaRow.title, /positive rank 1\/6/);
+  assert.ok(cipherRow);
+  assert.deepEqual(cipherRow.chips, ['Low+', 'tracked']);
+});
