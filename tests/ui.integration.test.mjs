@@ -716,3 +716,43 @@ test('map drag defers tile warmup and skips closed visible-panel work', { concur
   assert.deepEqual(result.endImmediate, { warm: 1, visible: 0, isPanning: false });
   assert.deepEqual(result.settled, { warm: 1, visible: 0, isPanning: false });
 });
+
+test('renderOverview skips visible-panel scan when the panel is collapsed', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon'],
+    artistPlays: { atlas: 9, beacon: 6 },
+    concerts: [
+      makeConcert('Atlas', 5, 'Forum', 'London', 'GB', 51.5074, -0.1278),
+      makeConcert('Atlas', 14, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+      makeConcert('Beacon', 8, 'Tempodrom', 'Berlin', 'DE', 52.499, 13.374),
+    ],
+  });
+
+  const result = await page.evaluate(async () => {
+    const originalUpdateVisiblePanel = window.updateVisiblePanel;
+    let calls = 0;
+    window.updateVisiblePanel = function(...args) {
+      calls += 1;
+      return originalUpdateVisiblePanel.apply(this, args);
+    };
+
+    _visiblePanelOpen = false;
+    const panel = document.getElementById('msb-visible');
+    panel.classList.remove('open');
+    await new Promise(resolve => setTimeout(resolve, 160));
+    calls = 0;
+
+    clearMapLayers();
+    renderOverview({ smartFit: false });
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    const badgeText = document.getElementById('msb-visible-count')?.textContent || '';
+    const panelDisplay = getComputedStyle(panel).display;
+    window.updateVisiblePanel = originalUpdateVisiblePanel;
+    return { calls, badgeText, panelDisplay };
+  });
+
+  assert.equal(result.calls, 0);
+  assert.ok(Number(result.badgeText) >= 1);
+  assert.notEqual(result.panelDisplay, 'none');
+});

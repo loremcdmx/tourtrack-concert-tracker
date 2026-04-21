@@ -1,6 +1,7 @@
 'use strict';
 
 let MAP_MAX_ARTISTS = 30;
+const MAP_MAX_FUTURE_DOTS = 260;
 let _mapWasCapped = false;   // true when last render trimmed to top 20
 let _mapFirstFit  = false;   // becomes true after the first fitBounds — prevents jumping on filter changes
 
@@ -83,6 +84,16 @@ function _mapMaybeFitFilteredView(opts = {}) {
   lmap.fitBounds(bounds, { padding: [48, 48], maxZoom: 7, animate: false });
   _mapFirstFit = true;
   if (typeof scheduleMapTileWarmup === 'function') scheduleMapTileWarmup(20);
+}
+
+function _refreshVisiblePanelAfterRender() {
+  const badge = document.getElementById('msb-visible-count');
+  const panel = document.getElementById('msb-visible');
+  if (!badge || !panel) return;
+  const total = (showMapTours ? tourMarkers.length : 0) + (showMapFests ? festMarkers.length : 0);
+  badge.textContent = total;
+  panel.style.display = total > 0 || Object.keys(allTourData).length > 0 ? '' : 'none';
+  if (_visiblePanelOpen) updateVisiblePanel();
 }
 
 function _mapCreateEl(tag, className, text) {
@@ -480,7 +491,7 @@ function _buildConcertPopup(artist, ev, accent, isFav, plays, in7, in30) {
   _mapPopupEnableInteraction(root);
   return root;
 }
-function _renderFestLabels() {
+function _renderFestLabels(opts = {}) {
   if (!lmap) return;
   clearFestMarkers();
 
@@ -498,7 +509,7 @@ function _renderFestLabels() {
   const labelBudget = _mapFestLabelBudget(zoom, mapSize, festsToRender.length);
   const clusterCell = _mapFestClusterCellSize(zoom);
   const clusterThreshold = _mapFestClusterThreshold(zoom);
-  const shouldCull = _mapFirstFit && typeof lmap.getBounds === 'function';
+  const shouldCull = _mapFirstFit && !opts.smartFit && typeof lmap.getBounds === 'function';
   const viewBounds = shouldCull ? lmap.getBounds().pad(0.28) : null;
   const festItems = festsToRender
     .filter(f => !viewBounds || viewBounds.contains([f.lat, f.lng]))
@@ -611,11 +622,14 @@ function _renderFestLabels() {
 }
 function renderOverview(opts = {}) {
   const preserveRoutes = !!opts.preserveRoutes;
+  const smartFit = !!opts.smartFit;
   const today = new Date().toISOString().split('T')[0];
   const in7   = dateOffset(7);
   const in30  = dateOffset(30);
   const in90  = dateOffset(90);
   const zoom  = lmap ? lmap.getZoom() : 3;
+  const shouldCullTours = _mapFirstFit && !smartFit && typeof lmap?.getBounds === 'function';
+  const renderBounds = shouldCullTours ? lmap.getBounds().pad(0.24) : null;
   const rankCache = new Map();
   const rankOf = artist => {
     if (!rankCache.has(artist)) rankCache.set(artist, _rankScore(artist));
@@ -731,16 +745,27 @@ function renderOverview(opts = {}) {
   // ── 2. FUTURE SHOW DOTS at zoom > 7 (tiny, along route) ───────
   clearTourMarkers();
   if (zoom > 7) {
+    let futureDotCount = 0;
     tourEntries.forEach(([artist, evs]) => {
+      if (futureDotCount >= MAP_MAX_FUTURE_DOTS) return;
       const col = getColor(artist);
       const nextGeo = evs.find(e => e.date >= today && e.lat);
-      evs.filter(e => e.lat && e.date >= today && e !== nextGeo).forEach(ev => {
-        const sz = 3;
-        tourMarkers.push(L.marker([ev.lat, ev.lng], { icon: L.divIcon({
-          className:'', iconSize:[sz,sz], iconAnchor:[sz/2,sz/2],
-          html:`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${col};opacity:.35"></div>`
-        })}).addTo(lmap));
-      });
+      evs
+        .filter(e =>
+          e.lat &&
+          e.date >= today &&
+          e !== nextGeo &&
+          (!renderBounds || renderBounds.contains([e.lat, e.lng]))
+        )
+        .slice(0, Math.max(0, MAP_MAX_FUTURE_DOTS - futureDotCount))
+        .forEach(ev => {
+          const sz = 3;
+          tourMarkers.push(L.marker([ev.lat, ev.lng], { icon: L.divIcon({
+            className:'', iconSize:[sz,sz], iconAnchor:[sz/2,sz/2],
+            html:`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${col};opacity:.35"></div>`
+          })}).addTo(lmap));
+          futureDotCount += 1;
+        });
     });
   }
 
@@ -754,9 +779,12 @@ function renderOverview(opts = {}) {
   tourEntries.forEach(([artist, evs]) => {
     const futureGeo = evs.filter(e => e.date >= today && e.lat);
     if (!futureGeo.length) return;
-    // Prefer first in-viewport show; fall back to globally first
+    // Prefer first in-viewport show; when culling, use the first nearby show
+    // instead of keeping distant offscreen markers alive.
     const inViewport = futureGeo.find(e => vpBounds.contains([e.lat, e.lng]));
-    const nextGeo = inViewport || futureGeo[0];
+    const inRenderBounds = renderBounds ? futureGeo.find(e => renderBounds.contains([e.lat, e.lng])) : null;
+    if (renderBounds && !inViewport && !inRenderBounds) return;
+    const nextGeo = inViewport || inRenderBounds || futureGeo[0];
     const rank = rankOf(artist);
     const cityKey = `${(nextGeo.city||'?').toLowerCase().trim().slice(0,13)}|${nextGeo.country||''}`;
     if (!cityMap.has(cityKey)) cityMap.set(cityKey, {
@@ -799,14 +827,13 @@ function renderOverview(opts = {}) {
   });
 
   // ── 4. FESTIVALS — rendered via standalone function (also called on zoom) ─
-  _renderFestLabels();
+  _renderFestLabels({ smartFit });
 
   if (!showMapTours) { clearTourMarkers(); clearRouteLines(); }
   if (!showMapFests) clearFestMarkers();
 
-  updateVisiblePanel();
   _mapMaybeFitFilteredView(opts);
-  updateVisiblePanel();
+  _refreshVisiblePanelAfterRender();
 
   // ── Auto-fit: on the very first render with data, fly to the bounding box
   // of all visible markers so the map opens at a sensible zoom level.
