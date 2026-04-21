@@ -53,14 +53,21 @@ Use the dedicated handoff guide in [MAC_HANDOFF.md](./MAC_HANDOFF.md).
 Short version:
 
 1. Install Node 20+, Git, and Chrome.
-2. Clone the repo and copy `.env.example` to `.env`.
-3. Keep Spotify redirect canonical:
+2. Clone the repo and install dependencies.
+3. Pull secrets from Vercel:
+
+```text
+npx vercel login
+npm run env:pull:dev
+```
+
+4. Keep Spotify redirect canonical:
 
 ```text
 http://localhost:3002/api/auth/spotify/callback
 ```
 
-4. Run:
+5. Run:
 
 ```bash
 npm run check
@@ -68,7 +75,7 @@ npm test
 npm start
 ```
 
-5. Open this repo in Codex and start with:
+6. Open this repo in Codex and start with:
 
 ```text
 Read AGENTS.md, README.md, and MAC_HANDOFF.md. Check git status, run npm run check, and continue working on ConcertTracker. Do not edit .env and do not commit secrets.
@@ -78,6 +85,7 @@ Read AGENTS.md, README.md, and MAC_HANDOFF.md. Check git status, run npm run che
 
 - `npm start` - start the local server
 - `npm run dev` - start the server with Node watch mode
+- `npm run env:pull:dev` - pull `.env` from the linked Vercel project's `development` environment
 - `npm run check` - syntax check server and client code
 - `npm test` - run the UI regression suite
 
