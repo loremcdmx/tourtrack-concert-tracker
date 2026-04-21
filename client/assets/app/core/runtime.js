@@ -1,6 +1,49 @@
 'use strict';
 const APP_VERSION = '2.23.0001'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
 
+const PRODUCT_SCENARIO = Object.freeze({
+  id: 'scenario-a',
+  singleUser: true,
+  pinnedPlaylistOnly: true,
+  externalUserFeatures: false,
+  fixedMinTracks: 4,
+  filteredArtistCount: 384,
+  sourceArtistCount: 2477,
+  sourceTrackCount: 5656,
+  thresholdStats: Object.freeze({
+    1: 2477,
+    2: 848,
+    3: 509,
+    4: 384,
+    5: 312,
+    6: 260,
+    8: 178,
+    10: 139,
+    12: 100,
+    15: 68,
+    20: 37,
+  }),
+});
+
+const PINNED_PLAYLIST = Object.freeze({
+  id: '0lXmCRl0wc26aSdwfgIAwQ',
+  url: 'https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ',
+  name: 'loremcdmx twitch playlist',
+  artistCount: PRODUCT_SCENARIO.sourceArtistCount,
+  filteredArtistCount: PRODUCT_SCENARIO.filteredArtistCount,
+  minTracks: PRODUCT_SCENARIO.fixedMinTracks,
+  trackCount: PRODUCT_SCENARIO.sourceTrackCount,
+  topArtists: ['Fall Out Boy', 'The Maine', 'Anacondaz', 'Panic! At The Disco'],
+});
+
+function isScenarioAProductMode() {
+  return PRODUCT_SCENARIO.singleUser && PRODUCT_SCENARIO.id === 'scenario-a';
+}
+
+function scenarioAFixedMinTracks() {
+  return Math.max(1, Number(PRODUCT_SCENARIO.fixedMinTracks) || 1);
+}
+
 // ═══════════════════════════════════════════════════════════════
 const SERVER_CONFIG = window.__SERVER_CONFIG__ || {};
 const INTERNAL_PROXY_TEMPLATE = SERVER_CONFIG.internalProxyTemplate || '';

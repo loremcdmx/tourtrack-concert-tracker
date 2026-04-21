@@ -100,6 +100,70 @@ function uniqueArtistNames(names) {
   return out;
 }
 
+function scenarioArtistKeys(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return [];
+  const normalized = typeof _normText === 'function' ? _normText(raw) : raw.toLowerCase();
+  const folded = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return [...new Set([raw.toLowerCase(), normalized, folded].filter(Boolean))];
+}
+
+function filterArtistsByPlayThreshold(names, playsMap = ARTIST_PLAYS, minTracks = 1) {
+  const threshold = Math.max(1, Number(minTracks) || 1);
+  const unique = uniqueArtistNames(names);
+  if (threshold <= 1) return unique;
+  const plays = playsMap && typeof playsMap === 'object' ? playsMap : {};
+  return unique.filter(name => Number(plays[String(name || '').toLowerCase()] || 0) >= threshold);
+}
+
+let _scenarioArtistLookupSignature = '';
+let _scenarioArtistLookup = new Set();
+
+function getScenarioArtistLookup() {
+  if (!isScenarioAProductMode()) return null;
+  const list = Array.isArray(ARTISTS) ? ARTISTS : [];
+  const signature = list.map(name => String(name || '')).join('\u0001');
+  if (_scenarioArtistLookupSignature === signature) return _scenarioArtistLookup;
+
+  const next = new Set();
+  list.forEach(name => {
+    scenarioArtistKeys(name).forEach(key => next.add(key));
+  });
+  _scenarioArtistLookupSignature = signature;
+  _scenarioArtistLookup = next;
+  return next;
+}
+
+function scenarioArtistAllowed(name) {
+  if (!isScenarioAProductMode()) return true;
+  const lookup = getScenarioArtistLookup();
+  if (!lookup || !lookup.size) return false;
+  return scenarioArtistKeys(name).some(key => lookup.has(key));
+}
+
+function applyScenarioAArtistThreshold(sourceNames) {
+  if (!isScenarioAProductMode()) return Array.isArray(ARTISTS) ? ARTISTS : [];
+  const source = Array.isArray(sourceNames) && sourceNames.length
+    ? sourceNames
+    : (Array.isArray(TRACKED_ARTISTS) && TRACKED_ARTISTS.length
+        ? TRACKED_ARTISTS
+        : uniqueArtistNames([
+            ...(Array.isArray(ARTISTS) ? ARTISTS : []),
+            ...Object.keys(ARTIST_PLAYS || {}),
+          ]));
+  ARTISTS = filterArtistsByPlayThreshold(source, ARTIST_PLAYS, scenarioAFixedMinTracks());
+  return ARTISTS;
+}
+
+function applyScenarioAResultFilter() {
+  if (!isScenarioAProductMode()) return;
+  concerts = (Array.isArray(concerts) ? concerts : []).filter(show => scenarioArtistAllowed(show?.artist));
+  SCANNED_ARTISTS = uniqueArtistNames((Array.isArray(SCANNED_ARTISTS) ? SCANNED_ARTISTS : []).filter(name => scenarioArtistAllowed(name)));
+  if (focusedArtist && !scenarioArtistAllowed(focusedArtist)) {
+    focusedArtist = null;
+  }
+}
+
 function artistTrackLookupKeys(name) {
   const raw = String(name || '').trim();
   if (!raw) return [];
@@ -311,6 +375,10 @@ function restore() {
         ...SCANNED_ARTISTS,
       ]);
     }
+    if (isScenarioAProductMode()) {
+      applyScenarioAArtistThreshold();
+      applyScenarioAResultFilter();
+    }
   } catch(e) {
     hiddenArtists = {};
     ARTIST_PLAYS = {};
@@ -461,6 +529,10 @@ function applyLoadedState(data, filename) {
       ...Object.keys(ARTIST_PLAYS || {}),
       ...SCANNED_ARTISTS,
     ]);
+  }
+  if (isScenarioAProductMode()) {
+    applyScenarioAArtistThreshold();
+    applyScenarioAResultFilter();
   }
 
   persistData();

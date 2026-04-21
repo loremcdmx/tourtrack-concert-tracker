@@ -394,6 +394,66 @@ afterEach(async () => {
   }
 });
 
+test('scenario A locks onboarding to the pinned playlist and hides multi-user chrome', { concurrency: false }, async () => {
+  const state = await page.evaluate(() => ({
+    scenario: isScenarioAProductMode(),
+    bodyClass: document.body.classList.contains('scenario-a'),
+    profileBarDisplay: getComputedStyle(document.querySelector('.prof-bar')).display,
+    spotifyBtnDisplay: getComputedStyle(document.getElementById('spotify-auth-btn')).display,
+    matchTabDisplay: getComputedStyle(document.getElementById('tab-match')).display,
+    floatMatchDisplay: getComputedStyle(document.getElementById('tab-match-float')).display,
+    onboardUrl: document.getElementById('onboard-url')?.value || '',
+    onboardReadonly: !!document.getElementById('onboard-url')?.readOnly,
+    settingsUrl: document.getElementById('sp-playlist-url')?.value || '',
+    settingsReadonly: !!document.getElementById('sp-playlist-url')?.readOnly,
+    title: document.getElementById('onboard-main-title')?.textContent?.trim() || '',
+    hint: document.getElementById('onboard-mintracks-hint')?.textContent?.trim() || '',
+    button: document.getElementById('onboard-btn')?.textContent?.trim() || '',
+  }));
+
+  assert.equal(state.scenario, true);
+  assert.equal(state.bodyClass, true);
+  assert.equal(state.profileBarDisplay, 'none');
+  assert.equal(state.spotifyBtnDisplay, 'none');
+  assert.equal(state.matchTabDisplay, 'none');
+  assert.equal(state.floatMatchDisplay, 'none');
+  assert.equal(state.onboardUrl, 'https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ');
+  assert.equal(state.onboardReadonly, true);
+  assert.equal(state.settingsUrl, 'https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ');
+  assert.equal(state.settingsReadonly, true);
+  assert.match(state.title, /pinned playlist/i);
+  assert.equal(state.hint, '384 of 2477 artists shown (>=4 repeats)');
+  assert.equal(state.button, 'Open playlist');
+});
+
+test('scenario A keeps low-frequency cached artists out of calendar and map', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon'],
+    trackedArtists: ['Atlas', 'Beacon', 'Cipher'],
+    artistPlays: { atlas: 11, beacon: 4, cipher: 1 },
+    concerts: [
+      makeConcert('Atlas', 4, 'Forum', 'London', 'GB', 51.5074, -0.1278),
+      makeConcert('Beacon', 6, 'Tempodrom', 'Berlin', 'DE', 52.499, 13.374),
+      makeConcert('Cipher', 8, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+    ],
+  });
+
+  await settleUi(page);
+
+  const result = await page.evaluate(() => ({
+    visibleArtists: visibleConcerts().map(item => item.artist).sort(),
+    calendarArtists: [...document.querySelectorAll('#cal-body .ev-headline .ev-name')]
+      .map(el => (el.firstChild?.textContent || el.textContent || '').trim())
+      .filter(Boolean)
+      .sort(),
+    mapArtists: Object.keys(allTourData).sort(),
+  }));
+
+  assert.deepEqual(result.visibleArtists, ['Atlas', 'Beacon']);
+  assert.deepEqual(result.calendarArtists, ['Atlas', 'Beacon']);
+  assert.deepEqual(result.mapArtists, ['Atlas', 'Beacon']);
+});
+
 test('quality filter keeps calendar and map artist sets aligned', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
     artists: ['Alpha', 'Bravo', 'Charlie', 'Delta'],

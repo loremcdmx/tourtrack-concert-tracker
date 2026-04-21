@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&family=Bebas+Neue&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/styles.css?v=2.28.0029">
+<link rel="stylesheet" href="/assets/styles.css?v=2.28.0030">
 </head>
 <body>
 <header>
@@ -117,7 +117,7 @@
 <div class="onboard" id="onboard">
   <div class="onboard-card">
     <div class="onboard-logo">Concert<span>Tracker</span></div>
-    <div class="onboard-headnote">Spotify playlist to live concerts</div>
+    <div class="onboard-headnote">Scenario A · pinned playlist only</div>
 
     <!-- ▸ RESUME PANEL — shown when IDB has cached data -->
     <div class="onboard-resume" id="onboard-resume" style="display:none">
@@ -153,8 +153,8 @@
 
     <!-- ▸ NEW IMPORT PANEL — default state or when no IDB data -->
     <div id="onboard-import-panel">
-      <div class="onboard-title" id="onboard-main-title">See upcoming concerts from a Spotify playlist</div>
-      <div class="onboard-sub" id="onboard-sub-text">Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.</div>
+      <div class="onboard-title" id="onboard-main-title">Open the pinned playlist and keep only the strongest repeats</div>
+      <div class="onboard-sub" id="onboard-sub-text">This build is locked to loremcdmx twitch playlist. Only artists with 4+ repeats enter the feed and map, which keeps scrolling fast.</div>
       <div class="onboard-auth-wrap" id="onboard-auth-wrap" style="display:none">
         <div class="onboard-auth-row">
           <button class="onboard-auth-btn" id="onboard-auth-btn" onclick="onboardSpotifyAuthAction()">Continue with Spotify</button>
@@ -179,22 +179,16 @@
         <input class="onboard-input" id="onboard-url" placeholder="https://open.spotify.com/playlist/…"
           spellcheck="false" autocomplete="off"
           onkeydown="if(event.key==='Enter')handleOnboardPrimaryAction()">
-        <button class="onboard-btn" id="onboard-btn" onclick="handleOnboardPrimaryAction()">→ Open sample</button>
+        <button class="onboard-btn" id="onboard-btn" onclick="handleOnboardPrimaryAction()">→ Open playlist</button>
       </div>
       <!-- Min tracks filter -->
       <div class="onboard-mintracks-row">
-        <span class="onboard-mintracks-label">Artist threshold</span>
-        <div class="onboard-mintracks-chips" id="onboard-mintracks-chips">
-          <button class="onboard-mt-chip on" data-v="1" onclick="setMinTracks(1)">≥1</button>
-          <button class="onboard-mt-chip" data-v="2" onclick="setMinTracks(2)">≥2</button>
-          <button class="onboard-mt-chip" data-v="3" onclick="setMinTracks(3)">≥3</button>
-          <button class="onboard-mt-chip" data-v="5" onclick="setMinTracks(5)">≥5</button>
-          <button class="onboard-mt-chip" data-v="10" onclick="setMinTracks(10)">≥10</button>
-        </div>
-        <span class="onboard-mintracks-hint" id="onboard-mintracks-hint">all artists</span>
+        <span class="onboard-mintracks-label">Artist cutoff</span>
+        <div class="onboard-mintracks-chips" id="onboard-mintracks-chips" style="display:none"></div>
+        <span class="onboard-mintracks-hint" id="onboard-mintracks-hint">384 of 2477 artists shown (≥4 repeats)</span>
       </div>
       <div class="onboard-status" id="onboard-status">
-        <span id="onboard-status-text">Sign in with Spotify or open the sample to begin.</span>
+        <span id="onboard-status-text">Pinned playlist ready. Artists below 4 repeats stay out of the product.</span>
       </div>
       <!-- Progress bar (shown during import) -->
       <div class="onboard-prog-wrap" id="onboard-prog-wrap">
@@ -238,7 +232,7 @@
             style="width:68px;height:68px;flex-shrink:0;display:block"></canvas>
           <div class="onboard-pl-body">
             <div class="onboard-pl-name">loremcdmx twitch playlist</div>
-            <div class="onboard-pl-meta">2477 artists &middot; 5656 tracks</div>
+            <div class="onboard-pl-meta">384 shown &middot; 2477 artists &middot; 5656 tracks</div>
             <div class="onboard-pl-chips">
               <span class="onboard-pl-chip">Fall Out Boy</span>
               <span class="onboard-pl-chip">The Maine</span>
@@ -540,7 +534,7 @@
       <div id="sidebar-open-tabs" style="position:absolute;left:0;top:50%;transform:translateY(-50%);z-index:810;display:flex;flex-direction:column;gap:4px;pointer-events:none;opacity:0;transition:opacity .2s">
         <button class="msb-float-tab" onclick="toggleMapSidebar('tours')">🎸 Tours</button>
         <button class="msb-float-tab" onclick="toggleMapSidebar('fests')">🎪 Fests</button>
-        <button class="msb-float-tab" onclick="toggleMapSidebar('match')">💑 Match</button>
+        <button class="msb-float-tab" id="tab-match-float" onclick="toggleMapSidebar('match')">💑 Match</button>
         <button class="msb-float-tab" onclick="toggleMapSidebar('honest')">🧐 Honesty</button>
       </div>
     </div>
@@ -715,12 +709,12 @@
     <!-- PLAYLIST TAB -->
     <div class="smodal-pane active" id="stab-pane-import">
       <div class="sset-block" style="border:none">
-        <div class="sset-label">Spotify playlist URL</div>
+        <div class="sset-label">Pinned playlist</div>
         <div class="sset-row">
           <input class="sset-input" id="sp-playlist-url"
             placeholder="https://open.spotify.com/playlist/&#x2026;" spellcheck="false"
             onkeydown="if(event.key==='Enter')spotifyImport()">
-          <button class="sset-btn-primary" id="sp-import-btn" onclick="spotifyImport()">&#x2193; Import</button>
+          <button class="sset-btn-primary" id="sp-import-btn" onclick="spotifyImport()">&#x21BB; Reload</button>
         </div>
         <div class="sset-status" id="hero-status">
           <span id="hero-status-text" style="flex:1"></span>
@@ -911,10 +905,10 @@
   </div>
 </div>
 </div>
-<script src="/config.js?v=2.28.0029"></script>
-<script src="/assets/app/core/runtime.js?v=2.28.0029"></script>
-<script src="/assets/app/core/profiles.js?v=2.28.0029"></script>
-<script src="/assets/app/core/storage.js?v=2.28.0029"></script>
+<script src="/config.js?v=2.28.0030"></script>
+<script src="/assets/app/core/runtime.js?v=2.28.0030"></script>
+<script src="/assets/app/core/profiles.js?v=2.28.0030"></script>
+<script src="/assets/app/core/storage.js?v=2.28.0030"></script>
 <script src="/assets/app/core/filter-presets.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/actions.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/shared/network.js?v=2.28.0005"></script>
@@ -935,16 +929,16 @@
     <script src="/assets/app/scan/festivals/dedup.js?v=2.28.0006"></script>
 <script src="/assets/app/scan/festivals/scoring.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/festivals.js?v=2.28.0005"></script>
-<script src="/assets/app/scan/concerts.js?v=2.28.0005"></script>
+<script src="/assets/app/scan/concerts.js?v=2.28.0030"></script>
 <script src="/assets/app/ui/calendar.js?v=2.28.0029"></script>
 <script src="/assets/app/ui/map/base.js?v=2.28.0028"></script>
 <script src="/assets/app/ui/map/drawer.js?v=2.28.0017"></script>
 <script src="/assets/app/ui/map/match.js?v=2.28.0005"></script>
-<script src="/assets/app/ui/map/sidebar.js?v=2.28.0024"></script>
+<script src="/assets/app/ui/map/sidebar.js?v=2.28.0030"></script>
 <script src="/assets/app/ui/map/focus.js?v=2.28.0017"></script>
 <script src="/assets/app/ui/map/render.js?v=2.28.0028"></script>
-<script src="/assets/app/ui/overlays.js?v=2.28.0029"></script>
-<script src="/assets/app/integrations/spotify.js?v=2.28.0029"></script>
-<script src="/assets/app/bootstrap.js?v=2.28.0016"></script>
+<script src="/assets/app/ui/overlays.js?v=2.28.0030"></script>
+<script src="/assets/app/integrations/spotify.js?v=2.28.0030"></script>
+<script src="/assets/app/bootstrap.js?v=2.28.0030"></script>
 </body>
 </html>

@@ -17,6 +17,25 @@
 body { background:var(--bg); color:var(--text); font-family:'DM Mono',monospace;
   height:100dvh; overflow:hidden; display:flex; flex-direction:column; }
 
+body.scenario-a .prof-bar,
+body.scenario-a #prof-toast,
+body.scenario-a #prof-dialog-bg,
+body.scenario-a #spotify-auth-btn,
+body.scenario-a #tab-match,
+body.scenario-a #pane-match,
+body.scenario-a #tab-match-float,
+body.scenario-a #settings-history-wrap,
+body.scenario-a #onboard-history-wrap,
+body.scenario-a #onboard-auth-wrap {
+  display:none !important;
+}
+
+body.scenario-a .onboard-input[readonly],
+body.scenario-a .sset-input[readonly] {
+  color:var(--muted);
+  cursor:default;
+}
+
 /* ── PROFILE BAR (in header) ── */
 .prof-bar {
   display: flex; align-items: center; gap: .35rem; flex-shrink: 0;

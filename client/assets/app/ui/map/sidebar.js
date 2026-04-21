@@ -187,24 +187,26 @@ function renderFestCardChunks(container, festivalsList) {
 }
 
 function setTab(tab, opts = {}) {
+  if (isScenarioAProductMode() && tab === 'match') tab = 'tours';
   const deferRender = !!opts.deferRender;
   sidebarTab = tab;
+  const matchEnabled = !isScenarioAProductMode();
   document.getElementById('tab-tours').className   = 'msb-tab' + (tab === 'tours'  ? ' t-on' : '');
   document.getElementById('tab-fests').className   = 'msb-tab' + (tab === 'fests'  ? ' f-on' : '');
-  document.getElementById('tab-match').className   = 'msb-tab' + (tab === 'match'  ? ' m-on' : '');
+  document.getElementById('tab-match').className   = 'msb-tab' + (matchEnabled && tab === 'match'  ? ' m-on' : '');
   document.getElementById('tab-errors').className  = 'msb-tab' + (tab === 'errors' ? ' e-on' : '') +
     (Object.keys(fetchErrors).length ? '' : ''); // keep visible/hidden via display:none in updateErrorTab
   document.getElementById('tab-honest').className  = 'msb-tab' + (tab === 'honest' ? ' h-on' : '');
   document.getElementById('pane-tours').classList.toggle('on',   tab === 'tours');
   document.getElementById('pane-fests').classList.toggle('on',   tab === 'fests');
-  document.getElementById('pane-match').classList.toggle('on',   tab === 'match');
+  document.getElementById('pane-match').classList.toggle('on',   matchEnabled && tab === 'match');
   document.getElementById('pane-errors').classList.toggle('on',  tab === 'errors');
   document.getElementById('pane-honest').classList.toggle('on',  tab === 'honest');
   document.getElementById('map-sidebar').classList.toggle('fests-mode', tab === 'fests');
   if (typeof scheduleMapResize === 'function') scheduleMapResize(40);
 
-  { const _lt = document.getElementById('lt-t'); if (_lt) _lt.style.display = (tab === 'fests' || tab === 'match') ? 'none' : ''; }
-  { const _lf = document.getElementById('lt-f'); if (_lf) _lf.style.display = (tab === 'fests' || tab === 'match') ? 'none' : ''; }
+  { const _lt = document.getElementById('lt-t'); if (_lt) _lt.style.display = (tab === 'fests' || (matchEnabled && tab === 'match')) ? 'none' : ''; }
+  { const _lf = document.getElementById('lt-f'); if (_lf) _lf.style.display = (tab === 'fests' || (matchEnabled && tab === 'match')) ? 'none' : ''; }
 
   if (tab === 'honest') {
     _sidebarBuildToken++;

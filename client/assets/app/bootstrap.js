@@ -1,7 +1,12 @@
 'use strict';
 
 function showInitialOnboardImport() {
-  setStatus('Connect Spotify or open the sample to get started', false);
+  setStatus(
+    isScenarioAProductMode()
+      ? `Pinned playlist ready — only artists with ${scenarioAFixedMinTracks()}+ repeats enter the product`
+      : 'Connect Spotify or open the sample to get started',
+    false,
+  );
   renderOnboardHistory();
   const skip = document.getElementById('onboard-skip');
   if (skip) skip.style.display = 'none';
@@ -9,6 +14,12 @@ function showInitialOnboardImport() {
     const inp = document.getElementById('onboard-url');
     if (inp) inp.focus();
   }, 150);
+}
+
+function hasScenarioAStoredSession() {
+  if (!isScenarioAProductMode()) return true;
+  const latestUrl = getOnboardHistory()[0]?.url || readOnboardCacheSummary()?.latestPlaylistUrl || '';
+  return isPinnedPlaylistSelection(latestUrl);
 }
 
 const _vbadge = document.getElementById('app-ver-badge');
@@ -21,10 +32,24 @@ handleSpotifyAuthReturnFlag();
 restore();
 profInit();
 restoreProxySettings();
+if (isScenarioAProductMode() && !hasScenarioAStoredSession()) {
+  ARTISTS = [];
+  TRACKED_ARTISTS = [];
+  SCANNED_ARTISTS = [];
+  ARTIST_PLAYS = {};
+  ARTIST_TRACKS = {};
+  SPOTIFY_PLAYLIST_META = null;
+  concerts = [];
+  festivals = [];
+  cacheTimestamp = 0;
+}
+if (isScenarioAProductMode()) applyScenarioAProductMode();
 renderSpotifyAccessButton();
 renderOnboardSpotifyAuth();
 installOnboardCardDelegates();
-refreshSpotifyAccount({ withPlaylists: !!spotifyAuthFlash }).catch(() => {});
+if (!isScenarioAProductMode()) {
+  refreshSpotifyAccount({ withPlaylists: !!spotifyAuthFlash }).catch(() => {});
+}
 initMap();
 
 if (ARTISTS.length) {

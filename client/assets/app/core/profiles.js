@@ -5,6 +5,9 @@ let activeProf = PROF_MAIN;
 
 // ── Storage helpers ──────────────────────────────────────────
 function profAll() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
+    return { [PROF_MAIN]: { artists: null, plays: null, tracked: null } };
+  }
   try {
     const raw = localStorage.getItem('tt_profiles');
     const all = raw ? JSON.parse(raw) : {};
@@ -15,12 +18,14 @@ function profAll() {
 }
 
 function profSaveAll(all) {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   try { localStorage.setItem('tt_profiles', JSON.stringify(all)); } catch(e) {}
 }
 
 // Snapshot the current in-memory ARTISTS/ARTIST_PLAYS into a
 // non-Main profile slot so it survives page refreshes.
 function profPersistCurrent() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   if (activeProf === PROF_MAIN) return; // Main is always read from tt_artists/tt_plays
   const all = profAll();
   if (!all[activeProf]) return;
@@ -37,6 +42,14 @@ function profPersistCurrent() {
 function profRenderSelect() {
   const sel   = document.getElementById('prof-select');
   const delBtn = document.getElementById('prof-del-btn');
+  const bar = document.querySelector('.prof-bar');
+  const toast = document.getElementById('prof-toast');
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
+    activeProf = PROF_MAIN;
+    if (bar) bar.style.display = 'none';
+    if (toast) toast.style.display = 'none';
+    return;
+  }
   if (!sel) return;
 
   const all = profAll();
@@ -53,6 +66,7 @@ function profRenderSelect() {
 // All other functions (create, delete) call _profApply() directly
 // so they never hit the "already active" early-return guard.
 function profSwitch(name) {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   // Called from the <select> onChange — skip if already on this profile.
   if (name === activeProf) return;
   profPersistCurrent();   // snapshot the profile we're leaving
@@ -62,6 +76,9 @@ function profSwitch(name) {
 // Internal: load a profile into memory and re-render everything.
 // No guard — safe to call even when name === activeProf.
 function _profApply(name) {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
+    name = PROF_MAIN;
+  }
   const all  = profAll();
   const prof = all[name];
   if (!prof) return; // unknown profile — do nothing
@@ -127,6 +144,14 @@ function _profApply(name) {
 // and the views have already been re-rendered (showing empty lists).
 // This function only handles the onboard overlay UI.
 function profShowEmpty() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
+    const title = document.getElementById('onboard-main-title');
+    const sub = document.getElementById('onboard-sub-text');
+    if (title) title.innerHTML = DEFAULT_ONBOARD_TITLE;
+    if (sub) sub.textContent = DEFAULT_ONBOARD_SUB;
+    showOnboard();
+    return;
+  }
   const title = document.getElementById('onboard-main-title');
   const sub   = document.getElementById('onboard-sub-text');
   if (title) title.innerHTML =
@@ -211,6 +236,7 @@ function profHideEmpty() {
 
 // ── Create ─────────────────────────────────────────────────────
 function profOpenDialog() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   document.getElementById('prof-dialog-bg').classList.add('open');
   const inp = document.getElementById('prof-name-inp');
   inp.value = '';
@@ -219,10 +245,12 @@ function profOpenDialog() {
 }
 
 function profCloseDialog() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   document.getElementById('prof-dialog-bg').classList.remove('open');
 }
 
 function profConfirm() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   const inp  = document.getElementById('prof-name-inp');
   const name = (inp.value || '').trim();
   if (!name) { inp.classList.add('err'); inp.focus(); return; }
@@ -247,6 +275,7 @@ function profConfirm() {
 
 // ── Delete ─────────────────────────────────────────────────────
 function profDelete() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   if (activeProf === PROF_MAIN) return;
   if (!confirm(`Delete profile "${activeProf}"?\n\nThe concerts & festivals database is NOT affected.`)) return;
 
@@ -261,6 +290,16 @@ function profDelete() {
 
 // ── Boot ────────────────────────────────────────────────────────
 function profInit() {
+  if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
+    activeProf = PROF_MAIN;
+    try { localStorage.setItem('tt_active_profile', PROF_MAIN); } catch(e) {}
+    ARTIST_TRACKS = {};
+    SPOTIFY_PLAYLIST_META = null;
+    _artistTracksHydratedProfile = '';
+    if (typeof hydrateArtistTrackState === 'function') hydrateArtistTrackState(activeProf).catch(() => {});
+    profRenderSelect();
+    return;
+  }
   const saved = localStorage.getItem('tt_active_profile') || PROF_MAIN;
   const all   = profAll();
   // If the saved name doesn't exist any more, fall back to Main.

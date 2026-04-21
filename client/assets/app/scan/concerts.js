@@ -21,6 +21,7 @@ let _visibleConcertsCacheList = null;
 let _visibleConcertsCacheLength = -1;
 let _visibleConcertsCacheFirst = null;
 let _visibleConcertsCacheLast = null;
+let _visibleConcertsCacheArtistSignature = '';
 let _visibleConcertsCache = [];
 
 // ── visibleConcerts() ─────────────────────────────────────────────
@@ -33,24 +34,31 @@ let _visibleConcertsCache = [];
 // This catches cases like "Ziggo Dome Hall A" vs "Ziggo Dome Club" that
 // slip through the city-level second pass because the sub-venue names differ.
 function visibleConcerts() {
-  if (showPossibleDupes) return concerts;
   const list = concerts;
   const len = list.length;
   const first = len ? list[0] : null;
   const last = len ? list[len - 1] : null;
+  const artistSignature = isScenarioAProductMode()
+    ? (Array.isArray(ARTISTS) ? ARTISTS.map(name => String(name || '')).join('\u0001') : '')
+    : '';
   if (
     _visibleConcertsCacheList === list &&
     _visibleConcertsCacheLength === len &&
     _visibleConcertsCacheFirst === first &&
-    _visibleConcertsCacheLast === last
+    _visibleConcertsCacheLast === last &&
+    _visibleConcertsCacheArtistSignature === artistSignature
   ) {
     return _visibleConcertsCache;
   }
-  _visibleConcertsCache = deduplicateConcertRecords(list, true);
+  const base = showPossibleDupes ? list : deduplicateConcertRecords(list, true);
+  _visibleConcertsCache = isScenarioAProductMode()
+    ? base.filter(item => scenarioArtistAllowed(item?.artist))
+    : base;
   _visibleConcertsCacheList = list;
   _visibleConcertsCacheLength = len;
   _visibleConcertsCacheFirst = first;
   _visibleConcertsCacheLast = last;
+  _visibleConcertsCacheArtistSignature = artistSignature;
   return _visibleConcertsCache;
 }
 

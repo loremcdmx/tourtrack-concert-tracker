@@ -906,17 +906,13 @@ async function testUrl(url, label) {
 // ─────────────────────────────────────────────────────────────────
 
 // State mirrored from onboard filter panel (applied before entering app)
-const PINNED_PLAYLIST = Object.freeze({
-  id: '0lXmCRl0wc26aSdwfgIAwQ',
-  url: 'https://open.spotify.com/playlist/0lXmCRl0wc26aSdwfgIAwQ',
-  name: 'loremcdmx twitch playlist',
-  artistCount: 2477,
-  trackCount: 5656,
-  topArtists: ['Fall Out Boy', 'The Maine', 'Anacondaz', 'Panic! At The Disco'],
-});
-const DEFAULT_ONBOARD_TITLE = 'See upcoming concerts from a Spotify playlist';
+const DEFAULT_ONBOARD_TITLE = isScenarioAProductMode()
+  ? 'Open the pinned playlist and keep only the strongest repeats'
+  : 'See upcoming concerts from a Spotify playlist';
 const DEFAULT_ONBOARD_SUB =
-  'Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.';
+  isScenarioAProductMode()
+    ? `This build is locked to ${PINNED_PLAYLIST.name}. Only artists with ${scenarioAFixedMinTracks()}+ repeats enter the feed and map, which keeps scrolling fast.`
+    : 'Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.';
 const spotifyAccountState = {
   loaded: false,
   loading: false,
