@@ -2252,6 +2252,31 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 }
 .map-tour-dot.is-tracked { box-shadow:0 0 0 3px rgba(8,10,14,.88), var(--map-marker-shadow); }
 
+#map.is-panning .map-pulse-ring { display:none !important; }
+#map.is-panning .map-tour-marker,
+#map.is-panning .map-cluster-marker,
+#map.is-panning .map-fest-marker,
+#map.is-panning .map-tour-dot,
+#map.is-panning .map-tour-dot.is-tracked,
+#map.is-panning .map-fest-dot,
+#map.is-panning .map-fest-cluster,
+#map.is-panning .map-score-ring.top,
+#map.is-panning .artist-avatar {
+  box-shadow:none !important;
+}
+#map.is-panning .map-tour-marker,
+#map.is-panning .map-cluster-marker,
+#map.is-panning .map-fest-marker,
+#map.is-panning .map-fest-cluster,
+#map.is-panning .map-tour-dot,
+#map.is-panning .map-fest-dot,
+#map.is-panning .artist-avatar,
+#map.is-panning .artist-avatar img,
+#map.is-panning .map-marker-avatar,
+#map.is-panning .map-marker-avatar img {
+  transition:none !important;
+}
+
 .map-popup-shell .leaflet-popup-content-wrapper {
   background:rgba(10,10,16,.98) !important; border:1px solid rgba(255,255,255,.14) !important;
   border-radius:8px !important; box-shadow:0 16px 44px rgba(0,0,0,.9) !important; padding:0 !important;

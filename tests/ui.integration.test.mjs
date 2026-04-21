@@ -644,3 +644,75 @@ test('rapid filter updates coalesce into one deferred refresh', { concurrency: f
     buttonOn: true,
   });
 });
+
+test('map drag defers tile warmup and skips closed visible-panel work', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Drift'],
+    artistPlays: { drift: 9 },
+    concerts: [
+      makeConcert('Drift', 5, 'Forum', 'London', 'GB', 51.5074, -0.1278),
+      makeConcert('Drift', 11, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+    ],
+  });
+
+  const result = await page.evaluate(async () => {
+    const originalWarm = window.scheduleMapTileWarmup;
+    const originalUpdateVisiblePanel = window.updateVisiblePanel;
+    const calls = { warm: 0, visible: 0 };
+    const mapEl = document.getElementById('map');
+
+    window.scheduleMapTileWarmup = function(...args) {
+      calls.warm += 1;
+      return originalWarm.apply(this, args);
+    };
+    window.updateVisiblePanel = function(...args) {
+      calls.visible += 1;
+      return originalUpdateVisiblePanel.apply(this, args);
+    };
+
+    _visiblePanelOpen = false;
+    if (typeof _cancelMapTileWarmup === 'function') _cancelMapTileWarmup();
+    clearTimeout(_moveTimer);
+    clearTimeout(_zRenderTimer);
+    await new Promise(resolve => setTimeout(resolve, 260));
+    calls.warm = 0;
+    calls.visible = 0;
+
+    lmap.fire('movestart');
+    const start = {
+      warm: calls.warm,
+      visible: calls.visible,
+      isPanning: mapEl.classList.contains('is-panning'),
+    };
+
+    lmap.fire('move');
+    const moving = {
+      warm: calls.warm,
+      visible: calls.visible,
+      isPanning: mapEl.classList.contains('is-panning'),
+    };
+
+    lmap.fire('moveend');
+    const endImmediate = {
+      warm: calls.warm,
+      visible: calls.visible,
+      isPanning: mapEl.classList.contains('is-panning'),
+    };
+
+    await new Promise(resolve => setTimeout(resolve, 260));
+    const settled = {
+      warm: calls.warm,
+      visible: calls.visible,
+      isPanning: mapEl.classList.contains('is-panning'),
+    };
+
+    window.scheduleMapTileWarmup = originalWarm;
+    window.updateVisiblePanel = originalUpdateVisiblePanel;
+    return { start, moving, endImmediate, settled };
+  });
+
+  assert.deepEqual(result.start, { warm: 0, visible: 0, isPanning: true });
+  assert.deepEqual(result.moving, { warm: 0, visible: 0, isPanning: true });
+  assert.deepEqual(result.endImmediate, { warm: 1, visible: 0, isPanning: false });
+  assert.deepEqual(result.settled, { warm: 1, visible: 0, isPanning: false });
+});

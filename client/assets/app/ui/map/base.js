@@ -6,10 +6,13 @@ let _mapResizeObserver = null;
 let _mapResizeTimer = null;
 let _mapResizeRaf = null;
 let _mapResizeQueued = false;
+let _mapInteractionActive = false;
 const CT_MAP_TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 const CT_MAP_TILE_SUBDOMAINS = 'abcd';
 const CT_MAP_TILE_WARM_LIMIT = 1800;
 let _mapTileWarmTimer = null;
+let _mapTileWarmIdleHandle = null;
+let _mapLastWarmKey = '';
 const _mapTileWarmCache = new Set();
 
 function _mapTileUrl(z, x, y) {
@@ -59,29 +62,60 @@ function warmLowResWorldTiles() {
   _warmMapTileUrls(urls, 32);
 }
 
+function _cancelMapTileWarmup() {
+  clearTimeout(_mapTileWarmTimer);
+  _mapTileWarmTimer = null;
+  if (_mapTileWarmIdleHandle && typeof cancelIdleCallback === 'function') {
+    cancelIdleCallback(_mapTileWarmIdleHandle);
+  }
+  _mapTileWarmIdleHandle = null;
+}
+
+function _setMapInteractionState(active) {
+  _mapInteractionActive = !!active;
+  const mapEl = document.getElementById('map');
+  if (mapEl) mapEl.classList.toggle('is-panning', _mapInteractionActive);
+}
+
 function scheduleMapTileWarmup(delay = 80) {
   if (!lmap) return;
-  clearTimeout(_mapTileWarmTimer);
+  _cancelMapTileWarmup();
   _mapTileWarmTimer = setTimeout(() => {
-    if (!lmap) return;
-    const zoom = Math.max(2, Math.min(8, Math.round(lmap.getZoom())));
-    const pixelBounds = lmap.getPixelBounds();
-    const size = lmap.getSize();
-    const pad = Math.max(size.x, size.y) * (zoom <= 4 ? 1.6 : 1.05);
-    const padded = L.bounds(
-      pixelBounds.min.subtract([pad, pad]),
-      pixelBounds.max.add([pad, pad])
-    );
-    const tileSize = 256;
-    const minX = Math.floor(padded.min.x / tileSize);
-    const maxX = Math.floor(padded.max.x / tileSize);
-    const minY = Math.floor(padded.min.y / tileSize);
-    const maxY = Math.floor(padded.max.y / tileSize);
-    const urls = [];
-    for (let x = minX; x <= maxX; x++) {
-      for (let y = minY; y <= maxY; y++) urls.push(_mapTileUrl(zoom, x, y));
+    _mapTileWarmTimer = null;
+    if (!lmap || _mapInteractionActive) return;
+    const runWarmup = () => {
+      if (!lmap || _mapInteractionActive) return;
+      const zoom = Math.max(2, Math.min(8, Math.round(lmap.getZoom())));
+      const pixelBounds = lmap.getPixelBounds();
+      const size = lmap.getSize();
+      const padFactor = zoom <= 4 ? 0.8 : zoom <= 6 ? 0.52 : 0.34;
+      const pad = Math.max(size.x, size.y) * padFactor;
+      const padded = L.bounds(
+        pixelBounds.min.subtract([pad, pad]),
+        pixelBounds.max.add([pad, pad])
+      );
+      const tileSize = 256;
+      const minX = Math.floor(padded.min.x / tileSize);
+      const maxX = Math.floor(padded.max.x / tileSize);
+      const minY = Math.floor(padded.min.y / tileSize);
+      const maxY = Math.floor(padded.max.y / tileSize);
+      const warmKey = `${zoom}:${minX}:${maxX}:${minY}:${maxY}`;
+      if (warmKey === _mapLastWarmKey) return;
+      _mapLastWarmKey = warmKey;
+      const urls = [];
+      for (let x = minX; x <= maxX; x++) {
+        for (let y = minY; y <= maxY; y++) urls.push(_mapTileUrl(zoom, x, y));
+      }
+      _warmMapTileUrls(urls, 12);
+    };
+    if (typeof requestIdleCallback === 'function') {
+      _mapTileWarmIdleHandle = requestIdleCallback(() => {
+        _mapTileWarmIdleHandle = null;
+        runWarmup();
+      }, { timeout: 240 });
+      return;
     }
-    _warmMapTileUrls(urls);
+    setTimeout(runWarmup, 0);
   }, delay);
 }
 
@@ -182,7 +216,11 @@ function initMap() {
     // If we return early without clearing, a prior-queued timer would
     // fire 180ms later and destroy focus mode with renderOverview().
     clearTimeout(_zRenderTimer);
-    if (focusedArtist || focusedFest) return;
+    if (focusedArtist || focusedFest) {
+      _setMapInteractionState(false);
+      scheduleMapTileWarmup(120);
+      return;
+    }
     _zRenderTimer = setTimeout(() => {
       if (focusedArtist || focusedFest) return; // user may have entered focus during debounce
       try {
@@ -190,16 +228,28 @@ function initMap() {
         renderOverview({ preserveRoutes: true });
       }
       catch(e) { console.error('[zoomend render]', e); }
+      finally {
+        _setMapInteractionState(false);
+      }
     }, 90);
-    scheduleMapTileWarmup(40);
+    scheduleMapTileWarmup(120);
+  });
+  lmap.on('zoomstart', () => {
+    _setMapInteractionState(true);
+    clearTimeout(_moveTimer);
+    _cancelMapTileWarmup();
   });
   // Pan: don't re-render markers, just update the visible list
-  lmap.on('movestart', () => scheduleMapTileWarmup(0));
-  lmap.on('move', () => scheduleMapTileWarmup(140));
-  lmap.on('moveend', () => {
+  lmap.on('movestart', () => {
+    _setMapInteractionState(true);
     clearTimeout(_moveTimer);
-    _moveTimer = setTimeout(updateVisiblePanel, 150);
-    scheduleMapTileWarmup(20);
+    _cancelMapTileWarmup();
+  });
+  lmap.on('moveend', () => {
+    _setMapInteractionState(false);
+    clearTimeout(_moveTimer);
+    if (_visiblePanelOpen) _moveTimer = setTimeout(updateVisiblePanel, 180);
+    scheduleMapTileWarmup(160);
   });
 
   const mapEl = document.getElementById('map');
