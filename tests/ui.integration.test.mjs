@@ -285,6 +285,13 @@ function installFixture(fixture) {
   hiddenArtists = {};
   favoriteArtists = new Set();
   cacheTimestamp = Date.now();
+  const profileName = typeof activeProf !== 'undefined' && activeProf ? activeProf : 'Main';
+  if (typeof setArtistTrackState === 'function') {
+    setArtistTrackState({ ...(fixture.artistTracks || {}) }, fixture.playlistMeta || null, profileName);
+  } else {
+    ARTIST_TRACKS = { ...(fixture.artistTracks || {}) };
+    SPOTIFY_PLAYLIST_META = fixture.playlistMeta || null;
+  }
 
   calGeoFilter = new Set();
   calGeoExpanded = null;
@@ -322,6 +329,7 @@ function installFixture(fixture) {
   applyScoreFilterLevel(0);
   _syncGeoButtons();
   closeFestDetail?.();
+  closeArtistDetail?.();
   document.getElementById('focus-overlay')?.style?.setProperty('display', 'none');
   document.getElementById('map-reset')?.style?.setProperty('display', 'none');
 
@@ -837,4 +845,117 @@ test('concert feed exposes artist score breakdown for filter tuning', { concurre
   assert.match(deltaRow.title, /positive rank 1\/6/);
   assert.ok(cipherRow);
   assert.deepEqual(cipherRow.chips, ['Low+', 'tracked']);
+});
+
+test('clicking a concert artist opens playlist detail with preview and parrot score', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Nova'],
+    artistPlays: { nova: 8 },
+    concerts: [
+      makeConcert('Nova', 5, 'Roundhouse', 'London', 'GB', 51.5432, -0.1512, {
+        eventName: 'Nova World Tour',
+      }),
+      makeConcert('Nova', 9, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+    ],
+    artistTracks: {
+      nova: {
+        artist: 'Nova',
+        totalTrackHits: 3,
+        uniqueTrackCount: 2,
+        tracks: [
+          {
+            id: 'nova-night-drive',
+            name: 'Night Drive',
+            previewUrl: 'https://cdn.example.test/night-drive.mp3',
+            spotifyUrl: 'https://open.spotify.com/track/night-drive',
+            durationMs: 213000,
+            albumName: 'Afterlight',
+            count: 2,
+          },
+          {
+            id: 'nova-halo',
+            name: 'Halo Static',
+            previewUrl: '',
+            spotifyUrl: 'https://open.spotify.com/track/halo-static',
+            durationMs: 187000,
+            albumName: 'Afterlight',
+            count: 1,
+          },
+        ],
+      },
+    },
+    playlistMeta: {
+      id: 'playlist-1',
+      name: 'Main Rotation',
+      spotifyUrl: 'https://open.spotify.com/playlist/main-rotation',
+      ownerName: 'Codex',
+      trackCount: 42,
+    },
+  });
+
+  await page.evaluate(() => {
+    window.__audioStubState = { playCalls: 0, pauseCalls: 0, lastSrc: '' };
+    window.Audio = function AudioStub() {
+      this.preload = 'none';
+      this.currentTime = 0;
+      this.src = '';
+      this.addEventListener = () => {};
+      this.pause = () => {
+        window.__audioStubState.pauseCalls += 1;
+        this.currentTime = 0;
+      };
+      this.play = () => {
+        window.__audioStubState.playCalls += 1;
+        window.__audioStubState.lastSrc = this.src;
+        return Promise.resolve();
+      };
+    };
+  });
+
+  await page.evaluate(() => {
+    document.querySelector('.ev-row .ev-headline')?.click();
+    return true;
+  });
+  await page.waitFor(() => document.getElementById('ad-overlay')?.classList.contains('open'));
+  await settleUi(page, 80);
+
+  await page.evaluate(() => {
+    document.querySelector('.ad-track-btn.is-preview:not([disabled])')?.click();
+    return true;
+  });
+  await settleUi(page, 40);
+
+  const detail = await page.evaluate(() => ({
+    open: document.getElementById('ad-overlay')?.classList.contains('open') || false,
+    artist: document.querySelector('#ad-body .ad-name')?.textContent?.trim() || '',
+    sub: document.querySelector('#ad-body .ad-sub')?.textContent?.trim() || '',
+    playlistMeta: document.querySelector('#ad-body .ad-panel-meta')?.textContent?.trim() || '',
+    tracks: [...document.querySelectorAll('#ad-body .ad-track-name')].map(el => el.textContent.trim()),
+    previewLabels: [...document.querySelectorAll('#ad-body .ad-track-btn.is-preview')].map(el => ({
+      text: el.textContent.trim(),
+      disabled: el.disabled,
+    })),
+    metricLabels: [...document.querySelectorAll('#ad-body .ad-metric-label')].map(el => el.textContent.trim()),
+    metricValues: [...document.querySelectorAll('#ad-body .ad-metric-value')].map(el => el.textContent.trim()),
+    scoreNote: document.querySelector('#ad-body .ad-score-note')?.textContent?.trim() || '',
+    chips: [...document.querySelectorAll('#ad-body .ad-chip')].map(el => el.textContent.trim()),
+    audioStub: window.__audioStubState,
+  }));
+
+  assert.equal(detail.open, true);
+  assert.equal(detail.artist, 'Nova');
+  assert.match(detail.sub, /Main Rotation/);
+  assert.match(detail.playlistMeta, /3 hits across 2 saved tracks/i);
+  assert.deepEqual(detail.tracks, ['Night Drive', 'Halo Static', 'Roundhouse', 'Paradiso']);
+  assert.deepEqual(detail.previewLabels, [
+    { text: 'Pause', disabled: false },
+    { text: 'No preview', disabled: true },
+  ]);
+  assert.deepEqual(detail.metricLabels, ['Filter', 'Plays', 'Rank', 'Parrots']);
+  assert.equal(detail.metricValues[0], 'High+');
+  assert.equal(detail.metricValues[1], '8');
+  assert.match(detail.scoreNote, /absolute tier/i);
+  assert.ok(detail.chips.includes('42 tracks'));
+  assert.equal(detail.audioStub.playCalls, 1);
+  assert.equal(detail.audioStub.lastSrc, 'https://cdn.example.test/night-drive.mp3');
 });

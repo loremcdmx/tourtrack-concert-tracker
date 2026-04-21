@@ -162,6 +162,9 @@ let SCANNED_ARTISTS = [];       // artists represented by the current cached con
 let TM_KEYS = [];      // { key, label, exhausted }[] — auto-rotated on quota exhaustion
 let _activeKeyIdx = 0; // index of currently active key in TM_KEYS
 let ARTIST_PLAYS = {};          // name.toLowerCase() → play count (parsed from "Artist 14" format)
+let ARTIST_TRACKS = {};         // per-profile artist -> known playlist tracks summary
+let SPOTIFY_PLAYLIST_META = null; // current profile playlist context for artist cards
+let _artistTracksHydratedProfile = '';
 
 let countryMode = 'include';          // 'world' | 'include' | 'exclude'
 let includeCountries = new Set();

@@ -76,6 +76,7 @@ async function clearArtistCache() {
   try {
     await DB.clear('artists');
     await DB.clear('artistKnowledge');
+    await clearAllArtistTrackState();
     if (typeof clearArtistMediaSeedMarker === 'function') clearArtistMediaSeedMarker();
     await DB.delete('meta', 'festivals');
     if (typeof clearOnboardCacheSummary === 'function') clearOnboardCacheSummary();
@@ -97,6 +98,81 @@ function uniqueArtistNames(names) {
     out.push(name);
   }
   return out;
+}
+
+function artistTrackLookupKeys(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return [];
+  const keys = [
+    raw.toLowerCase(),
+    typeof _normText === 'function' ? _normText(raw) : raw.toLowerCase(),
+    typeof _artistLookupKey === 'function' ? _artistLookupKey(raw) : '',
+    typeof _artistNormalizedKey === 'function' ? _artistNormalizedKey(raw) : '',
+    typeof _artistFoldedKey === 'function' ? _artistFoldedKey(raw) : '',
+  ].filter(Boolean);
+  return [...new Set(keys)];
+}
+
+function artistTrackStoreKey(profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
+  return `artistTracks:${String(profileName || 'Main')}`;
+}
+
+function setArtistTrackState(index, playlistMeta, profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
+  ARTIST_TRACKS = index && typeof index === 'object' ? index : {};
+  SPOTIFY_PLAYLIST_META = playlistMeta && typeof playlistMeta === 'object' ? playlistMeta : null;
+  _artistTracksHydratedProfile = artistTrackStoreKey(profileName);
+  return ARTIST_TRACKS;
+}
+
+async function persistArtistTrackState(profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
+  const profile = String(profileName || 'Main');
+  setArtistTrackState(ARTIST_TRACKS, SPOTIFY_PLAYLIST_META, profile);
+  try {
+    await DB.put('meta', artistTrackStoreKey(profile), {
+      profile,
+      ts: Date.now(),
+      data: ARTIST_TRACKS,
+      playlistMeta: SPOTIFY_PLAYLIST_META,
+    });
+  } catch (_) {}
+  return ARTIST_TRACKS;
+}
+
+async function hydrateArtistTrackState(profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main', force = false) {
+  const profile = String(profileName || 'Main');
+  const storeKey = artistTrackStoreKey(profile);
+  if (!force && _artistTracksHydratedProfile === storeKey && ARTIST_TRACKS && typeof ARTIST_TRACKS === 'object') {
+    return ARTIST_TRACKS;
+  }
+  try {
+    const record = await DB.get('meta', storeKey);
+    setArtistTrackState(record?.data || {}, record?.playlistMeta || null, profile);
+  } catch (_) {
+    setArtistTrackState({}, null, profile);
+  }
+  return ARTIST_TRACKS;
+}
+
+async function clearArtistTrackState(profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
+  const profile = String(profileName || 'Main');
+  setArtistTrackState({}, null, profile);
+  try {
+    await DB.delete('meta', artistTrackStoreKey(profile));
+  } catch (_) {}
+}
+
+async function clearAllArtistTrackState() {
+  try {
+    const keys = await DB.keys('meta');
+    await Promise.all(
+      (keys || [])
+        .filter(key => String(key || '').startsWith('artistTracks:'))
+        .map(key => DB.delete('meta', key).catch(() => {}))
+    );
+  } catch (_) {}
+  ARTIST_TRACKS = {};
+  SPOTIFY_PLAYLIST_META = null;
+  _artistTracksHydratedProfile = '';
 }
 
 function artistNameInList(list, name) {
@@ -163,6 +239,9 @@ function persistData() {
 
 function restore() {
   try {
+    ARTIST_TRACKS = {};
+    SPOTIFY_PLAYLIST_META = null;
+    _artistTracksHydratedProfile = '';
     const storedPool = (JSON.parse(localStorage.getItem('tt_keys_pool') || 'null') || [])
       .filter(k => k && k.key && (SERVER_MANAGED_TICKETMASTER || k.key !== SERVER_TM_PLACEHOLDER));
     if (SERVER_MANAGED_TICKETMASTER) {
@@ -232,7 +311,18 @@ function restore() {
         ...SCANNED_ARTISTS,
       ]);
     }
-  } catch(e) { hiddenArtists = {}; ARTIST_PLAYS = {}; TRACKED_ARTISTS = []; SCANNED_ARTISTS = []; favoriteArtists = new Set(); geoPreset = 'all'; artistPreset = 'all'; }
+  } catch(e) {
+    hiddenArtists = {};
+    ARTIST_PLAYS = {};
+    TRACKED_ARTISTS = [];
+    SCANNED_ARTISTS = [];
+    ARTIST_TRACKS = {};
+    SPOTIFY_PLAYLIST_META = null;
+    _artistTracksHydratedProfile = '';
+    favoriteArtists = new Set();
+    geoPreset = 'all';
+    artistPreset = 'all';
+  }
 }
 
 function cacheAge() {
@@ -277,6 +367,8 @@ function buildSavePayload(label) {
     coverUrl:     pl.coverUrl || '',
     topArtists:   pl.topArtists || ARTISTS.slice(0, 4),
     trackCount:   pl.trackCount || ARTISTS.length,
+    artistTracks: ARTIST_TRACKS,
+    playlistMeta: SPOTIFY_PLAYLIST_META,
   };
 }
 
@@ -347,6 +439,18 @@ function applyLoadedState(data, filename) {
   hiddenArtists    = data.hiddenArtists || {};
   favoriteArtists  = new Set(data.favoriteArtists || []);
   artistPreset     = data.artistPreset || 'all';
+  setArtistTrackState(
+    data.artistTracks || {},
+    data.playlistMeta || {
+      name: data.playlistName || '',
+      spotifyUrl: data.playlistUrl || '',
+      coverUrl: data.coverUrl || '',
+      topArtists: data.topArtists || [],
+      trackCount: data.trackCount || 0,
+      importedAt: data.savedAt || Date.now(),
+    },
+    (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main'
+  );
 
   // Re-apply dedup (may have been saved before 2-pass dedup)
   if (concerts.length) concerts = deduplicateConcerts(concerts);
@@ -360,6 +464,7 @@ function applyLoadedState(data, filename) {
   }
 
   persistData();
+  persistArtistTrackState().catch(() => {});
 
   const age = data.savedAt ? new Date(data.savedAt).toLocaleString('en-GB',{
     day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'

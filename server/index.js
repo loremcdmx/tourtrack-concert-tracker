@@ -167,7 +167,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.28.0028',
+    appVersion: '2.28.0029',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -780,9 +780,14 @@ function normalizeSpotifyImportTrack(track) {
     uri: track.uri || '',
     is_local: Boolean(track.is_local),
     duration_ms: track.duration_ms || 0,
+    preview_url: track.preview_url || '',
     external_urls: track.external_urls && track.external_urls.spotify
       ? { spotify: track.external_urls.spotify }
       : {},
+    album: track.album ? {
+      name: track.album.name || '',
+      images: simplifySpotifyImages(track.album.images),
+    } : null,
     artists: Array.isArray(track.artists)
       ? track.artists
           .filter(artist => artist && artist.name)
@@ -810,7 +815,7 @@ async function fetchSpotifyPlaylistImport(accessToken, playlistId) {
   const tracks = [];
   let nextUrl =
     `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&offset=0` +
-    `&fields=${encodeURIComponent('items(track(id,name,uri,is_local,duration_ms,external_urls,artists(name,id))),next,total')}`;
+    `&fields=${encodeURIComponent('items(track(id,name,uri,is_local,duration_ms,preview_url,external_urls,album(name,images),artists(name,id))),next,total')}`;
   let total = 0;
 
   while (nextUrl) {

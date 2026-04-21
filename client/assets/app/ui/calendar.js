@@ -723,6 +723,7 @@ function renderMxRow(c) {
   headline.className = 'ev-headline';
   headline.appendChild(createArtistAvatar(c.artist, { size:'mx', color:getColor(c.artist) }));
   headline.appendChild(nameEl);
+  bindArtistDetailTrigger(headline, c.artist);
 
   const sub = document.createElement('div');
   sub.className = 'ev-sub';
@@ -1710,6 +1711,21 @@ function createCalendarMonthSeparator(month) {
   return sep;
 }
 
+function bindArtistDetailTrigger(node, artistName, options = {}) {
+  if (!node || !artistName) return node;
+  const { title = 'Open artist card' } = options;
+  const existingTitle = node.getAttribute('title') || '';
+  node.classList.add('ev-artist-trigger');
+  node.setAttribute('title', existingTitle ? `${title} · ${existingTitle}` : title);
+  node.onclick = event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof openArtistDetail === 'function') openArtistDetail(artistName);
+    else focusArtist(artistName);
+  };
+  return node;
+}
+
 function createCalendarScoreRow(artistName) {
   if (!artistName) return null;
   const breakdown = artistScoreBreakdown(artistName);
@@ -1786,8 +1802,7 @@ function buildCalendarEventRow(ev, ctx) {
       const chip = document.createElement('span');
       chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
       appendArtistChipIdentity(chip, cc.artist, isMine ? artistPlayCount(cc.artist) : 0);
-      chip.style.cursor = 'pointer';
-      chip.onclick = () => { focusArtist(cc.artist); setTab('tours'); };
+      bindArtistDetailTrigger(chip, cc.artist);
       chipsEl.appendChild(chip);
     });
 
@@ -1823,10 +1838,7 @@ function buildCalendarEventRow(ev, ctx) {
         const chip = document.createElement('span');
         chip.className = 'ev-artist-chip mine';
         appendArtistChipIdentity(chip, m.artist, m.plays || 0);
-        chip.onclick = event => {
-          event.stopPropagation();
-          focusArtist(m.artist);
-        };
+        bindArtistDetailTrigger(chip, m.artist);
         chipsEl.appendChild(chip);
       });
       if (matched.length > 6) {
@@ -1841,10 +1853,7 @@ function buildCalendarEventRow(ev, ctx) {
             const chip = document.createElement('span');
             chip.className = 'ev-artist-chip mine';
             appendArtistChipIdentity(chip, m.artist, m.plays || 0);
-            chip.onclick = event => {
-              event.stopPropagation();
-              focusArtist(m.artist);
-            };
+            bindArtistDetailTrigger(chip, m.artist);
             chipsEl.appendChild(chip);
           });
         };
@@ -1878,6 +1887,7 @@ function buildCalendarEventRow(ev, ctx) {
     headline.className = 'ev-headline';
     headline.appendChild(createArtistAvatar(ev.artist, { size: 'feed', color: getColor(ev.artist) }));
     headline.appendChild(nameEl);
+    bindArtistDetailTrigger(headline, ev.artist);
 
     const sub = document.createElement('div');
     sub.className = 'ev-sub';
@@ -1900,6 +1910,7 @@ function buildCalendarEventRow(ev, ctx) {
     main.appendChild(sub);
 
     const scoreRow = createCalendarScoreRow(ev.artist);
+    bindArtistDetailTrigger(scoreRow, ev.artist);
     if (scoreRow) main.appendChild(scoreRow);
 
     const fest = _festForConcert(ev);

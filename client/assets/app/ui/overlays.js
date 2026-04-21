@@ -122,6 +122,392 @@ document.getElementById('fd-overlay')?.addEventListener('click', event => {
   openExternalUrl(url);
 });
 
+let _artistDetailPreviewAudio = null;
+let _artistDetailPreviewTrackId = '';
+
+function _artistDetailEl(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  return el;
+}
+
+function _artistDetailLookupSummary(artist) {
+  if (!artist || !ARTIST_TRACKS || typeof ARTIST_TRACKS !== 'object') return null;
+  const keys = typeof artistTrackLookupKeys === 'function'
+    ? artistTrackLookupKeys(artist)
+    : [String(artist || '').trim().toLowerCase()];
+  for (const key of keys) {
+    if (key && ARTIST_TRACKS[key]) return ARTIST_TRACKS[key];
+  }
+  return null;
+}
+
+function _artistDetailMatchKeys(value) {
+  return new Set(typeof artistTrackLookupKeys === 'function'
+    ? artistTrackLookupKeys(value)
+    : [String(value || '').trim().toLowerCase()]);
+}
+
+function _artistDetailUpcomingShows(artist) {
+  const today = new Date().toISOString().split('T')[0];
+  const artistKeys = _artistDetailMatchKeys(artist);
+  const seen = new Set();
+  return (concerts || [])
+    .filter(ev => {
+      if (!ev?.artist || !ev?.date || ev.date < today) return false;
+      const evKeys = _artistDetailMatchKeys(ev.artist);
+      return [...evKeys].some(key => artistKeys.has(key));
+    })
+    .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.venue || '').localeCompare(b.venue || ''))
+    .filter(ev => {
+      const key = [ev.id || '', ev.date || '', ev.venue || '', ev.city || ''].join('|');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function _artistDetailTopPercent(rank, total) {
+  if (!(rank > 0) || !(total > 0)) return '';
+  return `top ${Math.max(1, Math.round((rank / total) * 100))}%`;
+}
+
+function _artistDetailScoreNarrative(breakdown) {
+  if (!breakdown) return 'No score data available yet.';
+  const levelLabel = breakdown.label || 'Unranked';
+  if (!breakdown.plays && breakdown.tracked) {
+    return `${levelLabel} because this artist is tracked in the playlist, even without play-count data on this profile yet.`;
+  }
+  if (breakdown.relativeLevel > breakdown.absoluteLevel && breakdown.positiveRank > 0 && breakdown.positiveCount > 0) {
+    return `${levelLabel} because ${breakdown.plays} plays are being boosted by relative rank ${breakdown.positiveRank}/${breakdown.positiveCount} (${_artistDetailTopPercent(breakdown.positiveRank, breakdown.positiveCount)}).`;
+  }
+  if (breakdown.plays > 0) {
+    return `${levelLabel} from ${breakdown.plays} playlist plays. Absolute tier is ${artistQualityLabel(breakdown.absoluteLevel) || 'below low+'}.`;
+  }
+  if (breakdown.listRank > 0 && breakdown.listCount > 0) {
+    return `${levelLabel} from fallback list rank ${breakdown.listRank}/${breakdown.listCount}.`;
+  }
+  return `${levelLabel} with no stronger scoring signal yet.`;
+}
+
+function _artistDetailRankText(breakdown) {
+  if (!breakdown) return '—';
+  if (breakdown.positiveRank > 0 && breakdown.positiveCount > 0) {
+    return `${breakdown.positiveRank}/${breakdown.positiveCount}`;
+  }
+  if (breakdown.listRank > 0 && breakdown.listCount > 0) {
+    return `${breakdown.listRank}/${breakdown.listCount}`;
+  }
+  return '—';
+}
+
+function _artistDetailPointScore(artist) {
+  if (typeof artistRankScore === 'function') return Math.round(Number(artistRankScore(artist)) || 0);
+  return 0;
+}
+
+function _artistDetailPlaylistMetaFallback() {
+  if (SPOTIFY_PLAYLIST_META && typeof SPOTIFY_PLAYLIST_META === 'object') return SPOTIFY_PLAYLIST_META;
+  if (typeof getOnboardHistory !== 'function') return null;
+  const item = (getOnboardHistory() || [])[0];
+  if (!item) return null;
+  return {
+    name: item.name || 'Playlist',
+    spotifyUrl: item.url || '',
+    coverUrl: item.coverUrl || '',
+    ownerName: '',
+    trackCount: Number(item.trackCount || 0) || 0,
+    importedAt: 0,
+  };
+}
+
+function _artistDetailSyncPreviewButtons() {
+  document.querySelectorAll('.ad-track-btn[data-preview-url]').forEach(btn => {
+    if (!btn.dataset.previewUrl) {
+      btn.classList.remove('is-playing');
+      btn.textContent = 'No preview';
+      return;
+    }
+    const isPlaying = !!_artistDetailPreviewAudio &&
+      !_artistDetailPreviewAudio.paused &&
+      btn.dataset.trackId === _artistDetailPreviewTrackId;
+    btn.classList.toggle('is-playing', isPlaying);
+    btn.textContent = isPlaying ? 'Pause' : 'Preview';
+  });
+}
+
+function stopArtistDetailPreview() {
+  if (_artistDetailPreviewAudio) {
+    try {
+      _artistDetailPreviewAudio.pause();
+      _artistDetailPreviewAudio.currentTime = 0;
+    } catch (_) {}
+  }
+  _artistDetailPreviewTrackId = '';
+  _artistDetailSyncPreviewButtons();
+}
+
+function toggleArtistDetailPreview(trackId, previewUrl) {
+  if (!previewUrl) return;
+  if (_artistDetailPreviewAudio && !_artistDetailPreviewAudio.paused && _artistDetailPreviewTrackId === trackId) {
+    stopArtistDetailPreview();
+    return;
+  }
+  if (!_artistDetailPreviewAudio) {
+    _artistDetailPreviewAudio = new Audio();
+    _artistDetailPreviewAudio.preload = 'none';
+    _artistDetailPreviewAudio.addEventListener('ended', () => {
+      _artistDetailPreviewTrackId = '';
+      _artistDetailSyncPreviewButtons();
+    });
+    _artistDetailPreviewAudio.addEventListener('pause', () => {
+      if (_artistDetailPreviewAudio?.currentTime === 0) {
+        _artistDetailPreviewTrackId = '';
+      }
+      _artistDetailSyncPreviewButtons();
+    });
+  }
+  try {
+    _artistDetailPreviewAudio.pause();
+  } catch (_) {}
+  _artistDetailPreviewAudio.src = previewUrl;
+  _artistDetailPreviewTrackId = trackId;
+  _artistDetailSyncPreviewButtons();
+  _artistDetailPreviewAudio.play().catch(() => {
+    _artistDetailPreviewTrackId = '';
+    _artistDetailSyncPreviewButtons();
+    if (typeof softNotice === 'function') softNotice('Spotify preview is unavailable for this track.', 'error');
+  });
+}
+
+async function openArtistDetail(artist) {
+  const overlay = document.getElementById('ad-overlay');
+  const body = document.getElementById('ad-body');
+  if (!overlay || !body || !artist) return;
+
+  if (typeof hydrateArtistTrackState === 'function') {
+    await hydrateArtistTrackState((typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main');
+  }
+
+  const breakdown = typeof artistScoreBreakdown === 'function' ? artistScoreBreakdown(artist) : null;
+  const summary = _artistDetailLookupSummary(artist);
+  const playlistMeta = _artistDetailPlaylistMetaFallback();
+  const upcoming = _artistDetailUpcomingShows(artist);
+  const plays = breakdown?.plays || (typeof artistPlayCount === 'function' ? artistPlayCount(artist) : 0);
+  const pointScore = _artistDetailPointScore(artist);
+  const coverMedia = typeof getCachedArtistMedia === 'function' ? getCachedArtistMedia(artist) : null;
+
+  body.innerHTML = '';
+
+  const hero = _artistDetailEl('div', 'ad-hero');
+  if (coverMedia?.large || coverMedia?.xl || coverMedia?.thumb) {
+    const mediaWrap = _artistDetailEl('div', 'ad-hero-media');
+    const img = document.createElement('img');
+    img.src = coverMedia.xl || coverMedia.large || coverMedia.thumb;
+    img.alt = artist;
+    img.referrerPolicy = 'no-referrer';
+    mediaWrap.appendChild(img);
+    hero.appendChild(mediaWrap);
+  }
+
+  const closeBtn = _artistDetailEl('button', 'ad-close', '✕');
+  closeBtn.type = 'button';
+  closeBtn.onclick = () => closeArtistDetail();
+  hero.appendChild(closeBtn);
+
+  const heroContent = _artistDetailEl('div', 'ad-hero-content');
+  const heroCopy = _artistDetailEl('div', 'ad-hero-copy');
+  heroCopy.appendChild(createArtistAvatar(artist, { size: 'card', color: getColor(artist) }));
+  heroCopy.appendChild(_artistDetailEl('div', 'ad-name', artist));
+
+  const subParts = [];
+  if (playlistMeta?.name) subParts.push(`From ${playlistMeta.name}`);
+  if (summary?.totalTrackHits) subParts.push(`${summary.totalTrackHits} playlist hits`);
+  if (summary?.uniqueTrackCount) subParts.push(`${summary.uniqueTrackCount} unique tracks`);
+  if (playlistMeta?.ownerName) subParts.push(playlistMeta.ownerName);
+  const sub = _artistDetailEl('div', 'ad-sub', subParts.join(' · ') || 'Artist detail');
+  heroCopy.appendChild(sub);
+
+  const chipRow = _artistDetailEl('div', 'ad-chip-row');
+  (breakdown?.chips || [{ text: 'No score', tone: 'muted' }]).forEach(chipMeta => {
+    const chip = _artistDetailEl('span', `ad-chip${chipMeta.tone ? ` is-${chipMeta.tone}` : ''}`, chipMeta.text);
+    chipRow.appendChild(chip);
+  });
+  if (playlistMeta?.trackCount) chipRow.appendChild(_artistDetailEl('span', 'ad-chip is-muted', `${playlistMeta.trackCount} tracks`));
+  heroCopy.appendChild(chipRow);
+
+  const actions = _artistDetailEl('div', 'ad-actions');
+  const tourBtn = _artistDetailEl('button', 'ad-btn is-primary', 'View tour');
+  tourBtn.type = 'button';
+  tourBtn.onclick = () => {
+    closeArtistDetail();
+    focusArtist(artist);
+  };
+  actions.appendChild(tourBtn);
+  if (playlistMeta?.spotifyUrl) {
+    const playlistBtn = _artistDetailEl('button', 'ad-btn', 'Playlist');
+    playlistBtn.type = 'button';
+    playlistBtn.onclick = () => openExternalUrl(playlistMeta.spotifyUrl);
+    actions.appendChild(playlistBtn);
+  }
+  heroCopy.appendChild(actions);
+  heroContent.appendChild(heroCopy);
+  hero.appendChild(heroContent);
+  body.appendChild(hero);
+
+  const main = _artistDetailEl('div', 'ad-main');
+  const primaryCol = _artistDetailEl('div');
+  const secondaryCol = _artistDetailEl('div');
+
+  const tracksPanel = _artistDetailEl('section', 'ad-panel');
+  tracksPanel.appendChild(_artistDetailEl('div', 'ad-section-title', 'Known From Playlist'));
+  if (summary?.tracks?.length) {
+    const meta = _artistDetailEl('div', 'ad-panel-meta', `${summary.totalTrackHits} hits across ${summary.uniqueTrackCount} saved tracks for this artist.`);
+    tracksPanel.appendChild(meta);
+    const list = _artistDetailEl('div', 'ad-track-list');
+    summary.tracks.forEach(track => {
+      const row = _artistDetailEl('div', 'ad-track-row');
+      const copy = _artistDetailEl('div', 'ad-track-copy');
+      copy.appendChild(_artistDetailEl('div', 'ad-track-name', track.name));
+      const metaParts = [];
+      if (track.count > 1) metaParts.push(`${track.count}x in playlist`);
+      if (track.albumName) metaParts.push(track.albumName);
+      if (track.durationMs > 0) metaParts.push(`${Math.floor(track.durationMs / 60000)}:${String(Math.round((track.durationMs % 60000) / 1000)).padStart(2, '0')}`);
+      copy.appendChild(_artistDetailEl('div', 'ad-track-meta', metaParts.join(' · ')));
+      row.appendChild(copy);
+
+      const actionsEl = _artistDetailEl('div', 'ad-track-actions');
+      const previewBtn = _artistDetailEl('button', 'ad-track-btn is-preview', track.previewUrl ? 'Preview' : 'No preview');
+      previewBtn.type = 'button';
+      previewBtn.dataset.trackId = track.id || track.name;
+      previewBtn.dataset.previewUrl = track.previewUrl || '';
+      previewBtn.disabled = !track.previewUrl;
+      previewBtn.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleArtistDetailPreview(previewBtn.dataset.trackId, track.previewUrl || '');
+      };
+      actionsEl.appendChild(previewBtn);
+
+      if (track.spotifyUrl) {
+        const spotifyBtn = _artistDetailEl('button', 'ad-track-btn', 'Spotify');
+        spotifyBtn.type = 'button';
+        spotifyBtn.onclick = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          openExternalUrl(track.spotifyUrl);
+        };
+        actionsEl.appendChild(spotifyBtn);
+      }
+      row.appendChild(actionsEl);
+      list.appendChild(row);
+    });
+    tracksPanel.appendChild(list);
+  } else {
+    tracksPanel.appendChild(_artistDetailEl('div', 'ad-empty', 'No playlist track memory for this artist on the current profile yet. Re-import a playlist to populate track-level details and Spotify previews.'));
+  }
+  primaryCol.appendChild(tracksPanel);
+
+  const scorePanel = _artistDetailEl('section', 'ad-panel');
+  scorePanel.appendChild(_artistDetailEl('div', 'ad-section-title', 'Score Logic'));
+  scorePanel.appendChild(_artistDetailEl('div', 'ad-score-note', _artistDetailScoreNarrative(breakdown)));
+
+  const metricRow = _artistDetailEl('div', 'ad-metric-row');
+  const metrics = [
+    ['Filter', breakdown?.label || '—'],
+    ['Plays', String(plays || 0)],
+    ['Rank', _artistDetailRankText(breakdown)],
+    ['Parrots', pointScore > 0 ? String(pointScore) : '0'],
+  ];
+  metrics.forEach(([label, value]) => {
+    const metric = _artistDetailEl('div', 'ad-metric');
+    metric.appendChild(_artistDetailEl('span', 'ad-metric-value', value));
+    metric.appendChild(_artistDetailEl('span', 'ad-metric-label', label));
+    metricRow.appendChild(metric);
+  });
+  scorePanel.appendChild(metricRow);
+  secondaryCol.appendChild(scorePanel);
+
+  const showsPanel = _artistDetailEl('section', 'ad-panel');
+  showsPanel.appendChild(_artistDetailEl('div', 'ad-section-title', 'Upcoming Shows'));
+  if (upcoming.length) {
+    const meta = _artistDetailEl('div', 'ad-panel-meta', `${upcoming.length} upcoming show${upcoming.length === 1 ? '' : 's'} in the current dataset.`);
+    showsPanel.appendChild(meta);
+    const list = _artistDetailEl('div', 'ad-track-list');
+    upcoming.slice(0, 6).forEach(ev => {
+      const row = _artistDetailEl('div', 'ad-track-row');
+      const copy = _artistDetailEl('div', 'ad-track-copy');
+      copy.appendChild(_artistDetailEl('div', 'ad-track-name', ev.venue || ev.eventName || artist));
+      const locParts = [fmtDate(ev.date), ev.city, ev.country ? flag(ev.country) : ''].filter(Boolean);
+      if (ev.eventName && _normText(ev.eventName) !== _normText(artist)) locParts.push(ev.eventName);
+      copy.appendChild(_artistDetailEl('div', 'ad-track-meta', locParts.join(' · ')));
+      row.appendChild(copy);
+      const actionsEl = _artistDetailEl('div', 'ad-track-actions');
+      const mapBtn = _artistDetailEl('button', 'ad-track-btn', 'Map');
+      mapBtn.type = 'button';
+      mapBtn.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeArtistDetail();
+        focusConcert(ev);
+      };
+      actionsEl.appendChild(mapBtn);
+      if (ev.url) {
+        const ticketBtn = _artistDetailEl('button', 'ad-track-btn', 'Tickets');
+        ticketBtn.type = 'button';
+        ticketBtn.onclick = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          openExternalUrl(ev.url);
+        };
+        actionsEl.appendChild(ticketBtn);
+      }
+      row.appendChild(actionsEl);
+      list.appendChild(row);
+    });
+    showsPanel.appendChild(list);
+  } else {
+    showsPanel.appendChild(_artistDetailEl('div', 'ad-empty', 'No upcoming concerts for this artist are cached right now.'));
+  }
+  secondaryCol.appendChild(showsPanel);
+
+  main.appendChild(primaryCol);
+  main.appendChild(secondaryCol);
+  body.appendChild(main);
+
+  overlay.classList.add('open');
+  document.addEventListener('keydown', _adKeyHandler);
+  _artistDetailSyncPreviewButtons();
+
+  if (typeof primeArtistMediaKnowledge === 'function') primeArtistMediaKnowledge([artist], 1);
+  if (typeof fetchArtistMedia === 'function') {
+    fetchArtistMedia(artist).then(media => {
+      if (!overlay.classList.contains('open')) return;
+      if (!media?.large && !media?.xl && !media?.thumb) return;
+      const heroNode = document.querySelector('#ad-body .ad-hero');
+      if (!heroNode || heroNode.querySelector('.ad-hero-media')) return;
+      const mediaWrap = _artistDetailEl('div', 'ad-hero-media');
+      const img = document.createElement('img');
+      img.src = media.xl || media.large || media.thumb;
+      img.alt = artist;
+      img.referrerPolicy = 'no-referrer';
+      mediaWrap.appendChild(img);
+      heroNode.insertBefore(mediaWrap, heroNode.firstChild);
+    }).catch(() => {});
+  }
+}
+
+function closeArtistDetail() {
+  document.getElementById('ad-overlay')?.classList.remove('open');
+  document.removeEventListener('keydown', _adKeyHandler);
+  stopArtistDetailPreview();
+}
+
+function _adKeyHandler(e) {
+  if (e.key === 'Escape') closeArtistDetail();
+}
+
 function renderFestMap(hlId) {
   festMarkers.forEach(m => m.remove()); festMarkers = [];
   focusedFest = hlId;

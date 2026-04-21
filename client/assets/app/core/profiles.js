@@ -28,6 +28,7 @@ function profPersistCurrent() {
   all[activeProf].tracked = TRACKED_ARTISTS.slice();
   all[activeProf].plays   = Object.assign({}, ARTIST_PLAYS);
   profSaveAll(all);
+  if (typeof persistArtistTrackState === 'function') persistArtistTrackState(activeProf).catch(() => {});
 }
 
 // ── UI ────────────────────────────────────────────────────────
@@ -84,6 +85,10 @@ function _profApply(name) {
       ? uniqueArtistNames([...ARTISTS, ...Object.keys(ARTIST_PLAYS || {})])
       : ARTISTS.slice();
   }
+  ARTIST_TRACKS = {};
+  SPOTIFY_PLAYLIST_META = null;
+  _artistTracksHydratedProfile = '';
+  if (typeof hydrateArtistTrackState === 'function') hydrateArtistTrackState(activeProf).catch(() => {});
 
   // Keep the artists textarea in Settings in sync if it's open.
   const ta = document.getElementById('artists-ta');
@@ -270,6 +275,11 @@ function profInit() {
       ARTIST_PLAYS = Object.assign({}, prof.plays || {});
     }
   }
+
+  ARTIST_TRACKS = {};
+  SPOTIFY_PLAYLIST_META = null;
+  _artistTracksHydratedProfile = '';
+  if (typeof hydrateArtistTrackState === 'function') hydrateArtistTrackState(activeProf).catch(() => {});
 
   profRenderSelect();
 }

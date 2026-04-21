@@ -930,6 +930,106 @@ function onboardCancel() {
 // Used by both onboarding screen and settings modal.
 // opts.mode: 'onboard' | 'settings'
 // Returns true on success, false on failure.
+function spNormalizeArtistTrackRecord(track) {
+  if (!track) return null;
+  const spotifyUrl = track.external_urls?.spotify || track.externalUrl || '';
+  const albumImage = track.album?.images?.[0]?.url || track.albumImage || '';
+  return {
+    id: track.id || track.uri || spotifyUrl || '',
+    name: track.name || 'Untitled track',
+    previewUrl: track.preview_url || track.previewUrl || '',
+    spotifyUrl,
+    durationMs: Number(track.duration_ms || track.durationMs || 0) || 0,
+    albumName: track.album?.name || track.albumName || '',
+    albumImage,
+  };
+}
+
+function spBuildArtistTrackIndex(tracks, opts = {}) {
+  const maxTracksPerArtist = Math.max(4, Number(opts.maxTracksPerArtist) || 12);
+  const buckets = new Map();
+
+  (tracks || []).forEach((track, trackIdx) => {
+    if (!track || track.is_local) return;
+    const normalizedTrack = spNormalizeArtistTrackRecord(track);
+    if (!normalizedTrack) return;
+
+    (track.artists || []).forEach(artist => {
+      const artistName = String(artist?.name || '').trim();
+      if (!artistName) return;
+      const bucketKey = typeof _normText === 'function' ? _normText(artistName) : artistName.toLowerCase();
+      if (!bucketKey) return;
+
+      if (!buckets.has(bucketKey)) {
+        buckets.set(bucketKey, {
+          artist: artistName,
+          aliases: new Set(typeof artistTrackLookupKeys === 'function' ? artistTrackLookupKeys(artistName) : [bucketKey]),
+          totalTrackHits: 0,
+          tracks: new Map(),
+        });
+      }
+
+      const bucket = buckets.get(bucketKey);
+      bucket.totalTrackHits += 1;
+      (typeof artistTrackLookupKeys === 'function' ? artistTrackLookupKeys(artistName) : [bucketKey]).forEach(key => {
+        if (key) bucket.aliases.add(key);
+      });
+
+      const trackKey = normalizedTrack.id || `${normalizedTrack.name}|${bucketKey}`;
+      if (!bucket.tracks.has(trackKey)) {
+        bucket.tracks.set(trackKey, {
+          ...normalizedTrack,
+          count: 0,
+          firstSeen: trackIdx,
+        });
+      }
+      bucket.tracks.get(trackKey).count += 1;
+    });
+  });
+
+  const index = {};
+  buckets.forEach(bucket => {
+    const rankedTracks = [...bucket.tracks.values()]
+      .sort((a, b) => (b.count - a.count) || (a.firstSeen - b.firstSeen) || a.name.localeCompare(b.name))
+      .slice(0, maxTracksPerArtist)
+      .map(track => ({
+        id: track.id,
+        name: track.name,
+        previewUrl: track.previewUrl,
+        spotifyUrl: track.spotifyUrl,
+        durationMs: track.durationMs,
+        albumName: track.albumName,
+        albumImage: track.albumImage,
+        count: track.count,
+      }));
+
+    const summary = {
+      artist: bucket.artist,
+      totalTrackHits: bucket.totalTrackHits,
+      uniqueTrackCount: bucket.tracks.size,
+      tracks: rankedTracks,
+    };
+
+    bucket.aliases.forEach(key => {
+      if (key) index[key] = summary;
+    });
+  });
+
+  return index;
+}
+
+function spBuildPlaylistMeta(playlist, fallbackUrl, importedTrackCount) {
+  return {
+    id: playlist?.id || '',
+    name: playlist?.name || 'Playlist',
+    spotifyUrl: playlist?.external_urls?.spotify || fallbackUrl || '',
+    coverUrl: playlist?.images?.[0]?.url || '',
+    ownerName: playlist?.owner?.display_name || playlist?.ownerName || '',
+    trackCount: Number(playlist?.tracks?.total || importedTrackCount || 0) || 0,
+    importedAt: Date.now(),
+  };
+}
+
 async function legacyRunSpotifyImport(opts = {}) {
   const mode = opts.mode || 'onboard';
   const isOnboard = mode === 'onboard';
@@ -989,6 +1089,11 @@ async function legacyRunSpotifyImport(opts = {}) {
     const artists = minT > 1 ? allArtists.filter(a => a.count >= minT) : allArtists;
     setTrackedArtists(allArtists.map(a => a.name));
     ARTIST_PLAYS = Object.fromEntries(allArtists.map(a => [a.name.toLowerCase(), a.count]));
+    setArtistTrackState(
+      spBuildArtistTrackIndex(tracks),
+      spBuildPlaylistMeta(pl, raw, tracks.length)
+    );
+    persistArtistTrackState().catch(() => {});
     const skipped = allArtists.length - artists.length;
     if (skipped > 0) dblog('info', `Min-tracks filter (≥${minT}): kept ${artists.length} artists, skipped ${skipped} with fewer tracks`);
     const lines = artists.map(a => `${a.name} ${a.count}`);
@@ -1111,6 +1216,11 @@ async function runSpotifyImport(opts = {}) {
     const artists = minT > 1 ? allArtists.filter(a => a.count >= minT) : allArtists;
     setTrackedArtists(allArtists.map(a => a.name));
     ARTIST_PLAYS = Object.fromEntries(allArtists.map(a => [a.name.toLowerCase(), a.count]));
+    setArtistTrackState(
+      spBuildArtistTrackIndex(tracks),
+      spBuildPlaylistMeta(pl, raw, tracks.length)
+    );
+    persistArtistTrackState().catch(() => {});
     if (!artists.length) {
       throw new Error(`No artists matched the current threshold (${minT}+ tracks).`);
     }

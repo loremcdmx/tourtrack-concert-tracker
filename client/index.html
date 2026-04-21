@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&family=Bebas+Neue&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/styles.css?v=2.28.0028">
+<link rel="stylesheet" href="/assets/styles.css?v=2.28.0029">
 </head>
 <body>
 <header>
@@ -101,6 +101,13 @@
   <div class="fd-sheet" id="fd-sheet">
     <div class="fd-hero" id="fd-hero"><!-- filled by JS --></div>
     <div class="fd-body" id="fd-body"><!-- filled by JS --></div>
+  </div>
+</div>
+
+<!-- ARTIST DETAIL MODAL -->
+<div class="ad-overlay" id="ad-overlay" onclick="if(event.target===this)closeArtistDetail()">
+  <div class="ad-sheet" id="ad-sheet">
+    <div class="ad-body" id="ad-body"><!-- filled by JS --></div>
   </div>
 </div>
 
@@ -904,10 +911,10 @@
   </div>
 </div>
 </div>
-<script src="/config.js?v=2.28.0028"></script>
-    <script src="/assets/app/core/runtime.js?v=2.28.0017"></script>
-<script src="/assets/app/core/profiles.js?v=2.28.0016"></script>
-    <script src="/assets/app/core/storage.js?v=2.28.0018"></script>
+<script src="/config.js?v=2.28.0029"></script>
+<script src="/assets/app/core/runtime.js?v=2.28.0029"></script>
+<script src="/assets/app/core/profiles.js?v=2.28.0029"></script>
+<script src="/assets/app/core/storage.js?v=2.28.0029"></script>
 <script src="/assets/app/core/filter-presets.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/actions.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/shared/network.js?v=2.28.0005"></script>
@@ -929,15 +936,15 @@
 <script src="/assets/app/scan/festivals/scoring.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/festivals.js?v=2.28.0005"></script>
 <script src="/assets/app/scan/concerts.js?v=2.28.0005"></script>
-<script src="/assets/app/ui/calendar.js?v=2.28.0028"></script>
+<script src="/assets/app/ui/calendar.js?v=2.28.0029"></script>
 <script src="/assets/app/ui/map/base.js?v=2.28.0028"></script>
 <script src="/assets/app/ui/map/drawer.js?v=2.28.0017"></script>
 <script src="/assets/app/ui/map/match.js?v=2.28.0005"></script>
 <script src="/assets/app/ui/map/sidebar.js?v=2.28.0024"></script>
 <script src="/assets/app/ui/map/focus.js?v=2.28.0017"></script>
 <script src="/assets/app/ui/map/render.js?v=2.28.0028"></script>
-<script src="/assets/app/ui/overlays.js?v=2.28.0024"></script>
-<script src="/assets/app/integrations/spotify.js?v=2.28.0016"></script>
+<script src="/assets/app/ui/overlays.js?v=2.28.0029"></script>
+<script src="/assets/app/integrations/spotify.js?v=2.28.0029"></script>
 <script src="/assets/app/bootstrap.js?v=2.28.0016"></script>
 </body>
 </html>
