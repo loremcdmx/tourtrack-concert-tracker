@@ -61,6 +61,9 @@ npx vercel login
 npm run env:pull:dev
 ```
 
+That command overwrites local `.env` from the linked Vercel `development` env. The current file is backed up into `tmp/` first.
+If the repo is not linked yet, the script now attempts `vercel link --yes --project concerttracker` automatically before retrying.
+
 4. Keep Spotify redirect canonical:
 
 ```text
@@ -85,7 +88,7 @@ Read AGENTS.md, README.md, and MAC_HANDOFF.md. Check git status, run npm run che
 
 - `npm start` - start the local server
 - `npm run dev` - start the server with Node watch mode
-- `npm run env:pull:dev` - pull `.env` from the linked Vercel project's `development` environment
+- `npm run env:pull:dev` - pull `.env` from the linked Vercel project's `development` environment after backing up any existing local file
 - `npm run check` - syntax check server and client code
 - `npm test` - run the UI regression suite
 

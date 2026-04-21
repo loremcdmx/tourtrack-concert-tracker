@@ -21,6 +21,10 @@ if (!existsSync(vercelProjectPath)) {
   );
 }
 
+if (!/^[\w.-]+$/.test(targetEnv)) {
+  fail(`Unsupported environment name: ${targetEnv}`);
+}
+
 let projectMeta = null;
 try {
   projectMeta = JSON.parse(readFileSync(vercelProjectPath, 'utf8'));
@@ -40,15 +44,50 @@ console.log(
   `Pulling ${targetEnv} env from Vercel project ${projectMeta?.projectName || '(unknown)'} into ${envPath}`,
 );
 
-const pull = spawnSync(
-  process.platform === 'win32' ? 'npx.cmd' : 'npx',
-  ['vercel', 'env', 'pull', '.env', '--environment', targetEnv],
-  {
+function runVercel(commandParts) {
+  if (process.platform === 'win32') {
+    return spawnSync(process.env.comspec || 'cmd.exe', ['/d', '/s', '/c', `npx ${commandParts.join(' ')}`], {
+      cwd: root,
+      stdio: 'pipe',
+      env: process.env,
+      encoding: 'utf8',
+    });
+  }
+  return spawnSync('npx', commandParts, {
     cwd: root,
-    stdio: 'inherit',
+    stdio: 'pipe',
     env: process.env,
-  },
-);
+    encoding: 'utf8',
+  });
+}
+
+function flush(result) {
+  const out = String(result?.stdout || '');
+  const err = String(result?.stderr || '');
+  if (out) process.stdout.write(out);
+  if (err) process.stderr.write(err);
+  return `${out}\n${err}`;
+}
+
+let pull = runVercel(['vercel', 'env', 'pull', '.env', '--yes', '--environment', targetEnv]);
+let combinedOutput = flush(pull);
+
+if (pull.status !== 0 && /not_linked/i.test(combinedOutput)) {
+  console.log(`Linking repo to Vercel project ${projectMeta?.projectName || 'concerttracker'} and retrying...`);
+  const link = runVercel(['vercel', 'link', '--yes', '--project', projectMeta?.projectName || 'concerttracker']);
+  combinedOutput = flush(link);
+  if (link.status !== 0) {
+    fail(
+      [
+        'Vercel link failed.',
+        'Run `npx vercel login` and then `npx vercel link --yes --project concerttracker` in this repo.',
+      ].join('\n'),
+      link.status || 1,
+    );
+  }
+  pull = runVercel(['vercel', 'env', 'pull', '.env', '--yes', '--environment', targetEnv]);
+  combinedOutput = flush(pull);
+}
 
 if (pull.status !== 0) {
   fail(
@@ -56,6 +95,7 @@ if (pull.status !== 0) {
       'Vercel env pull failed.',
       'Make sure this device is logged into the same Vercel account/team and has access to the `concerttracker` project.',
       'If this is a fresh machine, run `npx vercel login` first.',
+      'If the repo is still not linked, run `npx vercel link --yes --project concerttracker` and retry.',
     ].join('\n'),
     pull.status || 1,
   );

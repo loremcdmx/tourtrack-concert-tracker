@@ -30,10 +30,13 @@ npx vercel login
 npm run env:pull:dev
 ```
 
+`npm run env:pull:dev` is safe to rerun when `.env` already exists. It first writes a backup copy into `tmp/` and then overwrites `.env` from the linked Vercel project.
+If the checkout is not linked yet, the script attempts `vercel link --yes --project concerttracker` automatically and then retries the env pull.
+
 If Vercel says the repo is not linked yet:
 
 ```bash
-npx vercel link
+npx vercel link --yes --project concerttracker
 npm run env:pull:dev
 ```
 
