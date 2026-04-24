@@ -854,15 +854,31 @@ function renderOverview(opts = {}) {
   // KEY FIX: prefer the first in-bounds future show over the globally-first show.
   // This prevents "ghost lines" — route lines that enter the viewport but whose
   // marker is off-screen because the artist's next show is in a different region.
-  // Also: when festival markers are visible, drop the artist's festival-dated
-  // shows from consideration so ten "X playing Glastonbury" pills don't pile
-  // on top of the Glastonbury bubble — the festival label already carries the
-  // tracked-artists count.
+  // When the fest layer is visible, also skip a show if we KNOW a festival is
+  // rendered at the same city/country/date — otherwise the pill piles on the
+  // festival label. If no matching festival is known, keep the pill so we
+  // don't black out regions (e.g. Mexico) where festival ingest was thin.
   const vpBounds = lmap.getBounds().pad(0.15); // tighter than route-line padding
+  const festLocSet = new Set();
+  if (showMapFests) {
+    festivals.forEach(f => {
+      if (!f || !f.date || f.date < today) return;
+      const city = (f.city || '').toLowerCase().trim();
+      const country = (f.country || '').toUpperCase();
+      if (!city && !country) return;
+      festLocSet.add(`${city}|${country}|${f.date}`);
+    });
+  }
   const cityMap = new Map();
   artistStates.forEach(({ artist, futureGeo, rank }) => {
     if (!futureGeo.length) return;
-    const pool = showMapFests ? futureGeo.filter(e => !e.isFest) : futureGeo;
+    const pool = showMapFests
+      ? futureGeo.filter(e => {
+          if (!e.isFest) return true;
+          const key = `${(e.city||'').toLowerCase().trim()}|${(e.country||'').toUpperCase()}|${e.date}`;
+          return !festLocSet.has(key);
+        })
+      : futureGeo;
     if (!pool.length) return;
     const inViewport = pool.find(e => vpBounds.contains([e.lat, e.lng]));
     const inRenderBounds = renderBounds ? pool.find(e => renderBounds.contains([e.lat, e.lng])) : null;

@@ -463,6 +463,101 @@ function renderMap(opts = {}) {
   else renderOverview(opts);
 }
 
+// ── REFRESH MAP AREA ─────────────────────────────────────────────
+// Manual workaround: query Ticketmaster for music events inside the
+// current viewport's bounding circle, match them against the tracked
+// artist list, and merge fresh concerts into the state. Used when the
+// regular scan undercovers a region (seen in Mexico/LatAm where the
+// normal flow leans on per-artist lookups that TM happens to miss).
+async function refreshMapArea() {
+  if (!lmap) return;
+  const btn = document.getElementById('map-refresh-area-btn');
+  const setLabel = (text, disabled = false) => {
+    if (!btn) return;
+    btn.textContent = text;
+    btn.disabled = disabled;
+  };
+  if (!API_KEY) {
+    setStatus('Add a Ticketmaster key to refresh the area.', false);
+    return;
+  }
+  if (!Array.isArray(ARTISTS) || !ARTISTS.length) {
+    setStatus('Import a playlist first — nothing to match against.', false);
+    return;
+  }
+
+  const bounds = lmap.getBounds();
+  const center = bounds.getCenter();
+  const radiusMeters = Math.max(lmap.distance(center, bounds.getNorthEast()), lmap.distance(center, bounds.getSouthWest()));
+  const radiusKm = Math.min(19999, Math.round(radiusMeters / 1000));
+  const today = new Date().toISOString().split('T')[0];
+
+  setLabel('⟳ Scanning…', true);
+  const artistIndex = buildArtistAliasIndex(ARTISTS);
+  const existingConcertKeys = new Set(concerts.map(c => `${c.id}|${(c.artist || '').toLowerCase()}`));
+  const festSizeBefore = festivals.length;
+  const festEventsForIngest = [];
+  let newConcertCount = 0;
+
+  try {
+    const pageCap = 3; // up to 600 events per click
+    for (let page = 0; page < pageCap; page++) {
+      const url = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${encodeURIComponent(API_KEY)}&classificationName=music&latlong=${center.lat.toFixed(4)},${center.lng.toFixed(4)}&radius=${radiusKm}&unit=km&size=200&page=${page}&sort=date,asc&startDateTime=${today}T00:00:00Z`;
+      const r = await apiFetch(url, 10000);
+      if (!r.ok) {
+        if (r.status === 429) setStatus('Ticketmaster rate-limited — try again in a minute.', false);
+        break;
+      }
+      const d = await r.json();
+      const evs = d?._embedded?.events || [];
+      for (const ev of evs) {
+        const date = ev.dates?.start?.localDate;
+        if (!date || date < today) continue;
+
+        if (typeof isFestivalLikeEvent === 'function' && isFestivalLikeEvent(ev)) {
+          festEventsForIngest.push(ev);
+        }
+
+        const attractions = ev._embedded?.attractions || [];
+        for (const attr of attractions) {
+          const attrKey = _normText(attr.name || '');
+          if (!artistIndex.has(attrKey)) continue;
+          const artist = artistIndex.get(attrKey);
+          const show = buildConcertFromTicketmasterEvent(artist, ev, 'tm_area');
+          if (!show) continue;
+          const key = `${show.id}|${(show.artist || '').toLowerCase()}`;
+          if (existingConcertKeys.has(key)) continue;
+          concerts.push(show);
+          existingConcertKeys.add(key);
+          newConcertCount += 1;
+        }
+      }
+      if (evs.length < 200) break;
+    }
+
+    if (festEventsForIngest.length && typeof ingestFestEvents === 'function') {
+      ingestFestEvents(festEventsForIngest, 'area-refresh');
+      if (typeof deduplicateFestivals === 'function') festivals = deduplicateFestivals(festivals);
+      if (typeof normalizeFestivalLabels === 'function') festivals = normalizeFestivalLabels(festivals);
+    }
+    concerts = deduplicateConcerts(concerts);
+    if (typeof scoreFestivals === 'function' && festivals.length) scoreFestivals();
+    persistData();
+    buildCalChips();
+    renderCalendar();
+    renderMap();
+
+    const newFestCount = Math.max(0, festivals.length - festSizeBefore);
+    const summary = `+${newConcertCount} shows${newFestCount ? ` · +${newFestCount} fests` : ''}`;
+    setLabel(`↻ ${summary}`, false);
+    setStatus(`Area refresh: ${summary} inside ${radiusKm} km`, true);
+    setTimeout(() => setLabel('↻ Обновить область', false), 4000);
+  } catch (e) {
+    setLabel('↻ Обновить область', false);
+    setStatus(`Area refresh failed: ${e.message || e}`, false);
+  }
+}
+
 // ── MAP SIDEBAR TOGGLE ───────────────────────────────────────────
 function toggleMapSidebar(tab) {
   const sidebar = document.getElementById('map-sidebar');
