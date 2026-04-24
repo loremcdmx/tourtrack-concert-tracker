@@ -530,13 +530,22 @@ function _renderFestLabels(opts = {}) {
   const skipFests = mapTypeFilter === 'tours';
   if (skipFests) return;
 
-  const festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
+  let festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
     && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f));
 
   festsToRender.sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
 
   const zoom = lmap.getZoom();
   const mapSize = lmap.getSize();
+  // Adaptive density cap: once a viewport has more festivals than roughly one
+  // per ~(density)² pixels, keep only the top-priority chunk so low-score dots
+  // stop stacking on top of each other. Festivals with tracked (matched) artists
+  // are always kept — those are the ones the user actually came for.
+  const densityCap = zoom <= 4.5 ? 80 : zoom <= 5.6 ? 60 : zoom <= 6.8 ? 55 : 90;
+  if (festsToRender.length > densityCap) {
+    const keepSet = new Set(festsToRender.slice(0, densityCap));
+    festsToRender = festsToRender.filter(f => keepSet.has(f) || (f.matched || []).length > 0);
+  }
   const labelBudget = _mapFestLabelBudget(zoom, mapSize, festsToRender.length);
   const clusterCell = _mapFestClusterCellSize(zoom);
   const clusterThreshold = _mapFestClusterThreshold(zoom);
@@ -838,16 +847,20 @@ function renderOverview(opts = {}) {
   // KEY FIX: prefer the first in-bounds future show over the globally-first show.
   // This prevents "ghost lines" — route lines that enter the viewport but whose
   // marker is off-screen because the artist's next show is in a different region.
+  // Also: when festival markers are visible, drop the artist's festival-dated
+  // shows from consideration so ten "X playing Glastonbury" pills don't pile
+  // on top of the Glastonbury bubble — the festival label already carries the
+  // tracked-artists count.
   const vpBounds = lmap.getBounds().pad(0.15); // tighter than route-line padding
   const cityMap = new Map();
   artistStates.forEach(({ artist, futureGeo, rank }) => {
     if (!futureGeo.length) return;
-    // Prefer first in-viewport show; when culling, use the first nearby show
-    // instead of keeping distant offscreen markers alive.
-    const inViewport = futureGeo.find(e => vpBounds.contains([e.lat, e.lng]));
-    const inRenderBounds = renderBounds ? futureGeo.find(e => renderBounds.contains([e.lat, e.lng])) : null;
+    const pool = showMapFests ? futureGeo.filter(e => !e.isFest) : futureGeo;
+    if (!pool.length) return;
+    const inViewport = pool.find(e => vpBounds.contains([e.lat, e.lng]));
+    const inRenderBounds = renderBounds ? pool.find(e => renderBounds.contains([e.lat, e.lng])) : null;
     if (renderBounds && !inViewport && !inRenderBounds) return;
-    const nextGeo = inViewport || inRenderBounds || futureGeo[0];
+    const nextGeo = inViewport || inRenderBounds || pool[0];
     const cityKey = `${(nextGeo.city||'?').toLowerCase().trim().slice(0,13)}|${nextGeo.country||''}`;
     if (!cityMap.has(cityKey)) cityMap.set(cityKey, {
       lat: nextGeo.lat, lng: nextGeo.lng,
