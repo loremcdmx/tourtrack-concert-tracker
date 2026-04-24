@@ -42,7 +42,10 @@ const STATIC_TYPES = {
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain; charset=utf-8',
   '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
 };
+const IMMUTABLE_EXTS = new Set(['.js', '.css', '.woff', '.woff2']);
 
 let cachedSessionSecret = '';
 let cachedSessionKey = null;
@@ -230,6 +233,71 @@ function safeStaticPath(urlPath) {
   return absolutePath;
 }
 
+const _cssMinCache = new Map();
+async function maybeMinifyCss(filePath, body) {
+  const cached = _cssMinCache.get(filePath);
+  const text = body.toString('utf8');
+  if (cached && cached.src === text) return cached.out;
+
+  const out = Buffer.from(minifyCssText(text), 'utf8');
+  _cssMinCache.set(filePath, { src: text, out });
+  return out;
+}
+
+function minifyCssText(src) {
+  // Pass 1: state machine that removes comments and collapses whitespace
+  // outside of string literals so quoted `content:"foo; bar"` survives intact.
+  let out = '';
+  const n = src.length;
+  let i = 0;
+  let pendingSpace = false;
+  while (i < n) {
+    const c = src[i];
+    const next = src[i + 1];
+
+    if (c === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      i = end === -1 ? n : end + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      if (pendingSpace) { out += ' '; pendingSpace = false; }
+      const quote = c;
+      out += c;
+      i++;
+      while (i < n) {
+        const ch = src[i];
+        out += ch;
+        i++;
+        if (ch === '\\' && i < n) { out += src[i]; i++; continue; }
+        if (ch === quote) break;
+      }
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f') {
+      pendingSpace = out.length > 0;
+      i++;
+      continue;
+    }
+    if (pendingSpace) {
+      const last = out.charCodeAt(out.length - 1);
+      // Drop the space after/before structural chars; keep it between tokens
+      // (e.g. descendant combinators, space-separated values).
+      if (last !== 0x7b /* { */ && last !== 0x7d /* } */ && last !== 0x3b /* ; */ &&
+          last !== 0x2c /* , */ && last !== 0x3e /* > */ && last !== 0x28 /* ( */ &&
+          c !== '{' && c !== '}' && c !== ';' && c !== ',' && c !== ')') {
+        out += ' ';
+      }
+      pendingSpace = false;
+    }
+    out += c;
+    i++;
+  }
+  // Pass 2: drop semicolons right before a closing brace.
+  out = out.replace(/;\}/g, '}');
+  return out;
+}
+
 async function serveStatic(req, res, pathname) {
   const filePath = safeStaticPath(pathname);
   if (!filePath) {
@@ -249,14 +317,15 @@ async function serveStatic(req, res, pathname) {
     let cacheControl;
     if (ext === '.html') {
       cacheControl = 'no-store';
-    } else if ((ext === '.js' || ext === '.css') && hasVersionQuery) {
+    } else if (IMMUTABLE_EXTS.has(ext) && hasVersionQuery) {
       cacheControl = 'public, max-age=31536000, immutable';
-    } else if (ext === '.js' || ext === '.css') {
+    } else if (IMMUTABLE_EXTS.has(ext)) {
       cacheControl = 'no-store';
     } else {
       cacheControl = 'public, max-age=300';
     }
-    sendText(res, 200, body, {
+    const stylesMin = ext === '.css' ? await maybeMinifyCss(filePath, body) : null;
+    sendText(res, 200, stylesMin || body, {
       'Content-Type': STATIC_TYPES[ext] || 'application/octet-stream',
       'Cache-Control': cacheControl,
     });
