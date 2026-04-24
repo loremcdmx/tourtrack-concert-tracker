@@ -530,22 +530,13 @@ function _renderFestLabels(opts = {}) {
   const skipFests = mapTypeFilter === 'tours';
   if (skipFests) return;
 
-  let festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
+  const festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
     && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f));
 
   festsToRender.sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
 
   const zoom = lmap.getZoom();
   const mapSize = lmap.getSize();
-  // Adaptive density cap: once a viewport has more festivals than roughly one
-  // per ~(density)² pixels, keep only the top-priority chunk so low-score dots
-  // stop stacking on top of each other. Festivals with tracked (matched) artists
-  // are always kept — those are the ones the user actually came for.
-  const densityCap = zoom <= 4.5 ? 80 : zoom <= 5.6 ? 60 : zoom <= 6.8 ? 55 : 90;
-  if (festsToRender.length > densityCap) {
-    const keepSet = new Set(festsToRender.slice(0, densityCap));
-    festsToRender = festsToRender.filter(f => keepSet.has(f) || (f.matched || []).length > 0);
-  }
   const labelBudget = _mapFestLabelBudget(zoom, mapSize, festsToRender.length);
   const clusterCell = _mapFestClusterCellSize(zoom);
   const clusterThreshold = _mapFestClusterThreshold(zoom);
@@ -560,6 +551,13 @@ function _renderFestLabels(opts = {}) {
       priority: _mapFestPriority(f)
     }));
 
+  // Per-bucket density & time cap: at low zoom small map cells collect many
+  // festivals on top of each other. Inside each spatial bucket, keep tracked
+  // ones (matched.length > 0), keep the highest-priority chunk, and fill the
+  // remaining slots with the nearest-in-time festivals. Far-future fests from
+  // crowded regions drop first; sparse regions (e.g. Mexico, South America)
+  // keep every pin because the cap never fires there.
+  const perBucketCap = zoom <= 4.5 ? 10 : zoom <= 5.6 ? 8 : zoom <= 6.8 ? 7 : 999;
   const labelItems = [];
   const clusterGroups = [];
   if (zoom <= 7.25) {
@@ -570,6 +568,15 @@ function _renderFestLabels(opts = {}) {
       buckets.get(key).push(item);
     });
     buckets.forEach(bucket => {
+      if (bucket.length > perBucketCap) {
+        const tracked = bucket.filter(item => (item.f.matched || []).length > 0);
+        const untracked = bucket.filter(item => !(item.f.matched || []).length);
+        const byDate = [...untracked].sort((a, b) => (a.f.date || '9999').localeCompare(b.f.date || '9999'));
+        const slots = Math.max(0, perBucketCap - tracked.length);
+        const kept = [...tracked, ...byDate.slice(0, slots)];
+        bucket.length = 0;
+        bucket.push(...kept);
+      }
       bucket.sort((a, b) => b.priority - a.priority);
       if (bucket.length >= clusterThreshold) clusterGroups.push(bucket.map(item => item.f));
       else labelItems.push(...bucket);
