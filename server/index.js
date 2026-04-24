@@ -245,10 +245,20 @@ async function serveStatic(req, res, pathname) {
     }
     const body = await fsp.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    const shouldBypassCache = ext === '.html' || ext === '.js' || ext === '.css';
+    const hasVersionQuery = typeof req.url === 'string' && req.url.includes('?');
+    let cacheControl;
+    if (ext === '.html') {
+      cacheControl = 'no-store';
+    } else if ((ext === '.js' || ext === '.css') && hasVersionQuery) {
+      cacheControl = 'public, max-age=31536000, immutable';
+    } else if (ext === '.js' || ext === '.css') {
+      cacheControl = 'no-store';
+    } else {
+      cacheControl = 'public, max-age=300';
+    }
     sendText(res, 200, body, {
       'Content-Type': STATIC_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': shouldBypassCache ? 'no-store' : 'public, max-age=300',
+      'Cache-Control': cacheControl,
     });
   } catch (error) {
     if (error && error.code === 'ENOENT') {

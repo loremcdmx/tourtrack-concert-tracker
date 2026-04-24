@@ -130,25 +130,39 @@ async function resolveAttractionInfo(artist) {
   };
 
   try {
+    const buildUrl = keyword =>
+      `https://app.ticketmaster.com/discovery/v2/attractions.json?apikey=${API_KEY}&keyword=${encodeURIComponent(keyword)}&classificationName=music&size=5`;
+    const hasDiacritics = artistAscii !== artist && artistAscii.trim();
+
     await (window._rateLimitedWait?.());
-    const aUrl = `https://app.ticketmaster.com/discovery/v2/attractions.json?apikey=${API_KEY}&keyword=${encodeURIComponent(artist)}&classificationName=music&size=5`;
-    const aRes = await apiFetch(aUrl, 6000);
+    const primary = apiFetch(buildUrl(artist), 6000);
+    // Fire ASCII fallback in parallel when diacritics are present — we'd otherwise
+    // pay a second rate-limit gap after the primary miss, which dominates runtime
+    // for the 10% of artists with non-ASCII names.
+    let ascii = null;
+    if (hasDiacritics) {
+      await (window._rateLimitedWait?.());
+      ascii = apiFetch(buildUrl(artistAscii), 6000);
+    }
+
+    const aRes = await primary;
     if (aRes.ok) {
       const aData = await aRes.json();
       const items = aData?._embedded?.attractions || [];
       let best = _findBest(items);
 
-      // If no match with original name AND artist has diacritics, retry with ASCII version
-      if (!best && artistAscii !== artist && artistAscii.trim()) {
-        await (window._rateLimitedWait?.());
-        const aUrl2 = `https://app.ticketmaster.com/discovery/v2/attractions.json?apikey=${API_KEY}&keyword=${encodeURIComponent(artistAscii)}&classificationName=music&size=5`;
-        const aRes2 = await apiFetch(aUrl2, 6000);
+      if (!best && ascii) {
+        const aRes2 = await ascii;
         if (aRes2.ok) {
           const aData2 = await aRes2.json();
           const items2 = aData2?._embedded?.attractions || [];
           best = _findBest(items2);
           if (best) dblog('info', `${artist}: found via ASCII fallback "${artistAscii}" → ${best.name}`);
+        } else if (aRes2.status === 429) {
+          throw new Error('429');
         }
+      } else if (ascii) {
+        ascii.then(r => r.text?.()).catch(() => {}); // drain unused body
       }
 
       if (best) {

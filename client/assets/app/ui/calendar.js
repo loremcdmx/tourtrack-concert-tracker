@@ -944,7 +944,7 @@ function toggleFavorite(artistName, e) {
   const key = artistName.toLowerCase();
   if (favoriteArtists.has(key)) favoriteArtists.delete(key);
   else favoriteArtists.add(key);
-  persistSettings();
+  persistSettingsDeferred();
   buildSidebar();
   renderMap();
   // Show/hide fav-only toggle

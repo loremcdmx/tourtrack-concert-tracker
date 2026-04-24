@@ -573,11 +573,47 @@ function _renderFestLabels(opts = {}) {
   clusterGroups.sort((a, b) => _mapFestPriority(b[0]) - _mapFestPriority(a[0]));
   clusterGroups.forEach(group => _renderFestCluster(group));
 
-  const occupied = [];
   const PX_PAD = zoom <= 5.6 ? 12 : zoom <= 6.8 ? 9 : 6;
   const rectOverlap = (a, b) =>
     a[0] < b[0] + b[2] + PX_PAD && a[0] + a[2] + PX_PAD > b[0] &&
     a[1] < b[1] + b[3] + PX_PAD && a[1] + a[3] + PX_PAD > b[1];
+
+  // Spatial hash grid keyed by 256px cells. Max label width + pad is ~232, so a
+  // rect touches at most a 2x2 cell window — each insert/query is O(1) rather
+  // than O(n) over every placed label.
+  const GRID_CELL = 256;
+  const grid = new Map();
+  const cellKey = (cx, cy) => (cx * 100003) ^ cy;
+  const rectCellRange = r => ({
+    x0: Math.floor((r[0] - PX_PAD) / GRID_CELL),
+    x1: Math.floor((r[0] + r[2] + PX_PAD) / GRID_CELL),
+    y0: Math.floor((r[1] - PX_PAD) / GRID_CELL),
+    y1: Math.floor((r[1] + r[3] + PX_PAD) / GRID_CELL),
+  });
+  const placeRect = rect => {
+    const { x0, x1, y0, y1 } = rectCellRange(rect);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cy = y0; cy <= y1; cy++) {
+        const k = cellKey(cx, cy);
+        let bucket = grid.get(k);
+        if (!bucket) { bucket = []; grid.set(k, bucket); }
+        bucket.push(rect);
+      }
+    }
+  };
+  const rectCollides = rect => {
+    const { x0, x1, y0, y1 } = rectCellRange(rect);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cy = y0; cy <= y1; cy++) {
+        const bucket = grid.get(cellKey(cx, cy));
+        if (!bucket) continue;
+        for (const other of bucket) {
+          if (rectOverlap(rect, other)) return true;
+        }
+      }
+    }
+    return false;
+  };
 
   let renderedLabels = 0;
   labelItems.forEach(item => {
@@ -614,9 +650,9 @@ function _renderFestLabels(opts = {}) {
     if (renderedLabels < labelBudget) {
       for (const [dx, dy] of offsets) {
         const rect = [baseRect[0] + dx, baseRect[1] + dy, totalW, totalH];
-        if (!occupied.some(o => rectOverlap(rect, o))) {
+        if (!rectCollides(rect)) {
           chosenOffset = [dx, dy];
-          occupied.push(rect);
+          placeRect(rect);
           break;
         }
       }

@@ -788,28 +788,40 @@ async function instantResume(opts = {}) {
 
   const today = new Date().toISOString().split('T')[0];
   try {
-    // Rebuild concerts from IDB artist cache
-    const keys = await DB.keys('artists');
-    const artistKeys = keys.filter(k => k !== '__ping__');
+    // Rebuild concerts from IDB artist cache. getAll pulls every record in a
+    // single read transaction, which is O(N) faster than the previous N×DB.get
+    // loop (e.g. 384 sequential round-trips → one scan for the pinned playlist).
+    // Festival meta fetch rides the same Promise.all so both stores are read
+    // concurrently instead of one after the other.
+    const [keys, records, fc] = await Promise.all([
+      DB.keys('artists'),
+      DB.getAll('artists'),
+      DB.get('meta', 'festivals').catch(() => null),
+    ]);
+    const artistKeys = [];
+    const artistRecords = [];
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i] === '__ping__') continue;
+      artistKeys.push(keys[i]);
+      artistRecords.push(records[i]);
+    }
     setScannedArtists(artistKeys);
     if (!TRACKED_ARTISTS.length) {
       setTrackedArtists([...ARTISTS, ...Object.keys(ARTIST_PLAYS || {}), ...artistKeys]);
     }
     concerts = [];
-    for (const key of artistKeys) {
-      try {
-        const rec = await DB.get('artists', key);
-        if (rec?.shows) concerts.push(...rec.shows.filter(s => s.date >= today));
-      } catch {}
+    for (const rec of artistRecords) {
+      if (rec?.shows) {
+        for (const show of rec.shows) {
+          if (show.date >= today) concerts.push(show);
+        }
+      }
     }
     concerts = deduplicateConcerts(concerts);
     applyScenarioAResultFilter();
 
-    // Rebuild festivals from IDB meta cache
-    try {
-      const fc = await DB.get('meta', 'festivals');
-      if (fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => f.date >= today));
-    } catch {}
+    // Rebuild festivals from IDB meta cache (already fetched above)
+    if (fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => f.date >= today));
 
     cacheTimestamp = Date.now();
 

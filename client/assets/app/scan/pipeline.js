@@ -252,8 +252,10 @@ async function fetchAll(forceRefresh = false) {
   }
 
   // ── PASS 1: concurrent batch dispatch ─────────────────────────────
-  // CONCURRENCY=1 — TM limit is 100 req/min, no benefit to parallelism
-  const CONCURRENCY = 1;
+  // Two workers share the single `scanRateLimitedWait` gap (750ms default),
+  // so total throughput stays under the TM 100 req/min ceiling while
+  // overlapping network latency with rate-limit sleep on the other worker.
+  const CONCURRENCY = 2;
   const t0 = Date.now();
 
   await new Promise(resolve => {

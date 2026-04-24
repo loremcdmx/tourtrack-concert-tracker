@@ -257,6 +257,21 @@ function inferConcertArtists(list = concerts) {
   return uniqueArtistNames((list || []).map(c => c && c.artist));
 }
 
+// Coalesces rapid calls (favorite-star clicks, filter chips) into a single
+// write after the next two animation frames, so the click handler can return
+// and let the browser paint before ~10 localStorage.setItem calls fire.
+let _persistSettingsScheduled = false;
+function persistSettingsDeferred() {
+  if (_persistSettingsScheduled) return;
+  _persistSettingsScheduled = true;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      _persistSettingsScheduled = false;
+      persistSettings();
+    });
+  });
+}
+
 function persistSettings() {
   try {
     localStorage.setItem('tt_key',     API_KEY);
