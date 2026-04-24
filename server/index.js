@@ -796,6 +796,11 @@ function normalizeSpotifyImportTrack(track) {
   };
 }
 
+const PLAYLIST_IMPORT_PAGE_SIZE = 100;
+const PLAYLIST_IMPORT_CONCURRENCY = 6;
+const PLAYLIST_TRACK_FIELDS =
+  'items(track(id,name,uri,is_local,duration_ms,preview_url,external_urls,album(name,images),artists(name,id))),next,total';
+
 async function fetchSpotifyPlaylistImport(accessToken, playlistId) {
   const baseFields = [
     'id',
@@ -806,27 +811,51 @@ async function fetchSpotifyPlaylistImport(accessToken, playlistId) {
     'tracks(total)',
   ].join(',');
 
-  const playlistResponse = await spotifyApiFetch(
-    `https://api.spotify.com/v1/playlists/${playlistId}?fields=${encodeURIComponent(baseFields)}`,
-    { accessToken },
-  );
-  const playlist = await playlistResponse.json();
+  const tracksPageUrl = offset =>
+    `https://api.spotify.com/v1/playlists/${playlistId}/tracks` +
+    `?limit=${PLAYLIST_IMPORT_PAGE_SIZE}&offset=${offset}` +
+    `&fields=${encodeURIComponent(PLAYLIST_TRACK_FIELDS)}`;
+
+  const fetchJson = async url => {
+    const response = await spotifyApiFetch(url, { accessToken });
+    return response.json();
+  };
+
+  const [playlist, firstPage] = await Promise.all([
+    fetchJson(`https://api.spotify.com/v1/playlists/${playlistId}?fields=${encodeURIComponent(baseFields)}`),
+    fetchJson(tracksPageUrl(0)),
+  ]);
+
+  const total = Number(firstPage.total) || 0;
+  const pageCount = Math.max(1, Math.ceil(total / PLAYLIST_IMPORT_PAGE_SIZE));
+  const pages = new Array(pageCount);
+  pages[0] = firstPage.items || [];
+
+  const remainingOffsets = [];
+  for (let offset = PLAYLIST_IMPORT_PAGE_SIZE; offset < total; offset += PLAYLIST_IMPORT_PAGE_SIZE) {
+    remainingOffsets.push(offset);
+  }
+
+  if (remainingOffsets.length) {
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < remainingOffsets.length) {
+        const myIndex = cursor++;
+        const offset = remainingOffsets[myIndex];
+        const data = await fetchJson(tracksPageUrl(offset));
+        pages[offset / PLAYLIST_IMPORT_PAGE_SIZE] = data.items || [];
+      }
+    };
+    const workerCount = Math.min(PLAYLIST_IMPORT_CONCURRENCY, remainingOffsets.length);
+    await Promise.all(Array.from({ length: workerCount }, worker));
+  }
 
   const tracks = [];
-  let nextUrl =
-    `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&offset=0` +
-    `&fields=${encodeURIComponent('items(track(id,name,uri,is_local,duration_ms,preview_url,external_urls,album(name,images),artists(name,id))),next,total')}`;
-  let total = 0;
-
-  while (nextUrl) {
-    const response = await spotifyApiFetch(nextUrl, { accessToken });
-    const data = await response.json();
-    total = Number(data.total) || total;
-    for (const item of data.items || []) {
+  for (const page of pages) {
+    for (const item of page || []) {
       const normalized = normalizeSpotifyImportTrack(item && item.track);
       if (normalized) tracks.push(normalized);
     }
-    nextUrl = data.next || null;
   }
 
   return {
@@ -1102,7 +1131,10 @@ async function handleSpotifyPlaylistImport(req, res, playlistId) {
     }
 
     const payload = await fetchSpotifyPlaylistImport(accessToken, playlistId);
-    sendJson(res, 200, { source, ...payload });
+    const cacheHeaders = source === 'app'
+      ? { 'Cache-Control': 'public, s-maxage=600, stale-while-revalidate=3600' }
+      : {};
+    sendJson(res, 200, { source, ...payload }, cacheHeaders);
   } catch (error) {
     console.error('Spotify playlist import error:', error);
     const needsLogin =
