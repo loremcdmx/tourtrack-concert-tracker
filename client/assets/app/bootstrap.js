@@ -70,6 +70,24 @@ if (concerts.length || festivals.length) {
   renderCalendar();
   renderMap();
   hideOnboard();
+
+  // Users with localStorage-resident concerts/festivals skip instantResume
+  // entirely, so FEST_VER cache-invalidation never runs through pipeline.js
+  // for them. Kick the IDB festivals record, and if its ver is older than
+  // FEST_VER, quietly re-fetch in the background so shipping a new sweep
+  // (like the country-level MX/LatAm pass) actually reaches these users.
+  if (typeof DB !== 'undefined' && typeof _autoRefreshFestivals === 'function') {
+    DB.get('meta', 'festivals').then(fc => {
+      if (!fc || fc.ver === FEST_VER) return;
+      if (window._festRefreshRunning) return;
+      window._festRefreshRunning = true;
+      setTimeout(() => {
+        _autoRefreshFestivals()
+          .catch(err => typeof dblog === 'function' && dblog('warn', `Auto fest refresh failed: ${err?.message || err}`))
+          .finally(() => { window._festRefreshRunning = false; });
+      }, 800);
+    }).catch(() => {});
+  }
 } else {
   const onboardEl = document.getElementById('onboard');
   if (onboardEl) onboardEl.classList.remove('hidden');
