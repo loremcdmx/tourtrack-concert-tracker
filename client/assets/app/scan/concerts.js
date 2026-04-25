@@ -22,6 +22,7 @@ let _visibleConcertsCacheLength = -1;
 let _visibleConcertsCacheFirst = null;
 let _visibleConcertsCacheLast = null;
 let _visibleConcertsCacheArtistSignature = '';
+let _visibleConcertsCacheShowDupes = null;
 let _visibleConcertsCache = [];
 
 // ── visibleConcerts() ─────────────────────────────────────────────
@@ -46,7 +47,8 @@ function visibleConcerts() {
     _visibleConcertsCacheLength === len &&
     _visibleConcertsCacheFirst === first &&
     _visibleConcertsCacheLast === last &&
-    _visibleConcertsCacheArtistSignature === artistSignature
+    _visibleConcertsCacheArtistSignature === artistSignature &&
+    _visibleConcertsCacheShowDupes === showPossibleDupes
   ) {
     return _visibleConcertsCache;
   }
@@ -59,6 +61,7 @@ function visibleConcerts() {
   _visibleConcertsCacheFirst = first;
   _visibleConcertsCacheLast = last;
   _visibleConcertsCacheArtistSignature = artistSignature;
+  _visibleConcertsCacheShowDupes = showPossibleDupes;
   return _visibleConcertsCache;
 }
 

@@ -271,6 +271,17 @@ function persistSettingsDeferred() {
     });
   });
 }
+// Flush pending writes synchronously before the tab unloads — a favorite
+// toggled inside the last frame before navigation would otherwise be lost
+// because the double-rAF never gets to fire.
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (_persistSettingsScheduled) {
+      _persistSettingsScheduled = false;
+      try { persistSettings(); } catch (e) {}
+    }
+  });
+}
 
 function persistSettings() {
   try {

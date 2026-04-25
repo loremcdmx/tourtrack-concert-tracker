@@ -170,7 +170,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.28.0033',
+    appVersion: '2.28.0034',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -314,13 +314,21 @@ async function serveStatic(req, res, pathname) {
     const body = await fsp.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const hasVersionQuery = typeof req.url === 'string' && req.url.includes('?');
+    // Font filenames from Google are already content-hashed (e.g.
+    // aFTR7PB1QTsUX8KYvrGyEY2tbYf-Vlh3uA.woff2), so they're safe to cache
+    // forever without a ?v= query. Same for anything under /assets/vendor/
+    // which we bundle ourselves and update by path rename.
+    const isVendorAsset = typeof req.url === 'string' && req.url.startsWith('/assets/vendor/');
+    const isContentAddressedFont = ext === '.woff' || ext === '.woff2';
     let cacheControl;
     if (ext === '.html') {
       cacheControl = 'no-store';
-    } else if (IMMUTABLE_EXTS.has(ext) && hasVersionQuery) {
+    } else if (IMMUTABLE_EXTS.has(ext) && (hasVersionQuery || isVendorAsset || isContentAddressedFont)) {
       cacheControl = 'public, max-age=31536000, immutable';
     } else if (IMMUTABLE_EXTS.has(ext)) {
       cacheControl = 'no-store';
+    } else if (isVendorAsset) {
+      cacheControl = 'public, max-age=31536000, immutable';
     } else {
       cacheControl = 'public, max-age=300';
     }

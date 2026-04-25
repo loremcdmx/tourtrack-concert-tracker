@@ -143,40 +143,48 @@ async function resolveAttractionInfo(artist) {
     if (hasDiacritics) {
       await (window._rateLimitedWait?.());
       ascii = apiFetch(buildUrl(artistAscii), 6000);
+      // Attach a swallow-handler eagerly so if the primary path throws (e.g.
+      // 429) we don't leak an unhandled rejection or a pinned response body.
+      ascii.catch(() => {});
     }
 
-    const aRes = await primary;
-    if (aRes.ok) {
-      const aData = await aRes.json();
-      const items = aData?._embedded?.attractions || [];
-      let best = _findBest(items);
+    try {
+      const aRes = await primary;
+      if (aRes.ok) {
+        const aData = await aRes.json();
+        const items = aData?._embedded?.attractions || [];
+        let best = _findBest(items);
 
-      if (!best && ascii) {
-        const aRes2 = await ascii;
-        if (aRes2.ok) {
-          const aData2 = await aRes2.json();
-          const items2 = aData2?._embedded?.attractions || [];
-          best = _findBest(items2);
-          if (best) dblog('info', `${artist}: found via ASCII fallback "${artistAscii}" → ${best.name}`);
-        } else if (aRes2.status === 429) {
-          throw new Error('429');
+        if (!best && ascii) {
+          let aRes2 = null;
+          try { aRes2 = await ascii; } catch { aRes2 = null; }
+          if (aRes2?.ok) {
+            const aData2 = await aRes2.json();
+            const items2 = aData2?._embedded?.attractions || [];
+            best = _findBest(items2);
+            if (best) dblog('info', `${artist}: found via ASCII fallback "${artistAscii}" → ${best.name}`);
+          } else if (aRes2?.status === 429) {
+            throw new Error('429');
+          }
+        } else if (ascii) {
+          ascii.then(r => r.text?.()).catch(() => {}); // drain unused body
         }
-      } else if (ascii) {
-        ascii.then(r => r.text?.()).catch(() => {}); // drain unused body
-      }
 
-      if (best) {
-        id = best.id;
-        attractionName = best.name || '';
-        const ue = best.upcomingEvents;
-        totalUpcoming = ue ? (ue._total ?? null) : null;
-      } else {
-        totalUpcoming = 0; // Not found on TM — no events possible
+        if (best) {
+          id = best.id;
+          attractionName = best.name || '';
+          const ue = best.upcomingEvents;
+          totalUpcoming = ue ? (ue._total ?? null) : null;
+        } else {
+          totalUpcoming = 0; // Not found on TM — no events possible
+        }
+      } else if (aRes.status === 429) {
+        throw new Error('429');
       }
-    } else if (aRes.status === 429) {
-      // Rate-limited on the attraction lookup itself — propagate as a thrown error
-      // so processArtist's retry logic handles it, rather than silently returning null
-      throw new Error('429');
+    } finally {
+      // Make sure the ASCII body is always consumed so the socket is freed,
+      // even when the primary branch throws before we read it.
+      if (ascii) ascii.then(r => r?.text?.()).catch(() => {});
     }
   } catch(e) {
     if (e.message === '429') throw e; // let caller handle 429

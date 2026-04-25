@@ -50,9 +50,16 @@ function createScanRuntime() {
 }
 
 async function scanRateLimitedWait(runtime) {
-  const gap = Date.now() - runtime.lastRequestAt;
-  if (gap < runtime.minGapMs) await sleep(runtime.minGapMs - gap);
-  runtime.lastRequestAt = Date.now();
+  // Reserve the slot atomically before awaiting. With CONCURRENCY=2 two
+  // workers can enter this function simultaneously; if we only update
+  // lastRequestAt AFTER the sleep both will read the same stale timestamp,
+  // think the gap is big, and fire back-to-back. Claiming the slot first
+  // guarantees strict serialization at the configured minGapMs cadence.
+  const now = Date.now();
+  const nextSlot = Math.max(now, (runtime.lastRequestAt || 0) + runtime.minGapMs);
+  runtime.lastRequestAt = nextSlot;
+  const waitMs = nextSlot - now;
+  if (waitMs > 0) await sleep(waitMs);
 }
 
 function scanQuotaResetLabel() {

@@ -800,8 +800,14 @@ async function instantResume(opts = {}) {
     ]);
     const artistKeys = [];
     const artistRecords = [];
-    for (let i = 0; i < keys.length; i++) {
+    // keys and records come from two separate IDB transactions so a
+    // concurrent write (e.g. from another tab mid-import) could leave them
+    // at different lengths. Only consume pairs that exist on both sides;
+    // skip any bare key without a record rather than push `undefined`.
+    const pairCount = Math.min(keys.length, records.length);
+    for (let i = 0; i < pairCount; i++) {
       if (keys[i] === '__ping__') continue;
+      if (!records[i]) continue;
       artistKeys.push(keys[i]);
       artistRecords.push(records[i]);
     }
