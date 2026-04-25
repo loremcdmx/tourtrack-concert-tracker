@@ -69,6 +69,34 @@ function profSwitch(name) {
   if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   // Called from the <select> onChange — skip if already on this profile.
   if (name === activeProf) return;
+  // Scan loops capture ARTISTS by reference and push results into the global
+  // concerts[]. If we let the user swap profiles mid-scan, in-flight artists
+  // belonging to the OLD profile would land in the NEW profile's concerts[]
+  // and the loop body would start reading the NEW profile's ARTISTS array
+  // mid-iteration. Cleanest mitigation: abort the running scan first; the
+  // user can rescan in the new profile when they're ready.
+  if (window._scanActive) {
+    if (typeof scanAborted !== 'undefined') {
+      scanAborted = true;
+      window._scanActive = false;
+    }
+    if (typeof flushScheduledUiRefresh === 'function') {
+      try { flushScheduledUiRefresh(); } catch (e) {}
+    }
+    if (typeof setStatus === 'function') {
+      setStatus(`Scan stopped — switching to "${name}"`, false);
+    }
+    if (typeof dblog === 'function') dblog('warn', `Scan aborted by profile switch (${activeProf} → ${name})`);
+  }
+  // Flush any pending deferred settings write so it commits against the OLD
+  // profile context. Without this, a favorite toggled in the same frame as the
+  // dropdown click could land its profile-snapshot write under the NEW profile
+  // by the time the rAF fires.
+  if (typeof _persistSettingsScheduled !== 'undefined' && _persistSettingsScheduled
+      && typeof persistSettings === 'function') {
+    _persistSettingsScheduled = false;
+    try { persistSettings(); } catch (e) {}
+  }
   profPersistCurrent();   // snapshot the profile we're leaving
   _profApply(name);
 }
