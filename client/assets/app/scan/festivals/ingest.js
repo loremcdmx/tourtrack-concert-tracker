@@ -14,8 +14,18 @@ function buildFestivalGeoTargets() {
 }
 
 function buildAlwaysSweepFestivalCountries() {
-  return ['US', 'MX', 'AR', 'BR', 'CL', 'CO', 'CA', 'AU', 'JP']
-    .filter(code => !includeCountries.has(code) && countryMode !== 'world');
+  // Key country-level sweeps we always want on top of the user-geo-filtered
+  // and named-festival passes. TM's "keyword=festival" global sweep is
+  // heavily biased toward US/UK, so without an explicit per-country sweep
+  // festivals in Mexico / LatAm / APAC / CA barely surfaced — even when the
+  // user was in world mode and explicitly filtered the UI to, say, MX. The
+  // old guard (`countryMode !== 'world'`) dropped every one of these in the
+  // default mode, which was the reason MX/LatAm/APAC looked empty.
+  const always = ['US', 'MX', 'AR', 'BR', 'CL', 'CO', 'CA', 'AU', 'JP'];
+  if (countryMode === 'include' && includeCountries.size > 0) {
+    return always.filter(code => !includeCountries.has(code));
+  }
+  return always;
 }
 
 function festivalGeoTargetCount(targets) {
