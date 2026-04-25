@@ -552,16 +552,19 @@ function _renderFestLabels(opts = {}) {
   const labelBudget = _mapFestLabelBudget(zoom, mapSize, festsToRender.length);
   const clusterCell = _mapFestClusterCellSize(zoom);
   const clusterThreshold = _mapFestClusterThreshold(zoom);
-  const shouldCull = _mapFirstFit && !opts.smartFit && typeof lmap.getBounds === 'function';
-  const viewBounds = shouldCull ? lmap.getBounds().pad(0.28) : null;
-  const festItems = festsToRender
-    .filter(f => !viewBounds || viewBounds.contains([f.lat, f.lng]))
-    .map(f => ({
-      f,
-      pt: lmap.latLngToContainerPoint([f.lat, f.lng]),
-      tone: _mapFestTone(f),
-      priority: _mapFestPriority(f)
-    }));
+  // No viewport cull here. Previously we dropped any festival whose lat/lng
+  // fell outside the current bounds + 28% pad, which meant the initial
+  // auto-fit (which tends to frame Europe because most tracked artists tour
+  // there) baked non-EU regions out of the festival layer until the user
+  // forced a re-render. The data set is small — ~500 festivals worst case —
+  // so adding all of them costs Leaflet essentially nothing and panning to
+  // Mexico/LatAm/APAC now reveals the pins that are actually there.
+  const festItems = festsToRender.map(f => ({
+    f,
+    pt: lmap.latLngToContainerPoint([f.lat, f.lng]),
+    tone: _mapFestTone(f),
+    priority: _mapFestPriority(f)
+  }));
 
   // Per-bucket density & time cap: at low zoom small map cells collect many
   // festivals on top of each other. Inside each spatial bucket, keep tracked
@@ -892,10 +895,13 @@ function renderOverview(opts = {}) {
         })
       : futureGeo;
     if (!pool.length) return;
+    // Dropped the viewport-cull gate: if the artist has any future show we
+    // render their pin at the first available one, regardless of whether it
+    // happens to fall inside the initial auto-fit bounds. Without this, the
+    // Europe-centric first fit hid every Mexican/LatAm/APAC pin until the
+    // user forced a re-render.
     const inViewport = pool.find(e => vpBounds.contains([e.lat, e.lng]));
-    const inRenderBounds = renderBounds ? pool.find(e => renderBounds.contains([e.lat, e.lng])) : null;
-    if (renderBounds && !inViewport && !inRenderBounds) return;
-    const nextGeo = inViewport || inRenderBounds || pool[0];
+    const nextGeo = inViewport || pool[0];
     const cityKey = `${(nextGeo.city||'?').toLowerCase().trim().slice(0,13)}|${nextGeo.country||''}`;
     if (!cityMap.has(cityKey)) cityMap.set(cityKey, {
       lat: nextGeo.lat, lng: nextGeo.lng,
