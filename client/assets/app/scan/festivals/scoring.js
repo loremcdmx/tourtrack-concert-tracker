@@ -16,6 +16,20 @@ function festivalArtistWeight(name, hasPlays) {
 }
 
 function scoreFestivals() {
+  // Empty profile / no tracked artists — zero every fest score consistently
+  // instead of walking the full festival list just to produce the same nil.
+  if (!Array.isArray(ARTISTS) || !ARTISTS.length) {
+    for (const festival of festivals) {
+      festival.lineupResolved = _resolvedFestivalLineup(festival);
+      festival.linkedShows = _festivalLinkedConcerts(festival).length;
+      festival.matched = [];
+      festival.score = 0;
+      festival._mapPriority = Number(festival.linkedShows || 0) * 10;
+    }
+    festivals.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    return;
+  }
+
   const playsTotal = Object.values(ARTIST_PLAYS).reduce((sum, value) => sum + value, 0);
   const hasPlays = playsTotal > 0;
 
@@ -68,6 +82,12 @@ function scoreFestivals() {
   for (const festival of festivals) {
     festival.score = Math.round((festival._rawScore / maxRaw) * 100);
     delete festival._rawScore;
+    // Stamp the map-layer priority so _mapFestPriority hits a direct read
+    // during hot render loops instead of summing matched+score+linked each time.
+    festival._mapPriority =
+      festival.score * 10 +
+      (festival.matched ? festival.matched.length : 0) * 28 +
+      Number(festival.linkedShows || 0) * 10;
   }
 
   festivals.sort((a, b) => (b.score - a.score) || a.date.localeCompare(b.date));

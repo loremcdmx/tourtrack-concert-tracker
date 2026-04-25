@@ -450,9 +450,14 @@ function renderMap(opts = {}) {
     if (!geoDisplayOk(c.country || '')) continue;
     if (!mapDateOk(c.date)) continue;
     if (!mapScoreOkArtist(c.artist)) continue;
-    (allTourData[c.artist] = allTourData[c.artist] || []).push(c);
+    let bucket = allTourData[c.artist];
+    if (!bucket) {
+      bucket = allTourData[c.artist] = [];
+      getColor(c.artist); // prime color cache on first sight; skips the second pass
+    }
+    bucket.push(c);
   }
-  for (const a in allTourData) { allTourData[a].sort((a,b) => a.date.localeCompare(b.date)); getColor(a); }
+  for (const a in allTourData) allTourData[a].sort((a, b) => a.date.localeCompare(b.date));
   const scoreRow = document.getElementById('mfilt-score-row');
   if (scoreRow) scoreRow.style.display = '';
   buildSidebar();

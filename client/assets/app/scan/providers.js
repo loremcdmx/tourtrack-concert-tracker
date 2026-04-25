@@ -12,7 +12,18 @@ const TM_MAX_KEYWORD_PAGES = 4;
 // IDB writes are async and fire-and-forget. Without this, a retry that fires
 // within ~50ms of the original request will miss the IDB cache and make a
 // second network call for the same artist. L1 is synchronous — zero latency.
+// Capped at L1_MAX entries with a simple FIFO eviction so a long-running tab
+// with many rescans doesn't grow the map unbounded.
+const _L1_MAX = 1024;
 const _attractionL1 = new Map(); // key → { id, totalUpcoming, ts }
+function _attractionL1Set(key, value) {
+  if (_attractionL1.has(key)) _attractionL1.delete(key);
+  _attractionL1.set(key, value);
+  if (_attractionL1.size > _L1_MAX) {
+    const oldest = _attractionL1.keys().next().value;
+    if (oldest !== undefined) _attractionL1.delete(oldest);
+  }
+}
 
 // ── resolveAttractionInfo ──────────────────────────────────────────
 // Returns { id, totalUpcoming } for an artist.
@@ -49,7 +60,7 @@ async function resolveAttractionInfo(artist) {
       if (idFresh && countFresh) {
         // Both ID and count are fresh — return from cache, no network call
         const result = { id: cached.id, totalUpcoming: cached.totalUpcoming ?? null };
-        _attractionL1.set(key, result);
+        _attractionL1Set(key, result);
         if (typeof recordTicketmasterKnowledge === 'function') {
           recordTicketmasterKnowledge(artist, {
             attractionId: cached.id || '',
@@ -78,7 +89,7 @@ async function resolveAttractionInfo(artist) {
               const updated = { ...cached, totalUpcoming, tsCounted: now };
               DB.put('attractions', key, updated).catch(() => {});
               const result = { id: cached.id, totalUpcoming };
-              _attractionL1.set(key, result);
+              _attractionL1Set(key, result);
               if (typeof recordTicketmasterKnowledge === 'function') {
                 recordTicketmasterKnowledge(artist, {
                   attractionId: cached.id || '',
@@ -97,7 +108,7 @@ async function resolveAttractionInfo(artist) {
           }
           // Return stale data rather than making a full re-fetch on network error
           const stale = { id: cached.id, totalUpcoming: cached.totalUpcoming ?? null };
-          _attractionL1.set(key, stale);
+          _attractionL1Set(key, stale);
           return stale;
         }
       }
@@ -203,7 +214,7 @@ async function resolveAttractionInfo(artist) {
   }
   DB.put('attractions', key, record).catch(() => {});
   const result = { id, totalUpcoming };
-  _attractionL1.set(key, result); // populate L1 so retries within same session are free
+  _attractionL1Set(key, result); // populate L1 so retries within same session are free
   return result;
 }
 

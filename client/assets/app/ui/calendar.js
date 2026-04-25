@@ -1050,11 +1050,17 @@ function _rebuildMapData() {
       if (!geoDisplayOk(c.country || '')) continue;
       if (!mapDateOk(c.date)) continue;
       if (!mapScoreOkArtist(c.artist)) continue;
-      (allTourData[c.artist] = allTourData[c.artist] || []).push(c);
+      let bucket = allTourData[c.artist];
+      if (!bucket) {
+        bucket = allTourData[c.artist] = [];
+        // Prime the color cache on first sight — avoids a second pass over
+        // allTourData just to call getColor for each key.
+        getColor(c.artist);
+      }
+      bucket.push(c);
     }
     for (const a in allTourData) {
       allTourData[a].sort((a, b) => a.date.localeCompare(b.date));
-      getColor(a);
     }
   }
   // Update sidebar artist count to reflect the current filter
@@ -1437,7 +1443,6 @@ function renderCalendar() {
     const group = venueGroups.get(k);
     if (group.length >= IMPLICIT_FEST_THRESHOLD && shouldGroupAsVenueFestival(group)) {
       // Grouped: sort by ARTISTS list order (or alpha), visible ones first
-      const trackedSet = new Set(ARTISTS.map(a => a.toLowerCase()));
       const sorted = [...group].sort((a, b) => {
         const ia = artistListPosition(a.artist);
         const ib = artistListPosition(b.artist);
@@ -1554,7 +1559,6 @@ function renderCalendar() {
 
         const chipsEl = document.createElement('div');
         chipsEl.className = 'ev-artists';
-        const trackedSet = new Set(ARTISTS.map(a => a.toLowerCase()));
         const seenArtists = new Set();
 
         ev.artists.forEach(cc => {
@@ -1563,7 +1567,7 @@ function renderCalendar() {
           if (seenArtists.has(key)) return;
           seenArtists.add(key);
           primeArtists.add(cc.artist);
-          const isMine = trackedSet.has(key);
+          const isMine = trackedArtistKeys.has(key);
           const chip = document.createElement('span');
           chip.className = 'ev-artist-chip' + (isMine ? ' mine' : '');
           appendArtistChipIdentity(chip, cc.artist, isMine ? artistPlayCount(cc.artist) : 0);

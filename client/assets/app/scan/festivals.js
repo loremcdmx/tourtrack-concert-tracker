@@ -48,8 +48,9 @@ async function fetchFestivalsData() {
     if (scanAborted) return;
     try {
       const response = await apiFetch(task.url);
-      if (!response.ok) return;
+      if (scanAborted || !response.ok) return;
       const data = await response.json();
+      if (scanAborted) return; // user hit Stop mid-flight; don't pollute festivals[]
       const events = data?._embedded?.events || [];
       if (events.length) ingestFestEvents(events, task.hint);
     } catch (error) {

@@ -238,9 +238,14 @@ function _mapFestTone(f) {
 }
 
 function _mapFestPriority(f) {
-  const matched = (f?.matched || []).length;
-  const linked = Number(f?.linkedShows || 0);
-  const score = Number(f?.score || 0);
+  if (!f || typeof f !== 'object') return 0;
+  // scoreFestivals stamps _mapPriority right next to the matched/score fields
+  // that drive it. Reading the stamped value skips the arithmetic + object
+  // dereferences that run ~7× per festival per renderOverview.
+  if (typeof f._mapPriority === 'number') return f._mapPriority;
+  const matched = (f.matched || []).length;
+  const linked = Number(f.linkedShows || 0);
+  const score = Number(f.score || 0);
   return score * 10 + matched * 28 + linked * 10;
 }
 

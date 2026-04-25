@@ -332,7 +332,6 @@ async function fetchAll(forceRefresh = false) {
   }
 
   dblog('info', `All done in ${((Date.now()-t0)/1000).toFixed(1)}s: ↩${C.cached} · ↻${C.fresh} · ✗${Object.keys(fetchErrors).length} errors · ⏭${C.skipped} skipped · 🎵${C.bit} BIT · 🗺${C.geoSweep} geo-sweep`);
-  clearScanRuntime();
   updateErrorTab();
 
   if (!scanAborted) {
@@ -358,6 +357,12 @@ async function fetchAll(forceRefresh = false) {
       } catch(e) { dblog('error', `Festival fetch: ${e.message}`); }
     }
   }
+
+  // Tear down the scan runtime only after the festival worker pool has fully
+  // returned. Otherwise window._rateLimitedWait goes null mid-fetch and the
+  // optional-chained `?.()` silently skips the gap, letting the workers spam
+  // Ticketmaster at whatever rate the event loop can sustain.
+  clearScanRuntime();
 
   concerts = deduplicateConcerts(concerts);
   dblog('info', `Done: ${concerts.length} concerts, ${festivals.length} festivals`);
