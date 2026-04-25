@@ -1,6 +1,10 @@
 'use strict';
 
 let focusedConcertKey = '';
+let _focusVenueMap = null;
+let _focusVenueMapList = null;
+let _focusFestMap = null;
+let _focusFestMapList = null;
 
 function _concertFocusKey(ev) {
   if (!ev) return '';
@@ -91,22 +95,36 @@ function renderFocusMode(artist) {
   document.getElementById('focus-sub').textContent =
     `${display.length} show${display.length!==1?'s':''} · ${future.length} upcoming`;
 
-  // Build a venue+date → other tracked artists map for festival co-detection
-  // Key: date|venueSlug — same logic as calendar grouping
+  // Build (or reuse a cached) venue+date and date+city map for festival
+  // co-detection. The previous implementation rebuilt these maps every time
+  // the user clicked an artist — for ~5000 concerts and ~500 festivals that's
+  // ~5500 ops per click. Cache by (concerts, festivals) reference identity so
+  // subsequent focus clicks pay zero cost; mutations to either array always
+  // produce a new reference (deduplicateConcerts / scoreFestivals replace the
+  // arrays), which invalidates the cache automatically.
   const venueSlug = c => `${c.date}|${(c.venue||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,25)}`;
-  const venueMap = new Map(); // key → [artistName, ...]
-  for (const c of concerts) {
-    const k = venueSlug(c);
-    if (!venueMap.has(k)) venueMap.set(k, []);
-    venueMap.get(k).push(c.artist);
+  if (_focusVenueMapList !== concerts) {
+    const map = new Map();
+    for (const c of concerts) {
+      const k = venueSlug(c);
+      let bucket = map.get(k);
+      if (!bucket) { bucket = []; map.set(k, bucket); }
+      bucket.push(c.artist);
+    }
+    _focusVenueMap = map;
+    _focusVenueMapList = concerts;
   }
-
-  // Build a date+city → festival info map
-  const festMap = new Map(); // date|city → festival
-  for (const f of festivals) {
-    const k = `${f.date}|${(f.city||'').toLowerCase().slice(0,15)}`;
-    if (!festMap.has(k)) festMap.set(k, f);
+  if (_focusFestMapList !== festivals) {
+    const map = new Map();
+    for (const f of festivals) {
+      const k = `${f.date}|${(f.city||'').toLowerCase().slice(0,15)}`;
+      if (!map.has(k)) map.set(k, f);
+    }
+    _focusFestMap = map;
+    _focusFestMapList = festivals;
   }
+  const venueMap = _focusVenueMap;
+  const festMap = _focusFestMap;
 
   const listEl = document.getElementById('focus-list');
   const frag = document.createDocumentFragment();

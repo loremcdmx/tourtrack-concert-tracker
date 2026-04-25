@@ -377,12 +377,19 @@ function _buildFestPopup(f) {
   const lineup  = f.lineupResolved || _resolvedFestivalLineup(f);
   const matchedNames = new Set(matched.map(m => _normText(m.artist || m)));
 
-  for (const artist of ARTISTS) {
-    const key = _normText(artist);
-    if (!key || matchedNames.has(key) || !_lineupArtistHit(artist, lineup)) continue;
-    matchedNames.add(key);
-    const plays = typeof artistPlayCount === 'function' ? artistPlayCount(artist) : (ARTIST_PLAYS[key] || 0);
-    matched.push({ artist, plays, weight: plays });
+  // scoreFestivals already walked ARTISTS × lineup with the same matcher and
+  // populated f.matched. Re-running the inner loop on every popup open meant
+  // each festival click paid 384 × _lineupArtistHit for zero net change. Only
+  // fall back when we genuinely have no scoring metadata yet (fresh festival
+  // record from refreshMapArea before scoreFestivals re-ran).
+  if (!f.lineupResolved) {
+    for (const artist of ARTISTS) {
+      const key = _normText(artist);
+      if (!key || matchedNames.has(key) || !_lineupArtistHit(artist, lineup)) continue;
+      matchedNames.add(key);
+      const plays = typeof artistPlayCount === 'function' ? artistPlayCount(artist) : (ARTIST_PLAYS[key] || 0);
+      matched.push({ artist, plays, weight: plays });
+    }
   }
   matched.sort((a, b) => (b.plays || b.weight || 0) - (a.plays || a.weight || 0));
 

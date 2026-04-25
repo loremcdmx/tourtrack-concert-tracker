@@ -889,22 +889,28 @@ function hideOnboard() {
   if (el) el.classList.add('hidden');
 }
 
-// Saved playlists store for onboarding history
+// Saved playlists store for onboarding history. The raw list is cached after
+// the first read so repeated callers (15+ across one onboard flow) don't pay
+// a fresh JSON.parse(localStorage.getItem(...)) per call.
+let _onboardHistoryCache = null;
 function getOnboardHistory() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem('tt_pl_history') || '[]');
-    const list = Array.isArray(parsed) ? parsed : [];
-    if (!isScenarioAProductMode()) return list;
-    return list.filter(item => isPinnedPlaylistSelection(item?.url || ''));
-  } catch {
-    return [];
+  if (!_onboardHistoryCache) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('tt_pl_history') || '[]');
+      _onboardHistoryCache = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      _onboardHistoryCache = [];
+    }
   }
+  if (!isScenarioAProductMode()) return _onboardHistoryCache;
+  return _onboardHistoryCache.filter(item => isPinnedPlaylistSelection(item?.url || ''));
 }
 function saveOnboardHistory(list) {
   const items = Array.isArray(list) ? list : [];
   const next = isScenarioAProductMode()
     ? items.filter(item => isPinnedPlaylistSelection(item?.url || '')).slice(0, 1)
     : items.slice(0, 10);
+  _onboardHistoryCache = next;
   localStorage.setItem('tt_pl_history', JSON.stringify(next));
 }
 function addToOnboardHistory(name, url, trackCount, artistCount, coverUrl, topArtists, meta) {
