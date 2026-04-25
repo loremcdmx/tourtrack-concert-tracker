@@ -140,17 +140,25 @@ function dateOffset(days) {
 
 let _artistIndexCacheRef = null;
 let _artistIndexCacheLen = -1;
-let _artistIndexCacheSignature = '';
+let _artistIndexCacheFirst = '';
+let _artistIndexCacheLast = '';
 let _artistIndexCacheMap = new Map();
 
 function getArtistIndexMap() {
   const list = Array.isArray(ARTISTS) ? ARTISTS : [];
   const len = list.length;
-  const signature = list.map(artist => String(artist || '')).join('\u0001');
+  // Hot path: this runs thousands of times per sidebar / calendar build.
+  // Replace the former O(n) join-all-names signature with a 3-field stub
+  // (reference, length, first+last names). Every mutation we do to ARTISTS
+  // (push/splice/replace) either changes the reference or at least one of
+  // these observables, and the signature is O(1) to compute.
+  const first = len ? String(list[0] || '') : '';
+  const last = len ? String(list[len - 1] || '') : '';
   if (
     _artistIndexCacheRef !== list ||
     _artistIndexCacheLen !== len ||
-    _artistIndexCacheSignature !== signature
+    _artistIndexCacheFirst !== first ||
+    _artistIndexCacheLast !== last
   ) {
     const map = new Map();
     list.forEach((artist, idx) => {
@@ -164,7 +172,8 @@ function getArtistIndexMap() {
     });
     _artistIndexCacheRef = list;
     _artistIndexCacheLen = len;
-    _artistIndexCacheSignature = signature;
+    _artistIndexCacheFirst = first;
+    _artistIndexCacheLast = last;
     _artistIndexCacheMap = map;
   }
   return _artistIndexCacheMap;
@@ -1153,23 +1162,42 @@ function scheduleFilterRefresh(opts = {}) {
 
 let _scheduledUiRefreshRaf = 0;
 let _scheduledUiRefreshPending = false;
+let _lastUiRefreshAt = 0;
+let _scheduledUiRefreshTimer = 0;
 const CALENDAR_RENDER_BATCH_SIZE = 36;
+const UI_REFRESH_MIN_INTERVAL_MS = 500;
 let _calendarRenderToken = 0;
 
 function flushScheduledUiRefresh() {
   _scheduledUiRefreshRaf = 0;
+  _scheduledUiRefreshTimer = 0;
   if (!_scheduledUiRefreshPending) return;
   _scheduledUiRefreshPending = false;
+  _lastUiRefreshAt = Date.now();
   buildCalChips();
   renderCalendar();
   renderMap();
   _updateTally();
 }
 
+// Coalesces progress-driven refreshes (fired from the scan pipeline every few
+// fresh artists). Multiple calls within the same animation frame share one
+// render, and during long scans we throttle to UI_REFRESH_MIN_INTERVAL_MS so
+// each full calendar+map rebuild doesn't starve the scan worker of main-thread
+// time. User-driven filter clicks go through scheduleFilterRefresh instead
+// and are not throttled.
 function scheduleUiRefresh() {
   _scheduledUiRefreshPending = true;
-  if (_scheduledUiRefreshRaf) return;
-  _scheduledUiRefreshRaf = requestAnimationFrame(flushScheduledUiRefresh);
+  if (_scheduledUiRefreshRaf || _scheduledUiRefreshTimer) return;
+  const since = Date.now() - _lastUiRefreshAt;
+  if (since >= UI_REFRESH_MIN_INTERVAL_MS) {
+    _scheduledUiRefreshRaf = requestAnimationFrame(flushScheduledUiRefresh);
+  } else {
+    _scheduledUiRefreshTimer = setTimeout(() => {
+      _scheduledUiRefreshTimer = 0;
+      _scheduledUiRefreshRaf = requestAnimationFrame(flushScheduledUiRefresh);
+    }, UI_REFRESH_MIN_INTERVAL_MS - since);
+  }
 }
 
 // Filter control handlers

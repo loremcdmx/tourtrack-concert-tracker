@@ -15,11 +15,19 @@ function _normText(s) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+const _splitBillPartsCache = new Map();
 function _splitBillParts(s) {
-  return _normText(s)
+  const key = String(s || '');
+  const cached = _splitBillPartsCache.get(key);
+  if (cached) return cached;
+  const out = _normText(key)
     .split(/\s*(?:,|\/|\+| x | with | feat\.?| ft\.?| and )\s*/i)
     .map(v => v.trim())
     .filter(Boolean);
+  // Cap the cache to avoid unbounded growth if callers feed unique strings.
+  if (_splitBillPartsCache.size >= 2048) _splitBillPartsCache.clear();
+  _splitBillPartsCache.set(key, out);
+  return out;
 }
 function _uniqueCI(list) {
   const seen = new Set();
@@ -231,27 +239,38 @@ function _isCleanEvNameMatch(alias, evName) {
   const w = after.split(/[\s\-:,.!?()[\]\/]+/)[0].toLowerCase();
   return _EV_QUALIFIER.has(w);
 }
+// Core matcher driven by pre-computed inputs. Callers that iterate the same
+// (artist × lineup) grid — e.g. scoreFestivals across 400 artists × 20 lineup
+// entries per festival — can compute each side's aliases / target / parts
+// once and hand them in, avoiding O(A × L) repeated normalization.
+function _attractionMatchesArtistFast(aliases, target, parts) {
+  if (!target) return false;
+  for (const alias of aliases) {
+    if (!alias) continue;
+    if (target === alias) return true;
+    let hit = false;
+    for (const part of parts) {
+      if (part === alias) { hit = true; break; }
+      if (!_hasBoundaryMatch(alias, part)) continue;
+      const remainder = part.replace(_wordBoundaryRe(alias), ' ').replace(/\s+/g, ' ').trim();
+      if (remainder && FALSE_ATTRACTION_CONTEXT_RE.test(remainder)) continue;
+      if (_tokenOverlap(alias, part) >= 0.7) { hit = true; break; }
+    }
+    if (hit) return true;
+    if (_hasBoundaryMatch(alias, target)) {
+      const remainder = target.replace(_wordBoundaryRe(alias), ' ').replace(/\s+/g, ' ').trim();
+      if (remainder && FALSE_ATTRACTION_CONTEXT_RE.test(remainder)) continue;
+      if (_tokenOverlap(alias, target) >= 0.7) return true;
+    }
+  }
+  return false;
+}
+
 function _attractionMatchesArtist(artist, attractionName) {
   const target = _normText(attractionName);
   if (!target) return false;
   const parts = _splitBillParts(attractionName);
-  return _artistAliases(artist).some(alias => {
-    if (!alias) return false;
-    if (target === alias) return true;
-    if (parts.some(part => {
-      if (part === alias) return true;
-      if (!_hasBoundaryMatch(alias, part)) return false;
-      const remainder = part.replace(_wordBoundaryRe(alias), ' ').replace(/\s+/g, ' ').trim();
-      if (remainder && FALSE_ATTRACTION_CONTEXT_RE.test(remainder)) return false;
-      return _tokenOverlap(alias, part) >= 0.7;
-    })) return true;
-    if (_hasBoundaryMatch(alias, target)) {
-      const remainder = target.replace(_wordBoundaryRe(alias), ' ').replace(/\s+/g, ' ').trim();
-      if (remainder && FALSE_ATTRACTION_CONTEXT_RE.test(remainder)) return false;
-      if (_tokenOverlap(alias, target) >= 0.7) return true;
-    }
-    return false;
-  });
+  return _attractionMatchesArtistFast(_artistAliases(artist), target, parts);
 }
 function _eventNameLooksLikeArtistShow(artist, evName) {
   const norm = _normText(evName);

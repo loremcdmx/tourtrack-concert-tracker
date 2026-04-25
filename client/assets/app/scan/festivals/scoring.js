@@ -19,17 +19,36 @@ function scoreFestivals() {
   const playsTotal = Object.values(ARTIST_PLAYS).reduce((sum, value) => sum + value, 0);
   const hasPlays = playsTotal > 0;
 
+  // Pre-compute alias sets for every artist once. Previously done 20× per
+  // festival (once per lineup entry) per artist — cost scaled as
+  // O(festivals × lineup × artists × alias-build). Now it's O(artists).
+  const artistAliasPairs = ARTISTS
+    .filter(Boolean)
+    .map(artist => ({ artist, aliases: _artistAliases(artist) }));
+
   for (const festival of festivals) {
     const lineup = _resolvedFestivalLineup(festival);
     festival.lineupResolved = lineup;
     festival.linkedShows = _festivalLinkedConcerts(festival).length;
 
+    const lineupSource = lineup.length ? lineup : [festival.name || ''];
+    // Normalize lineup entries once per festival instead of once per (artist,
+    // lineup entry) pair inside _attractionMatchesArtist.
+    const lineupTargets = [];
+    for (const name of lineupSource) {
+      const target = _normText(name || '');
+      if (!target) continue;
+      lineupTargets.push({ target, parts: _splitBillParts(name || '') });
+    }
+
     const matched = [];
     let rawScore = 0;
-    ARTISTS.forEach(artist => {
-      if (!artist) return;
-      const hit = _lineupArtistHit(artist, lineup) || (!lineup.length && _lineupArtistHit(artist, [festival.name || '']));
-      if (!hit) return;
+    for (const { artist, aliases } of artistAliasPairs) {
+      let hit = false;
+      for (const { target, parts } of lineupTargets) {
+        if (_attractionMatchesArtistFast(aliases, target, parts)) { hit = true; break; }
+      }
+      if (!hit) continue;
 
       const weight = festivalArtistWeight(artist, hasPlays);
       matched.push({
@@ -38,7 +57,7 @@ function scoreFestivals() {
         weight,
       });
       rawScore += weight;
-    });
+    }
 
     if (matched.length >= 2) rawScore += matched.length * 1.5;
     festival.matched = matched.sort((a, b) => b.weight - a.weight);
