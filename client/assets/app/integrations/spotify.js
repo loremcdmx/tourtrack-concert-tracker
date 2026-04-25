@@ -732,6 +732,38 @@ async function checkIDBCache() {
   }
 }
 
+// Pull a fresh festival snapshot in the background using the same worker
+// pool as a full scan, but without the concert-scan phase. Triggered when
+// instantResume loads a festival cache whose version no longer matches
+// FEST_VER (e.g. after shipping new country sweeps). Keeps the user on their
+// stale-but-visible data until the new data lands, then re-renders.
+async function _autoRefreshFestivals() {
+  if (!API_KEY) return;
+  scanAborted = false;
+  const runtimeOwned = typeof window._rateLimitedWait !== 'function';
+  let runtime = null;
+  if (runtimeOwned && typeof createScanRuntime === 'function' && typeof installScanRuntime === 'function') {
+    runtime = installScanRuntime(createScanRuntime());
+  }
+  try {
+    if (typeof setStatus === 'function') setStatus('Refreshing festivals in background…', false);
+    await fetchFestivalsData();
+    const today = new Date().toISOString().split('T')[0];
+    festivals = deduplicateFestivals(festivals.filter(f => f.date >= today));
+    if (typeof scoreFestivals === 'function' && festivals.length) scoreFestivals();
+    const now = Date.now();
+    const cHash = typeof countryHash === 'function' ? countryHash() : '';
+    DB.put('meta', 'festivals', { ts: now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
+    if (typeof persistData === 'function') persistData();
+    if (typeof buildCalChips === 'function') buildCalChips();
+    if (typeof renderCalendar === 'function') renderCalendar();
+    if (typeof renderMap === 'function') renderMap();
+    if (typeof setStatus === 'function') setStatus(`Festivals refreshed: ${festivals.length} on file`, true);
+  } finally {
+    if (runtimeOwned && typeof clearScanRuntime === 'function') clearScanRuntime();
+  }
+}
+
 // Rebuild concerts + festivals from IDB cache instantly
 async function instantResume(opts = {}) {
   if (!opts.manual && hasOnboardManualIntent()) return false;
@@ -826,8 +858,21 @@ async function instantResume(opts = {}) {
     concerts = deduplicateConcerts(concerts);
     applyScenarioAResultFilter();
 
-    // Rebuild festivals from IDB meta cache (already fetched above)
+    // Rebuild festivals from IDB meta cache (already fetched above). If the
+    // cached record is on an older FEST_VER we still load it — stale UI is
+    // better than empty — but schedule a silent background refresh so the
+    // new sweep logic (extra country-level passes, MX/LatAm/APAC) actually
+    // runs without the user having to click "Import festivals".
     if (fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => f.date >= today));
+    const festCacheStale = !fc || !fc.data || fc.ver !== FEST_VER;
+    if (festCacheStale && !window._festRefreshRunning) {
+      window._festRefreshRunning = true;
+      setTimeout(() => {
+        _autoRefreshFestivals()
+          .catch(err => dblog && dblog('warn', `Auto fest refresh failed: ${err?.message || err}`))
+          .finally(() => { window._festRefreshRunning = false; });
+      }, 600);
+    }
 
     cacheTimestamp = Date.now();
 
