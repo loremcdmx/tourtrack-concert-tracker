@@ -158,10 +158,23 @@ function _titleCaseFestivalName(text) {
     })
     .join(' ');
 }
+const _canonicalFestivalNameCache = new Map();
 function _canonicalFestivalName(candidates) {
-  const list = _uniqueCI((Array.isArray(candidates) ? candidates : [candidates]).filter(Boolean));
+  const inputList = (Array.isArray(candidates) ? candidates : [candidates]).filter(Boolean);
+  if (!inputList.length) return '';
+  // Cache by the exact candidate sequence — same TM event / duplicate festival
+  // records hit this function repeatedly during scan ingest + dedup.
+  const cacheKey = inputList.join('');
+  const cached = _canonicalFestivalNameCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const list = _uniqueCI(inputList);
   const firstKnown = list.length ? _knownFestivalNameFromText(list[0]) : '';
-  if (firstKnown) return firstKnown;
+  if (firstKnown) {
+    if (_canonicalFestivalNameCache.size >= 4096) _canonicalFestivalNameCache.clear();
+    _canonicalFestivalNameCache.set(cacheKey, firstKnown);
+    return firstKnown;
+  }
   let bestLabel = '';
   let bestScore = -Infinity;
   list.forEach((candidate, idx) => {
@@ -190,7 +203,10 @@ function _canonicalFestivalName(candidates) {
       bestScore = score;
     }
   });
-  return bestLabel || list[0] || '';
+  const result = bestLabel || list[0] || '';
+  if (_canonicalFestivalNameCache.size >= 4096) _canonicalFestivalNameCache.clear();
+  _canonicalFestivalNameCache.set(cacheKey, result);
+  return result;
 }
 function _isFestivalSelfReference(candidate, festName) {
   const cand = _festivalBaseName(candidate);

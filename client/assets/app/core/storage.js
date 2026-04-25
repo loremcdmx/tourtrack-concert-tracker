@@ -327,6 +327,28 @@ function persistData() {
   if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
 }
 
+// Coalesces bursts of persistData() calls (retryAllErrors loop, rapid
+// refresh-area clicks) into a single write after two animation frames.
+let _persistDataScheduled = false;
+function persistDataDeferred() {
+  if (_persistDataScheduled) return;
+  _persistDataScheduled = true;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      _persistDataScheduled = false;
+      persistData();
+    });
+  });
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (_persistDataScheduled) {
+      _persistDataScheduled = false;
+      try { persistData(); } catch (e) {}
+    }
+  });
+}
+
 function restore() {
   try {
     ARTIST_TRACKS = {};

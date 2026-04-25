@@ -1,5 +1,31 @@
 'use strict';
 
+// Cached (date|venueCore|cityCore) → artist list lookup. The drawer wants
+// "other tracked artists sharing this date + venue + city" which used to
+// require a full scan of the concerts array per click (~2–5 ms on ~5k
+// concerts). Rebuild only when concerts reference changes.
+let _drawerSameDayIndex = null;
+let _drawerSameDayIndexList = null;
+function _drawerSameDayPeers(ev) {
+  if (!ev || !ev.date) return [];
+  if (_drawerSameDayIndexList !== concerts) {
+    const index = new Map();
+    for (const c of concerts) {
+      if (!c || !c.date) continue;
+      const key = `${c.date}|${_venueCore(c.venue || '')}|${_cityCore(c.city || '')}`;
+      let bucket = index.get(key);
+      if (!bucket) { bucket = []; index.set(key, bucket); }
+      bucket.push(c.artist);
+    }
+    _drawerSameDayIndex = index;
+    _drawerSameDayIndexList = concerts;
+  }
+  const key = `${ev.date}|${_venueCore(ev.venue || '')}|${_cityCore(ev.city || '')}`;
+  const bucket = _drawerSameDayIndex.get(key) || [];
+  const self = _normText(ev.artist || '');
+  return _uniqueCI(bucket.filter(a => _normText(a) !== self));
+}
+
 function openConcertDrawer(ev) {
   const drawer = document.getElementById('concert-drawer');
   const backdrop = document.getElementById('cdr-backdrop');
@@ -22,13 +48,7 @@ function openConcertDrawer(ev) {
     (c.date === ev.date && _venueCore(c.venue) === _venueCore(ev.venue) && _cityCore(c.city) === _cityCore(ev.city))
   ));
   const strip = upcomingShows.slice(Math.max(0, currentIdx - 2), Math.max(0, currentIdx - 2) + 6);
-  const sameDayPeers = _uniqueCI(concerts
-    .filter(c =>
-      c.date === ev.date &&
-      _normText(c.artist) !== _normText(ev.artist) &&
-      _venueCore(c.venue) === _venueCore(ev.venue) &&
-      _cityCore(c.city) === _cityCore(ev.city))
-    .map(c => c.artist));
+  const sameDayPeers = _drawerSameDayPeers(ev);
   const festLineup = fest ? (fest.lineupResolved || _resolvedFestivalLineup(fest)) : [];
   const festTracked = fest ? (fest.matched || []) : [];
   const ticketUrl = fest?.url || ev.url || '';

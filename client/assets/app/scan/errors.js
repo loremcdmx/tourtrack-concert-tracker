@@ -73,7 +73,9 @@ async function retrySingleArtist(artist) {
     delete fetchErrors[artist];
     dblog('ok', `Manual retry: "${artist}" succeeded — ${upcoming.length} shows`);
     setStatus(`✓ ${artist}: ${upcoming.length} shows`, true);
-    persistData();
+    // During retryAllErrors() this fires N times back-to-back; defer so the
+    // whole batch coalesces into a single localStorage write.
+    persistDataDeferred();
     scheduleUiRefresh();
   } catch(e) {
     if (fetchErrors[artist]) {
