@@ -480,6 +480,7 @@ function syncOnboardCacheSummary() {
         : 0,
       cacheTimestamp: Number(cacheTimestamp) || 0,
       latestPlaylistUrl: getOnboardHistory()[0]?.url || '',
+      cHash: typeof countryHash === 'function' ? countryHash() : '',
       ts: Date.now(),
     };
     localStorage.setItem(ONBOARD_CACHE_SUMMARY_KEY, JSON.stringify(summary));
@@ -704,31 +705,45 @@ async function checkIDBCache() {
     return null;
   }
   try {
-    const keys = await DB.keys('artists');
-    const artistKeys = keys.filter(key => key !== '__ping__');
-    if (!artistKeys.length) {
+    const [keys, records] = await Promise.all([
+      DB.keys('artists'),
+      DB.getAll('artists'),
+    ]);
+    const artistRecords = [];
+    const pairCount = Math.min(keys.length, records.length);
+    for (let i = 0; i < pairCount; i++) {
+      if (keys[i] === '__ping__') continue;
+      if (!scanRecordMatchesCurrentCountryScope(records[i])) continue;
+      artistRecords.push(records[i]);
+    }
+    if (!artistRecords.length) {
       clearOnboardCacheSummary();
       return null;
     }
 
     const today = new Date().toISOString().split('T')[0];
-    let festCount = Number(cachedSummary?.festCount) || 0;
+    let festCount = 0;
     try {
       const fc = await DB.get('meta', 'festivals');
-      if (Array.isArray(fc?.data)) {
+      if (fc?.cHash === countryHash() && Array.isArray(fc?.data)) {
         festCount = fc.data.filter(fest => fest?.date && fest.date >= today).length;
       }
     } catch {}
     return {
-      artistCount: artistKeys.length,
-      concertCount: Number(cachedSummary?.concertCount) || 0,
+      artistCount: artistRecords.length,
+      concertCount: artistRecords.reduce((sum, record) => (
+        sum + (Array.isArray(record?.shows)
+          ? record.shows.filter(show => show?.date && show.date >= today).length
+          : 0)
+      ), 0),
       festCount,
       cacheTimestamp: Number(cachedSummary?.cacheTimestamp) || 0,
       latestPlaylistUrl: cachedSummary?.latestPlaylistUrl || '',
       ts: Number(cachedSummary?.ts) || 0,
+      cHash: countryHash(),
     };
   } catch {
-    return cachedSummary || null;
+    return cachedSummary?.cHash === countryHash() ? cachedSummary : null;
   }
 }
 
@@ -840,8 +855,15 @@ async function instantResume(opts = {}) {
     for (let i = 0; i < pairCount; i++) {
       if (keys[i] === '__ping__') continue;
       if (!records[i]) continue;
+      if (!scanRecordMatchesCurrentCountryScope(records[i])) continue;
       artistKeys.push(keys[i]);
       artistRecords.push(records[i]);
+    }
+    if (!artistRecords.length) {
+      clearOnboardCacheSummary();
+      if (btn) { btn.disabled = false; btn.textContent = '▶ Resume session'; }
+      showInitialOnboardImport();
+      return false;
     }
     setScannedArtists(artistKeys);
     if (!TRACKED_ARTISTS.length) {
@@ -863,8 +885,9 @@ async function instantResume(opts = {}) {
     // better than empty — but schedule a silent background refresh so the
     // new sweep logic (extra country-level passes, MX/LatAm/APAC) actually
     // runs without the user having to click "Import festivals".
-    if (fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => f.date >= today));
-    const festCacheStale = !fc || !fc.data || fc.ver !== FEST_VER;
+    const festScopeOk = fc?.cHash === countryHash();
+    if (festScopeOk && fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => f.date >= today));
+    const festCacheStale = !festScopeOk || !fc || !fc.data || fc.ver !== FEST_VER;
     if (festCacheStale && !window._festRefreshRunning) {
       window._festRefreshRunning = true;
       setTimeout(() => {

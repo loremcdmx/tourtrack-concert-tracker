@@ -58,6 +58,63 @@ function countryHash() {
   return countryMode + ':' + [...set].sort().join(',');
 }
 
+function scanRecordMatchesCurrentCountryScope(record) {
+  return !!record && record.cHash === countryHash();
+}
+
+function isLegacyUkOnlyCountryScope() {
+  if (countryMode !== 'include' || !includeCountries || includeCountries.size === 0) return false;
+  const selected = [...includeCountries].map(code => String(code || '').toUpperCase());
+  return selected.every(code => code === 'GB' || code === 'IE');
+}
+
+function scanSnapshotLooksUkOnly() {
+  const countries = new Set();
+  for (const item of [...(concerts || []), ...(festivals || [])]) {
+    const code = String(item?.country || '').toUpperCase();
+    if (code) countries.add(code);
+  }
+  if (!countries.size) return false;
+  return [...countries].every(code => code === 'GB' || code === 'IE');
+}
+
+function clearLocalScanSnapshot() {
+  concerts = [];
+  festivals = [];
+  SCANNED_ARTISTS = [];
+  cacheTimestamp = 0;
+  try {
+    localStorage.removeItem('tt_concerts');
+    localStorage.removeItem('tt_festivals');
+    localStorage.removeItem('tt_scanned_artists');
+    localStorage.removeItem('tt_cachets');
+    localStorage.removeItem('tt_data_chash');
+  } catch(e) {}
+}
+
+function normalizeScenarioAGeoState() {
+  if (!isScenarioAProductMode()) return false;
+  const resetSearchScope = isLegacyUkOnlyCountryScope();
+  const resetDisplayScope = geoPreset === 'ukie';
+  if (!resetSearchScope && !resetDisplayScope) return false;
+
+  if (resetSearchScope) {
+    countryMode = 'world';
+    includeCountries = new Set();
+    excludeCountries = new Set();
+  }
+  if (resetDisplayScope) geoPreset = 'all';
+
+  try {
+    localStorage.setItem('tt_cmode', countryMode);
+    localStorage.setItem('tt_inc', JSON.stringify([...includeCountries]));
+    localStorage.setItem('tt_exc', JSON.stringify([...excludeCountries]));
+    localStorage.setItem('tt_geo_preset', geoPreset);
+  } catch(e) {}
+
+  return resetSearchScope;
+}
+
 const TTL_ARTIST = 24 * 3600e3;  // base freshness window for artist scan cache
 const TTL_ARTIST_TOURING = 18 * 3600e3; // refresh active tours more often
 const TTL_ARTIST_HOT = 12 * 3600e3;     // very active artists stay especially fresh
@@ -323,6 +380,7 @@ function persistData() {
     localStorage.setItem('tt_concerts',  JSON.stringify(concerts));
     localStorage.setItem('tt_festivals', JSON.stringify(festivals));
     localStorage.setItem('tt_scanned_artists', JSON.stringify(SCANNED_ARTISTS));
+    localStorage.setItem('tt_data_chash', countryHash());
   } catch(e) {}
   if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
 }
@@ -394,17 +452,24 @@ function restore() {
     includeCountries = new Set(JSON.parse(localStorage.getItem('tt_inc') || '["GB","DE","FR","NL","BE","ES","IT","SE","DK","NO","FI","PL","CZ","AT","CH","PT","IE","HU","RO","GR","HR","SK","BG","RS","LT","LV","EE","IS","LU","UA","TR"]'));
     excludeCountries = new Set(JSON.parse(localStorage.getItem('tt_exc') || '[]'));
     hiddenArtists    = JSON.parse(localStorage.getItem('tt_hidden') || '{}');
+    const storedDataHash = localStorage.getItem('tt_data_chash') || '';
     concerts         = JSON.parse(localStorage.getItem('tt_concerts') || '[]');
     festivals        = JSON.parse(localStorage.getItem('tt_festivals') || '[]');
     SCANNED_ARTISTS  = JSON.parse(localStorage.getItem('tt_scanned_artists') || '[]');
     cacheTimestamp   = parseInt(localStorage.getItem('tt_cachets') || '0', 10);
     geoPreset        = localStorage.getItem('tt_geo_preset') || 'all';
     artistPreset     = localStorage.getItem('tt_artist_preset') || 'all';
+    const resetScanSnapshot = normalizeScenarioAGeoState();
+    const legacyUkOnlySnapshot = isScenarioAProductMode() && !storedDataHash && scanSnapshotLooksUkOnly();
+    const scanSnapshotCleared = resetScanSnapshot || legacyUkOnlySnapshot || (storedDataHash && storedDataHash !== countryHash());
+    if (scanSnapshotCleared) {
+      clearLocalScanSnapshot();
+    }
     // Migrate from old keys
     if (!ARTISTS.length)    ARTISTS   = JSON.parse(localStorage.getItem('tt3_artists') || '[]');
-    if (!concerts.length)   concerts  = JSON.parse(localStorage.getItem('tt3_concerts') || '[]');
-    if (!festivals.length)  festivals = JSON.parse(localStorage.getItem('tt3_festivals') || '[]');
-    if (!cacheTimestamp)    cacheTimestamp = parseInt(localStorage.getItem('tt3_cachets') || '0', 10);
+    if (!scanSnapshotCleared && !concerts.length)   concerts  = JSON.parse(localStorage.getItem('tt3_concerts') || '[]');
+    if (!scanSnapshotCleared && !festivals.length)  festivals = JSON.parse(localStorage.getItem('tt3_festivals') || '[]');
+    if (!scanSnapshotCleared && !cacheTimestamp)    cacheTimestamp = parseInt(localStorage.getItem('tt3_cachets') || '0', 10);
     // Migrate old exclude-mode default (US,JP,AU excluded) → include EU by default
     const oldExc = localStorage.getItem('tt3_exc') || localStorage.getItem('tt_exc_legacy');
     if (!hiddenArtists || typeof hiddenArtists !== 'object') hiddenArtists = {};
