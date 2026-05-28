@@ -2979,3 +2979,191 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
     flex-wrap: wrap;
   }
 }
+
+/* Scenario A onboarding: compact product surface, not a hero page. */
+body.scenario-a .onboard {
+  padding: clamp(14px, 3vw, 28px);
+  background: rgba(6,7,9,.96);
+}
+body.scenario-a .onboard-card {
+  max-width: 760px;
+  padding: clamp(18px, 3vw, 26px);
+  gap: 10px;
+}
+body.scenario-a .onboard-logo {
+  font-size: clamp(1.55rem, 4vw, 2rem);
+  line-height: 1;
+}
+body.scenario-a .onboard-headnote {
+  margin: 2px 0 8px;
+  font-size: .72rem;
+  color: #8f9098;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+body.scenario-a #onboard-import-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "title"
+    "sub"
+    "quick"
+    "cutoff"
+    "status"
+    "progress"
+    "history"
+    "skip";
+  gap: 10px;
+}
+body.scenario-a #onboard-import-panel > .onboard-title { grid-area: title; }
+body.scenario-a #onboard-import-panel > .onboard-sub { grid-area: sub; }
+body.scenario-a #onboard-import-panel > .onboard-input-wrap { display: none; }
+body.scenario-a #onboard-import-panel > .onboard-mintracks-row { grid-area: cutoff; }
+body.scenario-a #onboard-import-panel > .onboard-status { grid-area: status; }
+body.scenario-a #onboard-import-panel > .onboard-prog-wrap { grid-area: progress; }
+body.scenario-a #onboard-import-panel > #onboard-history-wrap { grid-area: history; }
+body.scenario-a #onboard-import-panel > #onboard-quickload { grid-area: quick; }
+body.scenario-a #onboard-import-panel > .onboard-skip { grid-area: skip; }
+body.scenario-a #onboard-import-panel > #onboard-auth-wrap,
+body.scenario-a #onboard-import-panel > #onboard-setup-note {
+  grid-column: 1;
+  grid-row: auto;
+}
+body.scenario-a .onboard-title {
+  max-width: none;
+  margin: 0;
+  font-size: clamp(1.55rem, 3.6vw, 2.05rem);
+  line-height: 1.08;
+}
+body.scenario-a .onboard-sub {
+  max-width: 52rem;
+  margin: 0;
+  font-size: .9rem;
+  line-height: 1.55;
+  color: #b9bbc3;
+}
+body.scenario-a .onboard-quickload {
+  margin: 2px 0 0;
+  padding-top: 0;
+  border-top: 0;
+}
+body.scenario-a .onboard.onboard-loading #onboard-quickload {
+  display: none !important;
+}
+body.scenario-a .onboard-quickload .onboard-divider {
+  display: none;
+}
+body.scenario-a .onboard-history-label {
+  margin: 0 0 8px;
+  font-size: .68rem;
+  letter-spacing: .06em;
+}
+body.scenario-a .onboard-pl {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 42px;
+  align-items: stretch;
+  min-height: 86px;
+  overflow: hidden;
+  background: rgba(21,26,20,.94);
+  border-color: rgba(200,255,95,.34);
+}
+body.scenario-a .onboard-pl:hover,
+body.scenario-a .onboard-pl.is-active {
+  background: rgba(31,39,26,.96);
+  border-color: rgba(200,255,95,.78);
+}
+body.scenario-a .onboard-pl-mosaic,
+body.scenario-a .onboard-pl-canvas {
+  width: 52px !important;
+  height: 52px !important;
+  margin: 16px 0 16px 12px;
+  border-radius: 8px;
+  align-self: center;
+}
+body.scenario-a .onboard-pl-body {
+  min-width: 0;
+  padding: 13px 12px 13px 14px;
+  justify-content: center;
+}
+body.scenario-a .onboard-pl-name {
+  font-size: 1rem;
+  line-height: 1.12;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.scenario-a .onboard-pl-meta {
+  font-size: .76rem;
+  line-height: 1.35;
+  color: #a8abb3;
+}
+body.scenario-a .onboard-pl-chips {
+  margin-top: 6px;
+  max-width: 100%;
+}
+body.scenario-a .onboard-pl-chip {
+  max-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .68rem;
+  padding: 2px 7px;
+}
+body.scenario-a .onboard-pl-arrow {
+  min-width: 42px;
+  padding: 0;
+  color: #c8ff5f;
+}
+body.scenario-a .onboard-mintracks-row {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(56,56,63,.92);
+  border-radius: 8px;
+  background: rgba(24,24,30,.48);
+}
+body.scenario-a .onboard-mintracks-label {
+  font-size: .78rem;
+}
+body.scenario-a .onboard-mintracks-hint {
+  font-size: .76rem;
+}
+body.scenario-a .onboard-status {
+  padding: 10px 12px;
+  font-size: .82rem;
+  line-height: 1.45;
+}
+body.scenario-a .onboard-prog-wrap {
+  padding: 12px;
+}
+body.scenario-a .onboard-prog-info {
+  font-size: .8rem;
+}
+body.scenario-a #onboard-minilog {
+  max-height: 96px !important;
+}
+body.scenario-a .onboard-load-save {
+  margin-top: 2px;
+  padding-top: 12px;
+  font-size: .8rem;
+  line-height: 1.4;
+}
+@media (max-width: 620px) {
+  body.scenario-a .onboard-card {
+    padding: 16px;
+  }
+  body.scenario-a .onboard-pl {
+    grid-template-columns: 52px minmax(0, 1fr) 34px;
+  }
+  body.scenario-a .onboard-pl-mosaic,
+  body.scenario-a .onboard-pl-canvas {
+    width: 42px !important;
+    height: 42px !important;
+    margin-left: 9px;
+  }
+  body.scenario-a .onboard-pl-body {
+    padding: 11px 8px 11px 10px;
+  }
+  body.scenario-a .onboard-pl-chips {
+    display: none;
+  }
+}

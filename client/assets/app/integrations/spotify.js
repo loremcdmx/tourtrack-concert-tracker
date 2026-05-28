@@ -47,7 +47,7 @@ function applyScenarioAProductMode() {
   const profileDialog = document.getElementById('prof-dialog-bg');
   const importLabel = document.querySelector('#stab-pane-import .sset-label');
 
-  if (onboardHeadnote) onboardHeadnote.textContent = 'Scenario A - pinned playlist only';
+  if (onboardHeadnote) onboardHeadnote.textContent = 'Pinned Spotify playlist';
   if (onboardTitle) onboardTitle.innerHTML = DEFAULT_ONBOARD_TITLE;
   if (onboardSub) onboardSub.textContent = DEFAULT_ONBOARD_SUB;
   if (onboardInput) {
@@ -1129,6 +1129,7 @@ function onboardLog(msg, type) {
 }
 
 function onboardShowProgress(label) {
+  document.getElementById('onboard')?.classList.add('onboard-loading');
   const wrap = document.getElementById('onboard-prog-wrap');
   if (wrap) wrap.classList.add('visible');
   const fill = document.getElementById('onboard-prog-fill');
@@ -1165,6 +1166,7 @@ function onboardShowProgress(label) {
 }
 
 function onboardHideProgress() {
+  document.getElementById('onboard')?.classList.remove('onboard-loading');
   const wrap = document.getElementById('onboard-prog-wrap');
   if (wrap) wrap.classList.remove('visible');
   clearInterval(_onboardTimerInt);
