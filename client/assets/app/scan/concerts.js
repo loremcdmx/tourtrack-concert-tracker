@@ -21,7 +21,10 @@ let _visibleConcertsCacheList = null;
 let _visibleConcertsCacheLength = -1;
 let _visibleConcertsCacheFirst = null;
 let _visibleConcertsCacheLast = null;
-let _visibleConcertsCacheArtistSignature = '';
+let _visibleConcertsCacheArtistList = null;
+let _visibleConcertsCacheArtistLength = -1;
+let _visibleConcertsCacheArtistFirst = '';
+let _visibleConcertsCacheArtistLast = '';
 let _visibleConcertsCacheShowDupes = null;
 let _visibleConcertsCache = [];
 
@@ -39,15 +42,19 @@ function visibleConcerts() {
   const len = list.length;
   const first = len ? list[0] : null;
   const last = len ? list[len - 1] : null;
-  const artistSignature = isScenarioAProductMode()
-    ? (Array.isArray(ARTISTS) ? ARTISTS.map(name => String(name || '')).join('\u0001') : '')
-    : '';
+  const scenarioArtists = isScenarioAProductMode() && Array.isArray(ARTISTS) ? ARTISTS : null;
+  const artistLength = scenarioArtists ? scenarioArtists.length : -1;
+  const artistFirst = artistLength ? String(scenarioArtists[0] || '') : '';
+  const artistLast = artistLength ? String(scenarioArtists[artistLength - 1] || '') : '';
   if (
     _visibleConcertsCacheList === list &&
     _visibleConcertsCacheLength === len &&
     _visibleConcertsCacheFirst === first &&
     _visibleConcertsCacheLast === last &&
-    _visibleConcertsCacheArtistSignature === artistSignature &&
+    _visibleConcertsCacheArtistList === scenarioArtists &&
+    _visibleConcertsCacheArtistLength === artistLength &&
+    _visibleConcertsCacheArtistFirst === artistFirst &&
+    _visibleConcertsCacheArtistLast === artistLast &&
     _visibleConcertsCacheShowDupes === showPossibleDupes
   ) {
     return _visibleConcertsCache;
@@ -60,7 +67,10 @@ function visibleConcerts() {
   _visibleConcertsCacheLength = len;
   _visibleConcertsCacheFirst = first;
   _visibleConcertsCacheLast = last;
-  _visibleConcertsCacheArtistSignature = artistSignature;
+  _visibleConcertsCacheArtistList = scenarioArtists;
+  _visibleConcertsCacheArtistLength = artistLength;
+  _visibleConcertsCacheArtistFirst = artistFirst;
+  _visibleConcertsCacheArtistLast = artistLast;
   _visibleConcertsCacheShowDupes = showPossibleDupes;
   return _visibleConcertsCache;
 }

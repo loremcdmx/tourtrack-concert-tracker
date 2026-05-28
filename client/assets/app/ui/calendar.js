@@ -194,7 +194,6 @@ function artistListPosition(artistName) {
 }
 
 let _artistPlayLookupSource = null;
-let _artistPlayLookupSignature = '';
 let _artistPlayLookupMap = new Map();
 let _artistPlayLookupHasPositive = false;
 
@@ -223,11 +222,10 @@ function _artistFoldedKey(value) {
 
 function getArtistPlayLookup() {
   const source = ARTIST_PLAYS || {};
-  const keys = Object.keys(source).sort();
-  const signature = keys.map(key => `${key}:${_toPlayNumber(source[key])}`).join('|');
-  if (_artistPlayLookupSource === source && _artistPlayLookupSignature === signature) {
+  if (_artistPlayLookupSource === source) {
     return { map: _artistPlayLookupMap, hasPositive: _artistPlayLookupHasPositive };
   }
+  const keys = Object.keys(source).sort();
 
   const map = new Map();
   let hasPositive = false;
@@ -245,7 +243,6 @@ function getArtistPlayLookup() {
   });
 
   _artistPlayLookupSource = source;
-  _artistPlayLookupSignature = signature;
   _artistPlayLookupMap = map;
   _artistPlayLookupHasPositive = hasPositive;
   return { map, hasPositive };
@@ -271,9 +268,15 @@ function hasArtistPlayData() {
   return getArtistPlayLookup().hasPositive;
 }
 
-let _trackedArtistLookupSignature = '';
+let _trackedArtistLookupTrackedRef = null;
+let _trackedArtistLookupScannedRef = null;
+let _trackedArtistLookupArtistsRef = null;
+let _trackedArtistLookupPlayRef = null;
 let _trackedArtistLookupSet = new Set();
-let _artistScoringMetaSignature = '';
+let _artistScoringMetaTrackedRef = null;
+let _artistScoringMetaScannedRef = null;
+let _artistScoringMetaArtistsRef = null;
+let _artistScoringMetaPlayRef = null;
 let _artistScoringMeta = {
   list: [],
   index: new Map(),
@@ -293,21 +296,26 @@ function getTrackedArtistLookup() {
   const tracked = Array.isArray(TRACKED_ARTISTS) ? TRACKED_ARTISTS : [];
   const scanned = Array.isArray(SCANNED_ARTISTS) ? SCANNED_ARTISTS : [];
   const artists = Array.isArray(ARTISTS) ? ARTISTS : [];
-  const playKeys = Object.keys(ARTIST_PLAYS || {}).sort();
-  const signature = [
-    tracked.map(v => String(v || '')).join('\u0001'),
-    artists.map(v => String(v || '')).join('\u0001'),
-    scanned.map(v => String(v || '')).join('\u0001'),
-    playKeys.join('\u0001'),
-  ].join('\u0002');
-  if (signature === _trackedArtistLookupSignature) return _trackedArtistLookupSet;
+  const playSource = ARTIST_PLAYS || {};
+  if (
+    _trackedArtistLookupTrackedRef === tracked &&
+    _trackedArtistLookupScannedRef === scanned &&
+    _trackedArtistLookupArtistsRef === artists &&
+    _trackedArtistLookupPlayRef === playSource
+  ) {
+    return _trackedArtistLookupSet;
+  }
 
   const set = new Set();
   tracked.forEach(name => _addTrackedArtistKeys(set, name));
   artists.forEach(name => _addTrackedArtistKeys(set, name));
   scanned.forEach(name => _addTrackedArtistKeys(set, name));
+  const playKeys = Object.keys(playSource).sort();
   playKeys.forEach(name => _addTrackedArtistKeys(set, name));
-  _trackedArtistLookupSignature = signature;
+  _trackedArtistLookupTrackedRef = tracked;
+  _trackedArtistLookupScannedRef = scanned;
+  _trackedArtistLookupArtistsRef = artists;
+  _trackedArtistLookupPlayRef = playSource;
   _trackedArtistLookupSet = set;
   return set;
 }
@@ -316,16 +324,15 @@ function getArtistScoringMeta() {
   const tracked = Array.isArray(TRACKED_ARTISTS) ? TRACKED_ARTISTS : [];
   const scanned = Array.isArray(SCANNED_ARTISTS) ? SCANNED_ARTISTS : [];
   const artists = Array.isArray(ARTISTS) ? ARTISTS : [];
-  const playEntries = Object.keys(ARTIST_PLAYS || {})
-    .sort()
-    .map(key => `${key}:${_toPlayNumber(ARTIST_PLAYS[key])}`);
-  const signature = [
-    tracked.map(v => String(v || '')).join('\u0001'),
-    artists.map(v => String(v || '')).join('\u0001'),
-    scanned.map(v => String(v || '')).join('\u0001'),
-    playEntries.join('\u0001'),
-  ].join('\u0002');
-  if (signature === _artistScoringMetaSignature) return _artistScoringMeta;
+  const playSource = ARTIST_PLAYS || {};
+  if (
+    _artistScoringMetaTrackedRef === tracked &&
+    _artistScoringMetaScannedRef === scanned &&
+    _artistScoringMetaArtistsRef === artists &&
+    _artistScoringMetaPlayRef === playSource
+  ) {
+    return _artistScoringMeta;
+  }
 
   const list = [];
   const seen = new Set();
@@ -339,7 +346,8 @@ function getArtistScoringMeta() {
   tracked.forEach(addArtist);
   artists.forEach(addArtist);
   scanned.forEach(addArtist);
-  Object.keys(ARTIST_PLAYS || {}).sort().forEach(addArtist);
+  const playKeys = Object.keys(playSource).sort();
+  playKeys.forEach(addArtist);
 
   const index = new Map();
   const positiveRank = new Map();
@@ -364,7 +372,10 @@ function getArtistScoringMeta() {
     }
   });
 
-  _artistScoringMetaSignature = signature;
+  _artistScoringMetaTrackedRef = tracked;
+  _artistScoringMetaScannedRef = scanned;
+  _artistScoringMetaArtistsRef = artists;
+  _artistScoringMetaPlayRef = playSource;
   _artistScoringMeta = { list, index, positiveRank, positiveCount };
   return _artistScoringMeta;
 }

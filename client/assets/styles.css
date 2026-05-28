@@ -848,6 +848,76 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 .mx-tally {
   padding-top:7px;
 }
+@media (min-width: 761px) {
+  .cal-toolbar {
+    padding:10px 14px 11px;
+    gap:7px;
+  }
+  .cal-toolbar::after {
+    left:14px;
+    right:14px;
+  }
+  .cal-view-row {
+    gap:7px;
+  }
+  .date-row,
+  .cal-filter-bar,
+  .mx-sort-row {
+    flex-wrap:nowrap;
+    align-items:center;
+    min-height:30px;
+    padding:1px 0 1px 56px;
+    overflow-x:auto;
+    overflow-y:hidden;
+    scrollbar-width:thin;
+    scrollbar-color:rgba(200,255,95,.35) transparent;
+  }
+  .date-row::-webkit-scrollbar,
+  .cal-filter-bar::-webkit-scrollbar,
+  .mx-sort-row::-webkit-scrollbar {
+    height:3px;
+  }
+  .date-row::-webkit-scrollbar-thumb,
+  .cal-filter-bar::-webkit-scrollbar-thumb,
+  .mx-sort-row::-webkit-scrollbar-thumb {
+    background:rgba(200,255,95,.35);
+    border-radius:999px;
+  }
+  #cal-date-row::before,
+  #cal-date-row-extra::before,
+  #geo-preset-row::before,
+  #score-filter-row::before,
+  .mx-sort-row::before {
+    top:9px;
+    width:48px;
+  }
+  .chip,
+  .plays-chip,
+  .geo-qbtn,
+  .fsort-btn {
+    min-height:26px;
+    padding:5px 8px;
+    flex:0 0 auto;
+  }
+  #cal-type-row {
+    margin-left:6px;
+    flex:0 0 auto;
+  }
+  #cal-type-row .chip {
+    min-width:54px;
+  }
+  .cal-filter-sep {
+    height:24px;
+    flex:0 0 1px;
+  }
+  #ev-tally,
+  .mx-tally {
+    flex:0 0 auto;
+    margin-left:6px !important;
+    padding:0 2px 0 4px;
+    align-self:center;
+  }
+}
 .fsort-btn {
   min-height:28px;
   padding:5px 9px;
@@ -876,6 +946,8 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   border:1px solid transparent;
   border-bottom-color:rgba(255,255,255,.09);
   border-radius:8px;
+  content-visibility:auto;
+  contain-intrinsic-size:78px;
   transition:background .12s,border-color .12s;
 }
 .ev-row:hover {
@@ -1393,7 +1465,8 @@ details.adv-open > summary .settings-adv-summary-arrow { transform:rotate(180deg
 
 .msb-artist { display:flex; align-items:center; gap:8px; padding:7px 12px;
   cursor:pointer; transition:background .1s; border-bottom:1px solid var(--border);
-  border-left:2px solid transparent; position:relative; }
+  border-left:2px solid transparent; position:relative;
+  content-visibility:auto; contain-intrinsic-size:42px; }
 .msb-artist:hover { background:var(--s2); }
 .msb-artist.on { background:var(--s2); border-left-color:var(--accent); padding-left:10px; }
 .msb-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
@@ -1422,7 +1495,8 @@ details.adv-open > summary .settings-adv-summary-arrow { transform:rotate(180deg
 .fsort-btn.on { border-color:var(--fest); color:var(--fest); background:rgba(255,170,60,.07); }
 
 .fcard { padding:11px 14px; border-bottom:1px solid var(--border); cursor:pointer;
-  transition:background .1s; border-left:2px solid transparent; }
+  transition:background .1s; border-left:2px solid transparent;
+  content-visibility:auto; contain-intrinsic-size:88px; }
 .fcard:hover { background:var(--s2); }
 .fcard.hl { background:rgba(200,255,95,.04); border-left-color:var(--accent); padding-left:12px; }
 .fcard-top { display:flex; align-items:flex-start; gap:10px; margin-bottom:6px; }
@@ -2444,7 +2518,7 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 }
 .map-marker-avatar.has-image .map-marker-avatar__fallback { display:none; }
 
-.map-fest-marker-wrap { display:flex; flex-direction:column; align-items:center; gap:2px; pointer-events:none; }
+.map-fest-marker-wrap { display:flex; flex-direction:column; align-items:center; gap:2px; pointer-events:none; contain:layout paint style; }
 .map-fest-marker {
   display:inline-flex; align-items:center; gap:6px; min-width:0; max-width:220px;
   padding:4px 8px; border-radius:8px; background:rgba(5,6,9,.92);
@@ -2468,12 +2542,13 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 .map-fest-dot {
   border-radius:3px; border:1.5px solid var(--map-fest-color); background:var(--map-fest-bg);
   transform:rotate(45deg); box-shadow:0 0 0 2px rgba(5,6,9,.72),0 8px 18px rgba(0,0,0,.22);
+  contain:layout paint style;
 }
 .map-fest-cluster {
   display:flex; align-items:center; gap:7px; padding:4px 8px 4px 5px; border-radius:8px;
   border:1px solid var(--map-fest-color); background:rgba(5,6,9,.94);
   color:var(--map-fest-color); box-shadow:0 12px 28px rgba(0,0,0,.38),0 0 0 1px rgba(255,255,255,.04) inset;
-  cursor:pointer;
+  cursor:pointer; contain:layout paint style;
 }
 .map-fest-cluster__count {
   display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
@@ -2498,6 +2573,7 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
   position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
   border-radius:8px; background:rgba(8,10,14,.96); border:1px solid var(--map-cluster-color);
   color:var(--map-cluster-color); box-shadow:0 12px 28px rgba(0,0,0,.34), var(--map-cluster-shadow);
+  contain:layout paint style;
 }
 .map-cluster-marker__count {
   font-family:'DM Mono',monospace; font-size:.66rem; font-weight:700; line-height:1;
@@ -2512,6 +2588,7 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
   position:relative; display:flex; align-items:center; gap:6px; min-width:0;
   padding:4px 8px 4px 4px; border-radius:8px; background:rgba(8,10,14,.96);
   border:1px solid var(--map-marker-color); box-shadow:0 12px 28px rgba(0,0,0,.34), var(--map-marker-shadow);
+  contain:layout paint style;
 }
 .map-tour-marker__copy { min-width:0; display:flex; flex-direction:column; }
 .map-tour-marker__name {
@@ -2525,6 +2602,7 @@ details#geo-details[open] .geo-inner { margin-top:10px; }
 .map-tour-dot {
   border-radius:50%; background:var(--map-marker-color); border:1px solid rgba(8,10,14,.7);
   box-shadow:0 0 0 2px rgba(8,10,14,.88), var(--map-marker-shadow);
+  contain:layout paint style;
 }
 .map-tour-dot.is-tracked { box-shadow:0 0 0 3px rgba(8,10,14,.88), var(--map-marker-shadow); }
 
