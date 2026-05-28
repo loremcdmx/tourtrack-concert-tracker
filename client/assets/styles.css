@@ -194,6 +194,52 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   }
 }
 
+@media (max-width: 760px) {
+  header {
+    gap:.55rem;
+    padding:.72rem .75rem .65rem;
+  }
+  .logo {
+    width:100%;
+    font-size:1.18rem;
+    line-height:1;
+  }
+  .hd-status {
+    order:2;
+    width:100%;
+    flex:0 0 100%;
+    border-left:none;
+    padding-left:0;
+    gap:.45rem;
+  }
+  .hd-msg {
+    min-width:0;
+  }
+  .hd-right {
+    order:3;
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:.42rem;
+    overflow-x:visible;
+    padding-bottom:0;
+  }
+  .hd-progress {
+    grid-column:1 / -1;
+  }
+  .hd-right .btn {
+    width:100%;
+    min-width:0;
+    padding:8px 6px;
+    text-align:center;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .prof-bar {
+    order:4;
+  }
+}
+
 /* ── ONBOARDING OVERLAY ── */
 .onboard { position:fixed; inset:0; z-index:8000; background:var(--bg);
   display:flex; align-items:center; justify-content:center; padding:24px;
@@ -872,6 +918,27 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
   background:rgba(255,255,255,.04);
 }
 @media (max-width: 760px) {
+  .layout {
+    flex-direction:column;
+    min-height:0;
+  }
+  .cal-panel {
+    width:100% !important;
+    min-width:0;
+    flex:0 0 min(46dvh, 420px);
+    max-height:min(46dvh, 420px);
+    border-right:none;
+    border-bottom:1px solid var(--border);
+    overflow-y:auto;
+  }
+  .cal-body {
+    flex:0 0 auto;
+    overflow:visible;
+    padding:0 12px 22px;
+  }
+  .rhandle {
+    display:none;
+  }
   .cal-toolbar {
     padding:10px 12px 12px;
   }
@@ -948,6 +1015,48 @@ header { height:3.4rem; display:flex; align-items:center; padding:0 1.15rem; gap
 }
 .map-panel .leaflet-tile {
   will-change:transform, opacity;
+}
+
+@media (max-width: 760px) {
+  .map-panel {
+    width:100%;
+    min-width:0;
+    flex:1 1 auto;
+    min-height:300px;
+  }
+  .map-sidebar {
+    width:min(82vw, 300px);
+  }
+  .map-sidebar.fests-mode {
+    width:min(88vw, 330px);
+  }
+  #map-refresh-area-btn {
+    top:10px !important;
+    right:10px !important;
+    max-width:calc(100% - 20px);
+    padding:6px 10px !important;
+    font-size:.54rem !important;
+    line-height:1.2;
+  }
+  #map-legend {
+    right:8px !important;
+    bottom:36px !important;
+    max-width:128px;
+    padding:6px 8px !important;
+    font-size:.46rem !important;
+    line-height:1.7 !important;
+  }
+  #honesty-float-btn {
+    left:8px !important;
+    bottom:36px !important;
+  }
+  #sidebar-open-tabs {
+    top:46% !important;
+  }
+  .msb-float-tab {
+    padding:7px 4px;
+    font-size:.48rem;
+  }
 }
 
 .map-sidebar { width:clamp(13rem,15rem,20vw); flex-shrink:0; background:var(--s1);

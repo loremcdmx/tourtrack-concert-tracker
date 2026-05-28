@@ -556,9 +556,9 @@ async function refreshMapArea() {
     const summary = `+${newConcertCount} shows${newFestCount ? ` · +${newFestCount} fests` : ''}`;
     setLabel(`↻ ${summary}`, false);
     setStatus(`Area refresh: ${summary} inside ${radiusKm} km`, true);
-    setTimeout(() => setLabel('↻ Обновить область', false), 4000);
+    setTimeout(() => setLabel('↻ Refresh area', false), 4000);
   } catch (e) {
-    setLabel('↻ Обновить область', false);
+    setLabel('↻ Refresh area', false);
     setStatus(`Area refresh failed: ${e.message || e}`, false);
   }
 }

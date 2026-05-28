@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.min.css?v=1.9.4"/>
 <script defer src="/assets/vendor/leaflet/leaflet.min.js?v=1.9.4"></script>
 <link rel="stylesheet" href="/assets/vendor/fonts/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/styles.css?v=2.28.0046">
+<link rel="stylesheet" href="/assets/styles.css?v=2.28.0047">
 </head>
 <body>
 <header>
@@ -30,11 +30,11 @@
 
   <div class="hd-right">
     <span class="hd-progress" id="hd-progress" style="display:none"></span>
-    <button class="btn btn-stop" id="stop-btn" onclick="stopScan()" style="display:none">? Stop</button>
+    <button class="btn btn-stop" id="stop-btn" onclick="stopScan()" style="display:none">Stop</button>
     <button class="btn btn-spotify-auth" id="spotify-auth-btn" onclick="openSpotifyAccess()">Spotify</button>
     <button class="btn btn-rescan" id="merge-rescan-btn" onclick="runScanAction('smart')" title="Refresh concerts with the cache-aware scan">&#x21BB; Refresh</button>
     <button class="btn btn-rescan-fests" id="fest-rescan-btn" onclick="openScanLibrary()" title="Open all scan and rescan actions">&#x1F50E; Actions</button>
-    <button class="btn btn-primary" onclick="openSettings()">? Settings</button>
+    <button class="btn btn-primary" onclick="openSettings()">Settings</button>
   </div>
 </header>
 
@@ -145,7 +145,7 @@
         <button class="obf-btn"   data-os="4" onclick="obSetScore(4)">top+</button>
       </div>
 
-      <button class="onboard-resume-btn" id="onboard-resume-btn" onclick="instantResume({manual:true})">? Resume session</button>
+      <button class="onboard-resume-btn" id="onboard-resume-btn" onclick="instantResume({manual:true})">Resume session</button>
       <div class="onboard-resume-fresh">
         or <a onclick="showNewImport()">start a new import →</a>
       </div>
@@ -417,7 +417,7 @@
         <button class="msb-tab t-on" id="tab-tours"   onclick="setTab('tours')">🎸 Tours</button>
         <button class="msb-tab"      id="tab-fests"   onclick="setTab('fests')">🎪 Festivals</button>
         <button class="msb-tab"      id="tab-match"   onclick="setTab('match')">💑 Match</button>
-        <button class="msb-tab"      id="tab-errors"  onclick="setTab('errors')" style="display:none">? Errors</button>
+        <button class="msb-tab"      id="tab-errors"  onclick="setTab('errors')" style="display:none">Errors</button>
         <button class="msb-tab"      id="tab-honest"  onclick="setTab('honest')">🧐 Honesty</button>
       </div>
 
@@ -457,7 +457,7 @@
           <div class="msb-visible-hd" onclick="toggleVisiblePanel()">
             <span class="msb-visible-title">On screen</span>
             <span class="msb-visible-count" id="msb-visible-count">0</span>
-            <span class="msb-visible-arr">?</span>
+            <span class="msb-visible-arr">v</span>
           </div>
           <!-- Quick date filter for ON SCREEN list — mirrors mapDateMode -->
           <div id="msb-date-row" style="display:none;padding:3px 8px 4px;gap:3px;flex-wrap:wrap;border-bottom:1px solid var(--border)">
@@ -514,7 +514,7 @@
           <div class="match-label">Her Spotify playlist</div>
           <div class="match-url-row">
             <input class="match-url-input" id="match-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false">
-            <button class="match-btn" id="match-btn" onclick="runMatchV2()">? Match</button>
+            <button class="match-btn" id="match-btn" onclick="runMatchV2()">Match</button>
           </div>
           <div class="match-progress" id="match-progress" style="display:none">
             <div class="match-progress-fill" id="match-prog-fill" style="width:5%"></div>
@@ -552,7 +552,7 @@
         color:var(--accent);backdrop-filter:blur(4px);
         transition:border-color .15s,background .15s"
       onmouseenter="this.style.borderColor='var(--accent)';this.style.background='rgba(200,255,95,.08)'"
-      onmouseleave="this.style.borderColor='rgba(200,255,95,.35)';this.style.background='rgba(8,8,10,.92)'">↻ Обновить область</button>
+      onmouseleave="this.style.borderColor='rgba(200,255,95,.35)';this.style.background='rgba(8,8,10,.92)'">↻ Refresh area</button>
 
     <!-- HONESTY FLOAT BUTTON -->
     <button id="honesty-float-btn" onclick="toggleMapSidebar('honest')" title="About this app — known limitations & live diagnostics"
@@ -917,40 +917,40 @@
   </div>
 </div>
 </div>
-<script defer src="/config.js?v=2.28.0046"></script>
-<script defer src="/assets/app/core/runtime.js?v=2.28.0046"></script>
-<script defer src="/assets/app/core/profiles.js?v=2.28.0046"></script>
-<script defer src="/assets/app/core/storage.js?v=2.28.0046"></script>
-<script defer src="/assets/app/core/filter-presets.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/actions.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/shared/network.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/shared/geo.js?v=2.28.0046"></script>
-    <script defer src="/assets/app/scan/shared/matching.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/shared/concert-records.js?v=2.28.0046"></script>
-<script defer src="/assets/app/core/artist-knowledge.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/shared/preflight.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/settings/panel.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/settings/scope.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/feedback.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/errors.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/runtime.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/pipeline.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/providers.js?v=2.28.0046"></script>
-    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.28.0046"></script>
-    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/festivals/scoring.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/festivals.js?v=2.28.0046"></script>
-<script defer src="/assets/app/scan/concerts.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/calendar.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/map/base.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/map/drawer.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/map/match.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/map/sidebar.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/map/focus.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/map/render.js?v=2.28.0046"></script>
-<script defer src="/assets/app/ui/overlays.js?v=2.28.0046"></script>
-<script defer src="/assets/app/integrations/spotify.js?v=2.28.0046"></script>
-<script defer src="/assets/app/bootstrap.js?v=2.28.0046"></script>
+<script defer src="/config.js?v=2.28.0047"></script>
+<script defer src="/assets/app/core/runtime.js?v=2.28.0047"></script>
+<script defer src="/assets/app/core/profiles.js?v=2.28.0047"></script>
+<script defer src="/assets/app/core/storage.js?v=2.28.0047"></script>
+<script defer src="/assets/app/core/filter-presets.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/actions.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/shared/network.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/shared/geo.js?v=2.28.0047"></script>
+    <script defer src="/assets/app/scan/shared/matching.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/shared/concert-records.js?v=2.28.0047"></script>
+<script defer src="/assets/app/core/artist-knowledge.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/shared/preflight.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/settings/panel.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/settings/scope.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/feedback.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/errors.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/runtime.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/pipeline.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/providers.js?v=2.28.0047"></script>
+    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.28.0047"></script>
+    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/festivals/scoring.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/festivals.js?v=2.28.0047"></script>
+<script defer src="/assets/app/scan/concerts.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/calendar.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/map/base.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/map/drawer.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/map/match.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/map/sidebar.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/map/focus.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/map/render.js?v=2.28.0047"></script>
+<script defer src="/assets/app/ui/overlays.js?v=2.28.0047"></script>
+<script defer src="/assets/app/integrations/spotify.js?v=2.28.0047"></script>
+<script defer src="/assets/app/bootstrap.js?v=2.28.0047"></script>
 </body>
 </html>
