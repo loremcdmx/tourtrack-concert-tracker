@@ -333,6 +333,9 @@ function installFixture(fixture) {
 
   calGeoFilter = new Set();
   calGeoExpanded = null;
+  countryMode = 'world';
+  includeCountries = new Set();
+  excludeCountries = new Set();
   geoPreset = 'all';
   geoNoUSA = false;
   geoNoCA = false;
@@ -567,6 +570,186 @@ test('date filter applies to both calendar and map', { concurrency: false }, asy
   }));
   assert.deepEqual(thirtyDay.calendarArtists, ['Atlas', 'Beacon']);
   assert.deepEqual(thirtyDay.mapArtists, ['Atlas', 'Beacon']);
+});
+
+test('world geo scope keeps non-UK concerts visible in calendar and map', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon', 'Comet', 'Delta', 'Echo'],
+    artistPlays: { atlas: 12, beacon: 10, comet: 9, delta: 8, echo: 7 },
+    concerts: [
+      makeConcert('Atlas', 4, 'Forum', 'London', 'GB', 51.5074, -0.1278),
+      makeConcert('Beacon', 6, 'Tempodrom', 'Berlin', 'DE', 52.499, 13.374),
+      makeConcert('Comet', 8, 'Hollywood Palladium', 'Los Angeles', 'US', 34.098, -118.325),
+      makeConcert('Delta', 10, 'Foro Sol', 'Mexico City', 'MX', 19.404, -99.095),
+      makeConcert('Echo', 12, 'Zepp Haneda', 'Tokyo', 'JP', 35.548, 139.754),
+    ],
+  });
+
+  await settleUi(page);
+  await page.waitFor(() =>
+    Object.keys(allTourData).length === 5 &&
+    document.querySelectorAll('#cal-body .ev-headline .ev-name').length === 5,
+  );
+
+  const result = await page.evaluate(() => ({
+    scope: countryHash(),
+    apiCountryParam: apiCountryParam(),
+    allowedCountries: ['GB', 'DE', 'US', 'MX', 'JP'].filter(countryAllowed),
+    calendarArtists: [...document.querySelectorAll('#cal-body .ev-headline .ev-name')]
+      .map(el => (el.firstChild?.textContent || el.textContent || '').trim())
+      .filter(Boolean)
+      .sort(),
+    mapCountries: [...new Set(Object.values(allTourData).flat().map(ev => ev.country))].sort(),
+  }));
+
+  assert.equal(result.scope, 'world');
+  assert.equal(result.apiCountryParam, '');
+  assert.deepEqual(result.allowedCountries, ['GB', 'DE', 'US', 'MX', 'JP']);
+  assert.deepEqual(result.calendarArtists, ['Atlas', 'Beacon', 'Comet', 'Delta', 'Echo']);
+  assert.deepEqual(result.mapCountries, ['DE', 'GB', 'JP', 'MX', 'US']);
+});
+
+test('scenario A migrates legacy UK-only scope back to worldwide', { concurrency: false }, async () => {
+  const state = await page.evaluate(() => {
+    localStorage.clear();
+    const today = new Date().toISOString().split('T')[0];
+    localStorage.setItem('tt_cmode', 'include');
+    localStorage.setItem('tt_inc', JSON.stringify(['GB']));
+    localStorage.setItem('tt_exc', JSON.stringify([]));
+    localStorage.setItem('tt_geo_preset', 'ukie');
+    localStorage.setItem('tt_concerts', JSON.stringify([{
+      artist: 'Atlas',
+      id: 'legacy-gb-only',
+      date: today,
+      venue: 'Forum',
+      city: 'London',
+      country: 'GB',
+      lat: 51.5074,
+      lng: -0.1278,
+    }]));
+    localStorage.setItem('tt_festivals', JSON.stringify([]));
+    localStorage.setItem('tt_scanned_artists', JSON.stringify(['Atlas']));
+    localStorage.setItem('tt_cachets', String(Date.now()));
+
+    restore();
+
+    return {
+      countryMode,
+      includeCountries: [...includeCountries],
+      excludeCountries: [...excludeCountries],
+      geoPreset,
+      concerts: concerts.length,
+      festivals: festivals.length,
+      scannedArtists: SCANNED_ARTISTS.length,
+      cacheTimestamp,
+      storedMode: localStorage.getItem('tt_cmode'),
+      storedGeoPreset: localStorage.getItem('tt_geo_preset'),
+      storedConcerts: localStorage.getItem('tt_concerts'),
+    };
+  });
+
+  assert.equal(state.countryMode, 'world');
+  assert.deepEqual(state.includeCountries, []);
+  assert.deepEqual(state.excludeCountries, []);
+  assert.equal(state.geoPreset, 'all');
+  assert.equal(state.concerts, 0);
+  assert.equal(state.festivals, 0);
+  assert.equal(state.scannedArtists, 0);
+  assert.equal(state.cacheTimestamp, 0);
+  assert.equal(state.storedMode, 'world');
+  assert.equal(state.storedGeoPreset, 'all');
+  assert.equal(state.storedConcerts, null);
+});
+
+test('scenario A clears legacy UK-only snapshot without a stored scope hash', { concurrency: false }, async () => {
+  const state = await page.evaluate(() => {
+    localStorage.clear();
+    const today = new Date().toISOString().split('T')[0];
+    localStorage.setItem('tt_cmode', 'world');
+    localStorage.setItem('tt_inc', JSON.stringify([]));
+    localStorage.setItem('tt_exc', JSON.stringify([]));
+    localStorage.setItem('tt_geo_preset', 'all');
+    localStorage.setItem('tt_concerts', JSON.stringify([{
+      artist: 'Atlas',
+      id: 'legacy-world-but-gb-only',
+      date: today,
+      venue: 'Forum',
+      city: 'London',
+      country: 'GB',
+      lat: 51.5074,
+      lng: -0.1278,
+    }]));
+    localStorage.setItem('tt_cachets', String(Date.now()));
+
+    restore();
+
+    return {
+      countryMode,
+      geoPreset,
+      concerts: concerts.length,
+      cacheTimestamp,
+      storedConcerts: localStorage.getItem('tt_concerts'),
+    };
+  });
+
+  assert.equal(state.countryMode, 'world');
+  assert.equal(state.geoPreset, 'all');
+  assert.equal(state.concerts, 0);
+  assert.equal(state.cacheTimestamp, 0);
+  assert.equal(state.storedConcerts, null);
+});
+
+test('instant resume ignores artist cache from a different search scope', { concurrency: false }, async () => {
+  const state = await page.evaluate(async () => {
+    localStorage.clear();
+    await DB.clear('artists');
+    await DB.delete('meta', 'festivals').catch(() => {});
+    countryMode = 'world';
+    includeCountries = new Set();
+    excludeCountries = new Set();
+    geoPreset = 'all';
+    ARTISTS = ['Atlas'];
+    TRACKED_ARTISTS = ['Atlas'];
+    ARTIST_PLAYS = { atlas: 12 };
+    concerts = [];
+    festivals = [];
+    SCANNED_ARTISTS = [];
+    cacheTimestamp = 0;
+
+    const today = new Date().toISOString().split('T')[0];
+    await DB.put('artists', 'atlas', {
+      ts: Date.now(),
+      cHash: 'include:GB',
+      shows: [{
+        artist: 'Atlas',
+        id: 'cached-gb-only',
+        date: today,
+        venue: 'Forum',
+        city: 'London',
+        country: 'GB',
+        lat: 51.5074,
+        lng: -0.1278,
+      }],
+    });
+    localStorage.setItem(ONBOARD_CACHE_SUMMARY_KEY, JSON.stringify({
+      artistCount: 1,
+      concertCount: 1,
+      festCount: 0,
+      cacheTimestamp: Date.now(),
+      latestPlaylistUrl: PINNED_PLAYLIST.url,
+      cHash: 'include:GB',
+      ts: Date.now(),
+    }));
+
+    const info = await checkIDBCache();
+    return {
+      info,
+      summary: localStorage.getItem(ONBOARD_CACHE_SUMMARY_KEY),
+    };
+  });
+
+  assert.equal(state.info, null);
+  assert.equal(state.summary, null);
 });
 
 test('festival rows open the overlay and ticket links use openExternalUrl', { concurrency: false }, async () => {
