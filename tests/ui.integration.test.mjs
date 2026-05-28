@@ -51,7 +51,14 @@ async function waitForHttp(url, timeoutMs = 15000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const response = await fetch(url);
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 1000);
+      let response;
+      try {
+        response = await fetch(url, { signal: ctrl.signal });
+      } finally {
+        clearTimeout(tid);
+      }
       if (response.ok) return response;
     } catch (_) {}
     await delay(120);
@@ -101,13 +108,33 @@ class CdpBrowser {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
+      clearTimeout(pending.timeout);
       if (message.error) pending.reject(new Error(JSON.stringify(message.error)));
       else pending.resolve(message.result);
     };
+    this.ws.onclose = () => {
+      const error = new Error('Chrome DevTools WebSocket closed.');
+      for (const pending of this.pending.values()) {
+        clearTimeout(pending.timeout);
+        pending.reject(error);
+      }
+      this.pending.clear();
+    };
 
     await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = reject;
+      if (this.ws.readyState === WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+      const timeout = setTimeout(() => reject(new Error('Timed out connecting to Chrome DevTools WebSocket.')), 10000);
+      this.ws.onopen = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      this.ws.onerror = error => {
+        clearTimeout(timeout);
+        reject(error);
+      };
     });
   }
 
@@ -116,7 +143,11 @@ class CdpBrowser {
       const id = ++this.nextId;
       const payload = { id, method, params };
       if (sessionId) payload.sessionId = sessionId;
-      this.pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Timed out waiting for CDP method ${method}.`));
+      }, 10000);
+      this.pending.set(id, { resolve, reject, timeout });
       this.ws.send(JSON.stringify(payload));
     });
   }
@@ -137,7 +168,14 @@ class CdpBrowser {
       await delay(250);
       if (!this.proc.killed) this.proc.kill('SIGKILL');
     }
-    rmSync(this.profileDir, { recursive: true, force: true });
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        rmSync(this.profileDir, { recursive: true, force: true });
+        return;
+      } catch (_) {
+        await delay(150);
+      }
+    }
   }
 }
 
