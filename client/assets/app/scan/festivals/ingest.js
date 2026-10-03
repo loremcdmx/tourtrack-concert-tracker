@@ -66,6 +66,7 @@ function isMusicFestivalEvent(ev, hint) {
 function buildFestivalRecordFromEvent(ev, hint) {
   const date = ev?.dates?.start?.localDate;
   if (!date) return null;
+  const endDate = ev?.dates?.end?.localDate;
 
   const venue = ev?._embedded?.venues?.[0];
   const lat = parseFloat(venue?.location?.latitude);
@@ -87,6 +88,7 @@ function buildFestivalRecordFromEvent(ev, hint) {
     name: displayName,
     rawName: ev?.name || displayName,
     date,
+    ...(endDate && endDate >= date ? { endDate } : {}),
     venue: venue?.name || '',
     city: venue?.city?.name || '',
     country: venue?.country?.countryCode || '',

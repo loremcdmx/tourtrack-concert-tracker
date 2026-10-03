@@ -148,7 +148,7 @@ async function mergeRescan() {
 
 // ── Purge concerts that have already happened ──────────────────────
 function purgePastConcerts() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const before = concerts.length;
   const pastCount = concerts.filter(c => c.date < today).length;
 
@@ -686,12 +686,12 @@ async function importFestivalsOnly() {
 
     // Persist festivals
     try { localStorage.setItem('tt_festivals', JSON.stringify(festivals)); } catch(e) {}
-    DB.put('meta', 'festivals', { data: festivals, ts: Date.now() }).catch(() => {});
+    DB.put('meta', 'festivals', { data: festivals, ts: scanAborted ? 0 : Date.now(), cHash: countryHash(), ver: FEST_VER }).catch(() => {});
 
     buildFestPanel();
     renderMap();
-    setStatus(`✓ ${festivals.length} festivals imported`, true);
-    dblog('info', `Festival-only import done: ${festivals.length} festivals`);
+    setStatus(scanAborted ? `${festivals.length} festivals — stopped (partial results)` : `✓ ${festivals.length} festivals imported`, true);
+    dblog(scanAborted ? 'warn' : 'info', `${scanAborted ? 'Festival-only import stopped' : 'Festival-only import done'}: ${festivals.length} festivals`);
   } catch(e) {
     setStatus('Festival import failed: ' + e.message, false);
     dblog('error', 'Festival import error: ' + e.message);
@@ -715,11 +715,12 @@ async function rescanFestsOnly() {
   if (stopBtn) stopBtn.style.display = '';
   document.getElementById('pulse').className = 'pulse';
 
+  const ongoingFestivalSnapshot = snapshotOngoingFestivals();
   try {
-    // Wipe stale festival data — start fresh with current geo filters + artist set
+    // Replace future data while retaining known festivals that are still running.
     await DB.delete('meta', 'festivals').catch(() => {});
-    festivals = [];
-    buildFestPanel(); renderMap(); // clear stale from UI immediately
+    festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, []);
+    buildFestPanel(); renderMap();
 
     setStatus('Fetching festivals...', false);
     setProgress('Festivals: starting...', 2);
@@ -728,18 +729,18 @@ async function rescanFestsOnly() {
     await fetchFestivalsData();
 
     // Post-process: dedup + score against current artist set
-    festivals = deduplicateFestivals(festivals);
+    festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, festivals);
     if (ARTISTS.length) scoreFestivals();
 
     // Save fresh data to IDB
-    DB.put('meta', 'festivals', { data: festivals, ts: Date.now() }).catch(() => {});
+    DB.put('meta', 'festivals', { data: festivals, ts: scanAborted ? 0 : Date.now(), cHash: countryHash(), ver: FEST_VER }).catch(() => {});
 
     setProgress('', 100);
     buildCalChips(); renderCalendar();
     buildFestPanel(); renderMap();
 
-    setStatus(festivals.length + ' festivals — re-scanned', true);
-    dblog('info', 'Fest-only rescan done: ' + festivals.length + ' festivals');
+    setStatus(festivals.length + (scanAborted ? ' festivals — stopped (partial results)' : ' festivals — re-scanned'), true);
+    dblog(scanAborted ? 'warn' : 'info', (scanAborted ? 'Fest-only rescan stopped: ' : 'Fest-only rescan done: ') + festivals.length + ' festivals');
   } catch(e) {
     setStatus('Festival rescan failed: ' + e.message, false);
     dblog('error', 'Fest rescan error: ' + e.message);
@@ -762,8 +763,7 @@ let _gf = {
 };
 
 function openGoThru() {
-  const today = new Date().toISOString().split('T')[0];
-  const upFests = festivals.filter(f => f.date >= today && geoDisplayOk(f.country || '') && dateMatchesPreset(f.date));
+  const upFests = festivals.filter(f => eventDateMatchesPreset(f) && geoDisplayOk(f.country || ''));
 
   if (!upFests.length) {
     softNotice('No festivals match the current date / location filters.');

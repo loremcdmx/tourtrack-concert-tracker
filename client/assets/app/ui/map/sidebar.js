@@ -310,7 +310,7 @@ function setArtistPreset(preset) {
 
 function applyArtistPreset(list) {
   if (artistPreset === 'all') return list;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
   if (artistPreset === 'fav') {
     return list.filter(artist => favoriteArtists.has((artist || '').toLowerCase()));
@@ -378,11 +378,11 @@ function sortedArtists() {
 
 function buildStats() {
   const el = document.getElementById('msb-stats');
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in30  = new Date(); in30.setDate(in30.getDate() + 30);
-  const in30s = in30.toISOString().split('T')[0];
+  const in30s = _isoDateOnly(in30);
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
 
   const artistsOnTour = Object.keys(allTourData).length;
   if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }
@@ -429,9 +429,9 @@ function buildStats() {
 
 function buildSidebar() {
   buildStats();
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
   document.querySelectorAll('[data-ap]').forEach(btn =>
     btn.classList.toggle('on', btn.dataset.ap === artistPreset));
 
@@ -551,8 +551,7 @@ function buildSidebar() {
 }
 
 function buildFestPanel() {
-  const today = new Date().toISOString().split('T')[0];
-  const upFests = festivals.filter(f => f.date >= today && geoDisplayOk(f.country || '') && dateMatchesPreset(f.date));
+  const upFests = festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f));
   const withM = upFests.filter(f => f.score > 0).length;
   document.getElementById('tab-fests').textContent = upFests.length ? `🎪 Festivals · ${withM}★` : '🎪 Festivals';
 
@@ -742,8 +741,7 @@ function renderFestCardChunks(container, festivalsList) {
 }
 
 buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
-  const today = new Date().toISOString().split('T')[0];
-  const upFests = festivals.filter(f => f.date >= today && geoDisplayOk(f.country || '') && dateMatchesPreset(f.date));
+  const upFests = festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f));
   const withMatches = upFests.filter(f => f.score > 0).length;
   const tab = document.getElementById('tab-fests');
   if (tab) tab.textContent = upFests.length ? ('Festivals - ' + withMatches + ' matches') : 'Festivals';
@@ -779,10 +777,10 @@ buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
 
 buildSidebar = window.buildSidebar = function buildSidebarOptimized() {
   buildStats();
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in90 = new Date();
   in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
   document.querySelectorAll('[data-ap]').forEach(btn =>
     btn.classList.toggle('on', btn.dataset.ap === artistPreset));
 

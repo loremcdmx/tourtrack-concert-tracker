@@ -9,6 +9,7 @@ async function fetchAll(forceRefresh = false) {
   const {
     staleConcertCount: _staleCount,
     staleFestivalCount: _staleFestCount,
+    ongoingFestivalSnapshot,
     total,
     now,
     today,
@@ -247,7 +248,7 @@ async function fetchAll(forceRefresh = false) {
     // Remove the old stale entries (they were at the front of the array).
     // Fresh results from BIT/geo sweep are already appended after them.
     concerts.splice(0, _staleCount);
-    festivals.splice(0, _staleFestCount);
+    festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, festivals.slice(_staleFestCount), today);
     scheduleUiRefresh();
   }
 
@@ -341,7 +342,7 @@ async function fetchAll(forceRefresh = false) {
       try {
         const fc = await DB.get('meta', 'festivals');
         if (fc && (now - fc.ts) < TTL_FEST && fc.cHash === cHash && fc.ver === FEST_VER) {
-          festivals = deduplicateFestivals(fc.data);
+          festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, fc.data, today);
           festFromCache = true;
           dblog('info', `Festivals: from cache (${festivals.length}), age ${Math.round((now-fc.ts)/3600e3)}h`);
         } else if (fc && fc.ver !== FEST_VER) {
@@ -353,7 +354,8 @@ async function fetchAll(forceRefresh = false) {
       setProgress(`Fetching festivals…`, 90);
       try {
         await fetchFestivalsData();
-        DB.put('meta', 'festivals', { ts: now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
+        festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, festivals);
+        DB.put('meta', 'festivals', { ts: scanAborted ? 0 : now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
       } catch(e) { dblog('error', `Festival fetch: ${e.message}`); }
     }
   }
@@ -364,6 +366,8 @@ async function fetchAll(forceRefresh = false) {
   // Ticketmaster at whatever rate the event loop can sustain.
   clearScanRuntime();
 
+  festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, festivals);
+  if (festivals.length) scoreFestivals();
   concerts = deduplicateConcerts(concerts);
   dblog('info', `Done: ${concerts.length} concerts, ${festivals.length} festivals`);
   finalizeScan(scanAborted, C.cached, C.fresh);

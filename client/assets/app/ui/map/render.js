@@ -84,7 +84,6 @@ function _mapMaybeFitFilteredView(opts = {}) {
   if (!bounds.isValid()) return;
   lmap.fitBounds(bounds, { padding: [48, 48], maxZoom: 7, animate: false });
   _mapFirstFit = true;
-  if (typeof scheduleMapTileWarmup === 'function') scheduleMapTileWarmup(20);
 }
 
 function _refreshVisiblePanelAfterRender() {
@@ -538,12 +537,11 @@ function _renderFestLabels(opts = {}) {
   if (!lmap) return;
   clearFestMarkers();
 
-  const today = new Date().toISOString().split('T')[0];
   const skipFests = mapTypeFilter === 'tours';
   if (skipFests) return;
 
-  const festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
-    && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f));
+  const festsToRender = festivals.filter(f => f.lat && f.lng
+    && geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f));
 
   festsToRender.sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
 
@@ -721,7 +719,7 @@ function _renderFestLabels(opts = {}) {
 function renderOverview(opts = {}) {
   const preserveRoutes = !!opts.preserveRoutes;
   const smartFit = !!opts.smartFit;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in7   = dateOffset(7);
   const in30  = dateOffset(30);
   const in90  = dateOffset(90);
@@ -877,7 +875,7 @@ function renderOverview(opts = {}) {
   const festLocSet = new Set();
   if (showMapFests) {
     festivals.forEach(f => {
-      if (!f || !f.date || f.date < today) return;
+      if (!eventDateMatchesPreset(f)) return;
       const city = (f.city || '').toLowerCase().trim();
       const country = (f.country || '').toUpperCase();
       if (!city && !country) return;

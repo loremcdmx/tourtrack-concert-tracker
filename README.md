@@ -92,6 +92,15 @@ Read AGENTS.md, README.md, and MAC_HANDOFF.md. Check git status, run npm run che
 - `npm run check` - syntax check server and client code
 - `npm test` - run the UI regression suite
 
+Date filters use your local calendar day. Multi-day festivals stay visible until
+their final day and match any selected date range they overlap, including after
+restoring a saved session. Ticketmaster end dates are retained during import.
+
+The map uses OpenStreetMap tiles with visible attribution and browser caching;
+it loads the current viewport without background tile prefetching. Regression
+tests run with isolated browser storage and offline API responses, so they do
+not consume live provider quota or use your API credentials.
+
 ## External-user readiness
 
 This restructure is aimed at deployable sharing:

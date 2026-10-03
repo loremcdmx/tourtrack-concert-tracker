@@ -158,7 +158,7 @@ async function runMatchV2() {
 function buildMatchPane() {
   const body = document.getElementById('match-body');
   if (!body) return;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   if (!matchShared.length) {
     body.innerHTML = '<div style="padding:20px 14px;font-size:.6rem;color:var(--muted2);text-align:center">No shared artists found.</div>';
@@ -308,7 +308,7 @@ function matchScoreFestivals() {
 function renderMatchMap() {
   if (!lmap) { initMap(); }
   clearMapLayers();
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const sharedNames = new Set(matchShared.map(s => s.name));
 
   // Plot only shared artist concerts
@@ -418,11 +418,11 @@ ${item('TODO', 'htag-todo', '<strong>Festival lineup enrichment:</strong> No rel
 
 function buildStats() {
   const el = document.getElementById('msb-stats');
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in30  = new Date(); in30.setDate(in30.getDate() + 30);
-  const in30s = in30.toISOString().split('T')[0];
+  const in30s = _isoDateOnly(in30);
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
 
   const artistsOnTour = Object.keys(allTourData).length;
   if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }

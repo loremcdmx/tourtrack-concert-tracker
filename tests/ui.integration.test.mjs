@@ -189,6 +189,8 @@ class CdpPage {
   async enable() {
     await this.browser.send('Runtime.enable', {}, this.sessionId);
     await this.browser.send('Page.enable', {}, this.sessionId);
+    await this.browser.send('Network.enable', {}, this.sessionId);
+    await this.browser.send('Network.setBlockedURLs', { urls: ['https://*'] }, this.sessionId);
   }
 
   async navigate(url) {
@@ -243,7 +245,7 @@ class CdpPage {
 function isoOffset(days) {
   const date = new Date();
   date.setDate(date.getDate() + days);
-  return date.toISOString().split('T')[0];
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function makeConcert(artist, daysFromNow, venue, city, country, lat, lng, extra = {}) {
@@ -399,7 +401,7 @@ async function settleUi(pageRef, extraMs = 120) {
 before(async () => {
   serverPort = await getFreePort();
   baseUrl = `http://127.0.0.1:${serverPort}`;
-  serverProc = spawn(process.execPath, ['server/index.js'], {
+  serverProc = spawn(process.execPath, ['tests/offline-server.cjs'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(serverPort) },
     stdio: 'ignore',
@@ -570,6 +572,85 @@ test('date filter applies to both calendar and map', { concurrency: false }, asy
   }));
   assert.deepEqual(thirtyDay.calendarArtists, ['Atlas', 'Beacon']);
   assert.deepEqual(thirtyDay.mapArtists, ['Atlas', 'Beacon']);
+});
+
+test('an ongoing festival stays visible in the calendar, map and festival sidebar', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'],
+    artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('ExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'expired-fest', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('LaterFest', 12, 'Paris', 'FR', 48.8566, 2.3522, {
+        id: 'later-fest', score: 71, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+    ],
+  });
+  await page.evaluate(() => {
+    setTab('fests');
+    setDateFilter('7');
+  });
+  await settleUi(page);
+
+  const result = await page.evaluate(() => ({
+    calendarFestivals: [...document.querySelectorAll('#cal-body .ev-row .ev-name')]
+      .map(el => (el.firstChild?.textContent || el.textContent || '').trim()),
+    mapLocations: festMarkers.map(marker => {
+      const point = marker.getLatLng();
+      return [point.lat, point.lng];
+    }),
+    sidebarIds: [...document.querySelectorAll('#fest-cards .fcard')].map(card => card.dataset.id),
+  }));
+  assert.deepEqual(result.calendarFestivals, ['OngoingFest']);
+  assert.deepEqual(result.mapLocations, [[52.52, 13.405]]);
+  assert.deepEqual(result.sidebarIds, ['ongoing-fest']);
+});
+
+test('custom ranges keep overlapping festivals aligned across calendar, map and sidebar, including the past', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'],
+    artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('FutureOverlapFest', 2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'future-overlap', endDate: isoOffset(6), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('PastOverlapFest', -12, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'past-overlap', endDate: isoOffset(-6), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('NonOverlappingFest', 11, 'Paris', 'FR', 48.8566, 2.3522, {
+        id: 'non-overlapping', score: 71, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('OlderFest', -20, 'Barcelona', 'ES', 41.387, 2.17, {
+        id: 'older-fest', endDate: isoOffset(-11), score: 65, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+    ],
+  });
+  for (const scenario of [
+    { from: isoOffset(4), to: isoOffset(8), name: 'FutureOverlapFest', id: 'future-overlap', location: [52.52, 13.405] },
+    { from: isoOffset(-10), to: isoOffset(-4), name: 'PastOverlapFest', id: 'past-overlap', location: [51.5074, -0.1278] },
+  ]) {
+    await page.evaluate((from, to) => {
+      setTab('fests');
+      setDateFilter('range', from, to);
+    }, scenario.from, scenario.to);
+    await settleUi(page);
+    const result = await page.evaluate(() => ({
+      calendarFestivals: [...document.querySelectorAll('#cal-body .ev-row .ev-name')]
+        .map(el => (el.firstChild?.textContent || el.textContent || '').trim()),
+      mapLocations: festMarkers.map(marker => {
+        const point = marker.getLatLng();
+        return [point.lat, point.lng];
+      }),
+      sidebarIds: [...document.querySelectorAll('#fest-cards .fcard')].map(card => card.dataset.id),
+    }));
+    assert.deepEqual(result.calendarFestivals, [scenario.name]);
+    assert.deepEqual(result.mapLocations, [scenario.location]);
+    assert.deepEqual(result.sidebarIds, [scenario.id]);
+  }
 });
 
 test('world geo scope keeps non-UK concerts visible in calendar and map', { concurrency: false }, async () => {
@@ -751,6 +832,141 @@ test('instant resume ignores artist cache from a different search scope', { conc
   assert.equal(state.info, null);
   assert.equal(state.summary, null);
 });
+
+test('cached festival count and instant resume retain ongoing festivals and drop expired ones', { concurrency: false }, async () => {
+  const cachedFestivals = [
+    makeFestival('CachedOngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+      id: 'cached-ongoing', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+    }),
+    makeFestival('CachedExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+      id: 'cached-expired', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+    }),
+  ];
+  await page.evaluate(installFixture, { artists: ['Alpha'], artistPlays: { alpha: 12 } });
+  const state = await page.evaluate(async data => {
+    await DB.clear('artists');
+    await DB.put('artists', 'alpha', { ts: Date.now(), cHash: countryHash(), shows: [] });
+    await DB.put('meta', 'festivals', { ts: Date.now(), cHash: countryHash(), ver: FEST_VER, data });
+    localStorage.setItem(ONBOARD_CACHE_SUMMARY_KEY, JSON.stringify({
+      artistCount: 1,
+      concertCount: 0,
+      festCount: 2,
+      cacheTimestamp: Date.now(),
+      latestPlaylistUrl: PINNED_PLAYLIST.url,
+      cHash: countryHash(),
+      ts: Date.now(),
+    }));
+    const info = await checkIDBCache();
+    await instantResume({ manual: true });
+    return {
+      festCount: info?.festCount,
+      resumedIds: festivals.map(festival => festival.id),
+      endDate: festivals[0]?.endDate,
+      refreshRunning: Boolean(window._festRefreshRunning),
+    };
+  }, cachedFestivals);
+  assert.equal(state.festCount, 1);
+  assert.deepEqual(state.resumedIds, ['cached-ongoing']);
+  assert.equal(state.endDate, cachedFestivals[0].endDate);
+  assert.equal(state.refreshRunning, false);
+});
+
+test('festival-only refresh retains ongoing events and saves a restorable cache', { concurrency: false }, async () => {
+  const freshFestival = makeFestival('FreshFest', 7, 'Paris', 'FR', 48.8566, 2.3522, {
+    id: 'fresh-fest', score: 80, matched: [{ artist: 'Alpha', plays: 12 }],
+  });
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'], artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('ExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'expired-fest', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('StaleFutureFest', 30, 'Madrid', 'ES', 40.41, -3.7, { id: 'stale-future' }),
+    ],
+  });
+  const result = await page.evaluate(async fresh => {
+    const originalFetch = fetchFestivalsData;
+    fetchFestivalsData = async () => { festivals.push(fresh); };
+    try {
+      await rescanFestsOnly();
+      const cache = await DB.get('meta', 'festivals');
+      return {
+        ids: festivals.map(f => f.id).sort(),
+        cacheIds: cache.data.map(f => f.id).sort(),
+        scopeMatches: cache.cHash === countryHash(),
+        versionMatches: cache.ver === FEST_VER,
+      };
+    } finally {
+      fetchFestivalsData = originalFetch;
+    }
+  }, freshFestival);
+  assert.deepEqual(result.ids, ['fresh-fest', 'ongoing-fest']);
+  assert.deepEqual(result.cacheIds, result.ids);
+  assert.equal(result.scopeMatches, true);
+  assert.equal(result.versionMatches, true);
+});
+
+test('a full refresh retains ongoing festivals without carrying them into a changed search scope', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'], artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('ExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'expired-fest', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('StaleFutureFest', 30, 'Madrid', 'ES', 40.41, -3.7, { id: 'stale-future' }),
+    ],
+  });
+  const result = await page.evaluate(() => {
+    const scan = beginScanRun(true);
+    const initial = festivals.map(f => f.id);
+    const restored = mergeOngoingFestivals(scan.ongoingFestivalSnapshot, []).map(f => f.id);
+    countryMode = 'include';
+    includeCountries = new Set(['FR']);
+    const changedScope = mergeOngoingFestivals(scan.ongoingFestivalSnapshot, []).map(f => f.id);
+    window._scanActive = false;
+    return { initial, restored, changedScope };
+  });
+  assert.deepEqual(result.initial, ['ongoing-fest']);
+  assert.deepEqual(result.restored, ['ongoing-fest']);
+  assert.deepEqual(result.changedScope, []);
+});
+
+for (const action of ['importFestivalsOnly', 'rescanFestsOnly']) {
+  test(`${action} marks stopped discovery as partial instead of a fresh complete cache`, { concurrency: false }, async () => {
+    await page.evaluate(installFixture, {
+      artists: ['Alpha'], artistPlays: { alpha: 12 },
+      festivals: [makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      })],
+    });
+    const result = await page.evaluate(async actionName => {
+      const originalFetch = fetchFestivalsData;
+      fetchFestivalsData = async () => { scanAborted = true; };
+      try {
+        await window[actionName]();
+        const cache = await DB.get('meta', 'festivals');
+        return {
+          cacheTimestamp: cache.ts,
+          acceptsAsFresh: (Date.now() - cache.ts) < TTL_FEST,
+          retained: cache.data.map(f => f.id),
+          status: document.getElementById('hd-msg').textContent,
+        };
+      } finally {
+        fetchFestivalsData = originalFetch;
+      }
+    }, action);
+    assert.equal(result.cacheTimestamp, 0);
+    assert.equal(result.acceptsAsFresh, false);
+    assert.deepEqual(result.retained, ['ongoing-fest']);
+    assert.match(result.status, /stopped.*partial/i);
+  });
+}
 
 test('festival rows open the overlay and ticket links use openExternalUrl', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
@@ -934,7 +1150,7 @@ test('rapid filter updates coalesce into one deferred refresh', { concurrency: f
   });
 });
 
-test('map drag defers tile warmup and skips closed visible-panel work', { concurrency: false }, async () => {
+test('map drag skips closed visible-panel work and makes no tile prefetch', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
     artists: ['Drift'],
     artistPlays: { drift: 9 },
@@ -945,65 +1161,54 @@ test('map drag defers tile warmup and skips closed visible-panel work', { concur
   });
 
   const result = await page.evaluate(async () => {
-    const originalWarm = window.scheduleMapTileWarmup;
     const originalUpdateVisiblePanel = window.updateVisiblePanel;
-    const calls = { warm: 0, visible: 0 };
+    const calls = { visible: 0 };
     const mapEl = document.getElementById('map');
 
-    window.scheduleMapTileWarmup = function(...args) {
-      calls.warm += 1;
-      return originalWarm.apply(this, args);
-    };
     window.updateVisiblePanel = function(...args) {
       calls.visible += 1;
       return originalUpdateVisiblePanel.apply(this, args);
     };
 
     _visiblePanelOpen = false;
-    if (typeof _cancelMapTileWarmup === 'function') _cancelMapTileWarmup();
     clearTimeout(_moveTimer);
     clearTimeout(_zRenderTimer);
     await new Promise(resolve => setTimeout(resolve, 260));
-    calls.warm = 0;
     calls.visible = 0;
 
     lmap.fire('movestart');
     const start = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
     lmap.fire('move');
     const moving = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
     lmap.fire('moveend');
     const endImmediate = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
     await new Promise(resolve => setTimeout(resolve, 260));
     const settled = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
-    window.scheduleMapTileWarmup = originalWarm;
     window.updateVisiblePanel = originalUpdateVisiblePanel;
-    return { start, moving, endImmediate, settled };
+    return { start, moving, endImmediate, settled, hasPrefetch: typeof window.scheduleMapTileWarmup === 'function' };
   });
 
-  assert.deepEqual(result.start, { warm: 0, visible: 0, isPanning: true });
-  assert.deepEqual(result.moving, { warm: 0, visible: 0, isPanning: true });
-  assert.deepEqual(result.endImmediate, { warm: 1, visible: 0, isPanning: false });
-  assert.deepEqual(result.settled, { warm: 1, visible: 0, isPanning: false });
+  assert.deepEqual(result.start, { visible: 0, isPanning: true });
+  assert.deepEqual(result.moving, { visible: 0, isPanning: true });
+  assert.deepEqual(result.endImmediate, { visible: 0, isPanning: false });
+  assert.deepEqual(result.settled, { visible: 0, isPanning: false });
+  assert.equal(result.hasPrefetch, false);
 });
 
 test('renderOverview skips visible-panel scan when the panel is collapsed', { concurrency: false }, async () => {

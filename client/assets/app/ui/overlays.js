@@ -15,7 +15,7 @@ function openFestDetail(festId) {
   const f = festivals.find(x => x.id === festId);
   if (!f) return;
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const score    = f.score  || 0;
   const matched  = (f.matched || []).slice().sort((a, b) => b.weight - a.weight);
   const lineup   = (f.lineup || []);
@@ -150,7 +150,7 @@ function _artistDetailMatchKeys(value) {
 }
 
 function _artistDetailUpcomingShows(artist) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const artistKeys = _artistDetailMatchKeys(artist);
   const seen = new Set();
   return (concerts || [])
@@ -513,8 +513,7 @@ function renderFestMap(hlId) {
   focusedFest = hlId;
   document.querySelectorAll('.fcard').forEach(c => c.classList.toggle('hl', c.dataset.id === hlId));
 
-  const today = new Date().toISOString().split('T')[0];
-  const up = festivals.filter(f => f.date >= today && f.lat && f.lng && geoDisplayOk(f.country || ''));
+  const up = festivals.filter(f => eventDateMatchesPreset(f) && f.lat && f.lng && geoDisplayOk(f.country || ''));
   if (!up.length) return;
 
   const maxS = Math.max(...up.map(f => f.score||0), 1);

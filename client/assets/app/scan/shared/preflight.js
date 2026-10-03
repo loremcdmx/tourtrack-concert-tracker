@@ -54,7 +54,7 @@ async function bitPreFlightScan(artists) {
   dblog('info', `BIT pre-flight: ${toCheck.length} to check (${results.size} cached) · concurrency=8`);
   setProgress(`BIT pre-flight: 0/${toCheck.length} checked…`, 5);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   let checked = 0;
   let idx = 0;
 

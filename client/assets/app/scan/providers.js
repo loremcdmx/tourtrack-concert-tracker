@@ -229,7 +229,7 @@ async function resolveAttractionId(artist) {
 //   returns merged set (existing + any new events found).
 // - Otherwise: full paginated fetch.
 async function fetchConcerts(artist, today, existingShows = null) {
-  today = today || new Date().toISOString().split('T')[0];
+  today = today || _isoDateOnly(new Date());
   const ambig = artistIsAmbiguous(artist);
 
   // ── Step 1: attraction info (id + upcoming count from TM) ────────

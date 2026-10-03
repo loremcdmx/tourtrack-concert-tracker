@@ -135,7 +135,7 @@ function isCDMX(city) {
 // ── DATE OFFSET HELPER ──────────────────────────────────────────
 function dateOffset(days) {
   const d = new Date(); d.setDate(d.getDate() + days);
-  return d.toISOString().split('T')[0];
+  return _isoDateOnly(d);
 }
 
 let _artistIndexCacheRef = null;
@@ -568,7 +568,7 @@ function _rankScore(artist) {
 }
 
 function renderMxCalendar() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   // All future MX concerts — use unified score filter
   let mxCons = dateFilter_(visibleConcerts())
@@ -826,7 +826,7 @@ function drpRender() {
   const ML = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   document.getElementById('drp-month-lbl').textContent = ML[_drpMonth] + ' ' + _drpYear;
   const grid = document.getElementById('drp-grid');
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   grid.innerHTML = '';
   // Day-of-week headers
   ['Mo','Tu','We','Th','Fr','Sa','Su'].forEach(d => {
@@ -910,12 +910,19 @@ function monthBounds(offsetMonths = 0) {
   const now = new Date();
   const first = new Date(now.getFullYear(), now.getMonth() + offsetMonths, 1);
   const last = new Date(now.getFullYear(), now.getMonth() + offsetMonths + 1, 0);
-  const iso = d => d.toISOString().split('T')[0];
+  const iso = d => _isoDateOnly(d);
   return { from: iso(first), to: iso(last) };
 }
 
 function dateMatchesPreset(dateStr, filter = dateFilter) {
   return dateMatchesNamedPreset(dateStr, filter, {
+    rangeFrom: calDateFrom,
+    rangeTo: calDateTo,
+  });
+}
+
+function eventDateMatchesPreset(event, filter = dateFilter) {
+  return dateRangeMatchesNamedPreset(event?.date, event?.endDate, filter, {
     rangeFrom: calDateFrom,
     rangeTo: calDateTo,
   });
@@ -996,7 +1003,7 @@ function toggleType(t) {
 }
 
 function dateFilter_(arr) {
-  return arr.filter(e => dateMatchesPreset(e.date));
+  return arr.filter(e => eventDateMatchesPreset(e));
 }
 
 // ── SCORE FILTER ─────────────────────────────────────────────────
@@ -1052,7 +1059,7 @@ function mapDateOk(dateStr) {
 // also rebuilding the full sidebar DOM (which renderMap does via buildSidebar).
 //
 function _rebuildMapData() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   allTourData = {};
   const skipTours = mapTypeFilter === 'fests';
   if (!skipTours) {
@@ -1249,7 +1256,7 @@ function setMapDate(d) {
   if (rangeRow) rangeRow.style.display = d === 'range' ? '' : 'none';
   const preset = d === 'week' ? '7' : d === 'month' ? '30' : d;
   if (d === 'range') {
-    const today = new Date().toISOString().split('T')[0];
+    const today = _isoDateOnly(new Date());
     const end   = dateOffset(30);
     const fromEl = document.getElementById('mfilt-from');
     const toEl   = document.getElementById('mfilt-to');
@@ -1346,9 +1353,9 @@ function setGeoPreset(preset) {
 function _updateTally() {
   const el = document.getElementById('ev-tally');
   if (!el) return;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const con = visibleConcerts().filter(c => c.date >= today && geoDisplayOk(c.country||'') && scoreOkArtist(c.artist) && !isHidden(c.artist) && dateMatchesPreset(c.date));
-  const fst = festivals.filter(f => f.date >= today && (f.score||0) > 0 && geoDisplayOk(f.country||'') && scoreOkFest(f) && dateMatchesPreset(f.date));
+  const fst = festivals.filter(f => (f.score||0) > 0 && geoDisplayOk(f.country||'') && scoreOkFest(f) && eventDateMatchesPreset(f));
   const total = con.length + fst.length;
   el.textContent = total ? `${total} events` : '';
 }
@@ -1384,7 +1391,7 @@ function isHidden(a) { if (!(a in hiddenArtists)) return false; const u = hidden
 function renderCalendar() {
   expireHidden();
   const renderToken = ++_calendarRenderToken;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   // Show score filter when artists can be ranked or festivals have scores.
   const hasArtistScore = hasArtistPlayData() || ARTISTS.length > 0;
@@ -2004,7 +2011,7 @@ function buildCalendarEventRow(ev, ctx) {
 renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
   expireHidden();
   const renderToken = ++_calendarRenderToken;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   const hasArtistScore = hasArtistPlayData() || ARTISTS.length > 0;
   const scoreRow = document.getElementById('score-filter-row');

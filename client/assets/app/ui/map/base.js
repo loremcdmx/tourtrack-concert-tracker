@@ -7,116 +7,12 @@ let _mapResizeTimer = null;
 let _mapResizeRaf = null;
 let _mapResizeQueued = false;
 let _mapInteractionActive = false;
-const CT_MAP_TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-const CT_MAP_TILE_SUBDOMAINS = 'abcd';
-const CT_MAP_TILE_WARM_LIMIT = 1800;
-let _mapTileWarmTimer = null;
-let _mapTileWarmIdleHandle = null;
-let _mapLastWarmKey = '';
-const _mapTileWarmCache = new Set();
-
-function _mapTileUrl(z, x, y) {
-  const size = Math.pow(2, z);
-  if (y < 0 || y >= size) return '';
-  const wrappedX = ((x % size) + size) % size;
-  const subdomain = CT_MAP_TILE_SUBDOMAINS[Math.abs(wrappedX + y) % CT_MAP_TILE_SUBDOMAINS.length] || 'a';
-  return CT_MAP_TILE_URL
-    .replace('{s}', subdomain)
-    .replace('{z}', String(z))
-    .replace('{x}', String(wrappedX))
-    .replace('{y}', String(y))
-    .replace('{r}', L.Browser?.retina ? '@2x' : '');
-}
-
-function _warmMapTileUrls(urls, batchSize = 24) {
-  const unique = urls.filter(Boolean).filter(url => !_mapTileWarmCache.has(url));
-  if (!unique.length) return;
-  let idx = 0;
-  const pump = () => {
-    const end = Math.min(unique.length, idx + batchSize);
-    for (; idx < end; idx++) {
-      const url = unique[idx];
-      _mapTileWarmCache.add(url);
-      while (_mapTileWarmCache.size > CT_MAP_TILE_WARM_LIMIT) {
-        const oldest = _mapTileWarmCache.values().next().value;
-        _mapTileWarmCache.delete(oldest);
-      }
-      const img = new Image();
-      img.decoding = 'async';
-      img.referrerPolicy = 'no-referrer';
-      img.src = url;
-    }
-    if (idx < unique.length) setTimeout(pump, 80);
-  };
-  pump();
-}
-
-function warmLowResWorldTiles() {
-  const urls = [];
-  for (let z = 2; z <= 4; z++) {
-    const size = Math.pow(2, z);
-    for (let x = 0; x < size; x++) {
-      for (let y = 0; y < size; y++) urls.push(_mapTileUrl(z, x, y));
-    }
-  }
-  _warmMapTileUrls(urls, 32);
-}
-
-function _cancelMapTileWarmup() {
-  clearTimeout(_mapTileWarmTimer);
-  _mapTileWarmTimer = null;
-  if (_mapTileWarmIdleHandle && typeof cancelIdleCallback === 'function') {
-    cancelIdleCallback(_mapTileWarmIdleHandle);
-  }
-  _mapTileWarmIdleHandle = null;
-}
+const CT_MAP_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 function _setMapInteractionState(active) {
   _mapInteractionActive = !!active;
   const mapEl = document.getElementById('map');
   if (mapEl) mapEl.classList.toggle('is-panning', _mapInteractionActive);
-}
-
-function scheduleMapTileWarmup(delay = 80) {
-  if (!lmap) return;
-  _cancelMapTileWarmup();
-  _mapTileWarmTimer = setTimeout(() => {
-    _mapTileWarmTimer = null;
-    if (!lmap || _mapInteractionActive) return;
-    const runWarmup = () => {
-      if (!lmap || _mapInteractionActive) return;
-      const zoom = Math.max(2, Math.min(8, Math.round(lmap.getZoom())));
-      const pixelBounds = lmap.getPixelBounds();
-      const size = lmap.getSize();
-      const padFactor = zoom <= 4 ? 0.8 : zoom <= 6 ? 0.52 : 0.34;
-      const pad = Math.max(size.x, size.y) * padFactor;
-      const padded = L.bounds(
-        pixelBounds.min.subtract([pad, pad]),
-        pixelBounds.max.add([pad, pad])
-      );
-      const tileSize = 256;
-      const minX = Math.floor(padded.min.x / tileSize);
-      const maxX = Math.floor(padded.max.x / tileSize);
-      const minY = Math.floor(padded.min.y / tileSize);
-      const maxY = Math.floor(padded.max.y / tileSize);
-      const warmKey = `${zoom}:${minX}:${maxX}:${minY}:${maxY}`;
-      if (warmKey === _mapLastWarmKey) return;
-      _mapLastWarmKey = warmKey;
-      const urls = [];
-      for (let x = minX; x <= maxX; x++) {
-        for (let y = minY; y <= maxY; y++) urls.push(_mapTileUrl(zoom, x, y));
-      }
-      _warmMapTileUrls(urls, 12);
-    };
-    if (typeof requestIdleCallback === 'function') {
-      _mapTileWarmIdleHandle = requestIdleCallback(() => {
-        _mapTileWarmIdleHandle = null;
-        runWarmup();
-      }, { timeout: 240 });
-      return;
-    }
-    setTimeout(runWarmup, 0);
-  }, delay);
 }
 
 function scheduleMapResize(delay = 0) {
@@ -182,33 +78,15 @@ function initMap() {
     worldCopyJump: true,
   }).setView([30, 10], 3);
   L.control.zoom({ position:'bottomright' }).addTo(lmap);
-  if (L.GridLayer?.prototype?.options) {
-    Object.assign(L.GridLayer.prototype.options, {
-      keepBuffer: 8,
-      updateWhenIdle: false,
-      updateWhenZooming: false,
-      updateInterval: 60,
-      className: 'ct-map-tile'
-    });
-  }
   L.tileLayer(CT_MAP_TILE_URL, {
-    subdomains: CT_MAP_TILE_SUBDOMAINS,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19,
-    maxNativeZoom: 4,
-    minNativeZoom: 2,
-    keepBuffer: 16,
-    updateWhenIdle: false,
+    keepBuffer: 2,
+    updateWhenIdle: true,
     updateWhenZooming: false,
-    updateInterval: 60,
-    className: 'ct-map-underlay',
-    opacity: 0.74,
-    zIndex: 1
+    referrerPolicy: 'strict-origin-when-cross-origin',
+    className: 'ct-map-tile ct-map-tile--osm'
   }).addTo(lmap);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution:'© OpenStreetMap © CARTO', subdomains:'abcd', maxZoom:19
-  }).addTo(lmap);
-  warmLowResWorldTiles();
-  scheduleMapTileWarmup(120);
 
   // Zoom-responsive re-render (overview only, not focus mode)
   lmap.on('zoomend', () => {
@@ -218,7 +96,6 @@ function initMap() {
     clearTimeout(_zRenderTimer);
     if (focusedArtist || focusedFest) {
       _setMapInteractionState(false);
-      scheduleMapTileWarmup(120);
       return;
     }
     _zRenderTimer = setTimeout(() => {
@@ -232,24 +109,20 @@ function initMap() {
         _setMapInteractionState(false);
       }
     }, 90);
-    scheduleMapTileWarmup(120);
   });
   lmap.on('zoomstart', () => {
     _setMapInteractionState(true);
     clearTimeout(_moveTimer);
-    _cancelMapTileWarmup();
   });
   // Pan: don't re-render markers, just update the visible list
   lmap.on('movestart', () => {
     _setMapInteractionState(true);
     clearTimeout(_moveTimer);
-    _cancelMapTileWarmup();
   });
   lmap.on('moveend', () => {
     _setMapInteractionState(false);
     clearTimeout(_moveTimer);
     if (_visiblePanelOpen) _moveTimer = setTimeout(updateVisiblePanel, 180);
-    scheduleMapTileWarmup(160);
   });
 
   const mapEl = document.getElementById('map');
@@ -310,7 +183,7 @@ function updateVisiblePanel() {
   if (!panel || !list || !badge || !lmap) return;
 
   const bounds = lmap.getBounds();
-  const today  = new Date().toISOString().split('T')[0];
+  const today  = _isoDateOnly(new Date());
   const in7    = dateOffset(7);
   const in30   = dateOffset(30);
   const rankCache = new Map();
@@ -350,8 +223,8 @@ function updateVisiblePanel() {
   const visibleFests = [];
   if (mapTypeFilter !== 'tours') {
     for (const f of festivals) {
-      if (f.date >= today && f.lat && f.lng
-          && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f)
+      if (f.lat && f.lng
+          && geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f)
           && bounds.contains([f.lat, f.lng])) {
         visibleFests.push(f);
       }
@@ -440,7 +313,7 @@ function updateVisiblePanel() {
 function renderMap(opts = {}) {
   initMap();
   clearMapLayers();
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   allTourData = {};
   // Apply map-local filters: type, score, date window
   const skipTours = mapTypeFilter === 'fests';
@@ -495,7 +368,7 @@ async function refreshMapArea() {
   const center = bounds.getCenter();
   const radiusMeters = Math.max(lmap.distance(center, bounds.getNorthEast()), lmap.distance(center, bounds.getSouthWest()));
   const radiusKm = Math.min(19999, Math.round(radiusMeters / 1000));
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   setLabel('⟳ Scanning…', true);
   const artistIndex = buildArtistAliasIndex(ARTISTS);

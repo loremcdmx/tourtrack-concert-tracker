@@ -122,7 +122,7 @@ const TTL_ARTIST_DORMANT = 36 * 3600e3; // dormant artists can stay cached longe
 const TTL_FEST   = 48 * 3600e3;  // 48h festival cache
 const FEST_VER   = 4;             // bump to invalidate all festival caches (changed fetch logic)
 
-function artistCacheTTLForRecord(record, today = new Date().toISOString().split('T')[0]) {
+function artistCacheTTLForRecord(record, today = _isoDateOnly(new Date())) {
   const shows = Array.isArray(record?.shows) ? record.shows : [];
   const upcoming = shows.filter(show => show?.date && show.date >= today);
   if (!upcoming.length) return TTL_ARTIST_DORMANT;

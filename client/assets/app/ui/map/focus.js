@@ -65,7 +65,7 @@ function renderFocusMode(artist) {
   // 2. Name case/whitespace mismatch between the click closure and the stored key
   //    — we do a case-insensitive fallback.
   if (Object.keys(allTourData).length === 0 && concerts.length > 0) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = _isoDateOnly(new Date());
     for (const c of concerts) {
       if (c.date < today || isHidden(c.artist)) continue;
       (allTourData[c.artist] = allTourData[c.artist] || []).push(c);
@@ -80,7 +80,7 @@ function renderFocusMode(artist) {
   }
   if (!evs) { renderOverview(); return; }
   const col = getColor(artist);
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const future = evs.filter(e => e.date >= today);
   const display = future.length ? future : evs;
   const targetConcertKey = focusedConcertKey;

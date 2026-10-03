@@ -18,9 +18,11 @@ function beginScanRun(forceRefresh = false) {
 
   const staleConcertCount = concerts.length;
   const staleFestivalCount = festivals.length;
+  const today = _isoDateOnly(new Date());
+  const ongoingFestivalSnapshot = snapshotOngoingFestivals(festivals, today);
   if (forceRefresh) {
     concerts = [];
-    festivals = [];
+    festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, [], today);
     fetchErrors = {};
   }
 
@@ -32,9 +34,10 @@ function beginScanRun(forceRefresh = false) {
   return {
     staleConcertCount,
     staleFestivalCount,
+    ongoingFestivalSnapshot,
     total: ARTISTS.length,
     now: Date.now(),
-    today: new Date().toISOString().split('T')[0],
+    today,
     cHash: countryHash(),
   };
 }

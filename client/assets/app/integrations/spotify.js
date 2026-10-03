@@ -469,14 +469,14 @@ function readOnboardCacheSummary() {
 
 function syncOnboardCacheSummary() {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = _isoDateOnly(new Date());
     const summary = {
       artistCount: Array.isArray(ARTISTS) ? ARTISTS.length : 0,
       concertCount: Array.isArray(concerts)
         ? concerts.filter(show => show?.date && show.date >= today).length
         : 0,
       festCount: Array.isArray(festivals)
-        ? festivals.filter(fest => fest?.date && fest.date >= today).length
+        ? festivals.filter(fest => dateRangeMatchesNamedPreset(fest?.date, fest?.endDate, 'all', { today })).length
         : 0,
       cacheTimestamp: Number(cacheTimestamp) || 0,
       latestPlaylistUrl: getOnboardHistory()[0]?.url || '',
@@ -721,12 +721,12 @@ async function checkIDBCache() {
       return null;
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = _isoDateOnly(new Date());
     let festCount = 0;
     try {
       const fc = await DB.get('meta', 'festivals');
       if (fc?.cHash === countryHash() && Array.isArray(fc?.data)) {
-        festCount = fc.data.filter(fest => fest?.date && fest.date >= today).length;
+        festCount = fc.data.filter(fest => dateRangeMatchesNamedPreset(fest?.date, fest?.endDate, 'all', { today })).length;
       }
     } catch {}
     return {
@@ -763,12 +763,11 @@ async function _autoRefreshFestivals() {
   try {
     if (typeof setStatus === 'function') setStatus('Refreshing festivals in background…', false);
     await fetchFestivalsData();
-    const today = new Date().toISOString().split('T')[0];
-    festivals = deduplicateFestivals(festivals.filter(f => f.date >= today));
+    festivals = deduplicateFestivals(festivals.filter(f => dateRangeMatchesNamedPreset(f.date, f.endDate, 'all')));
     if (typeof scoreFestivals === 'function' && festivals.length) scoreFestivals();
     const now = Date.now();
     const cHash = typeof countryHash === 'function' ? countryHash() : '';
-    DB.put('meta', 'festivals', { ts: now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
+    DB.put('meta', 'festivals', { ts: scanAborted ? 0 : now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
     if (typeof persistData === 'function') persistData();
     if (typeof buildCalChips === 'function') buildCalChips();
     if (typeof renderCalendar === 'function') renderCalendar();
@@ -833,7 +832,7 @@ async function instantResume(opts = {}) {
     if (skipped > 0) dblog('info', `Min-tracks filter (>=${minT}): kept ${ARTISTS.length} artists, skipped ${skipped}`);
   }
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   try {
     // Rebuild concerts from IDB artist cache. getAll pulls every record in a
     // single read transaction, which is O(N) faster than the previous N×DB.get
@@ -886,7 +885,7 @@ async function instantResume(opts = {}) {
     // new sweep logic (extra country-level passes, MX/LatAm/APAC) actually
     // runs without the user having to click "Import festivals".
     const festScopeOk = fc?.cHash === countryHash();
-    if (festScopeOk && fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => f.date >= today));
+    if (festScopeOk && fc?.data) festivals = deduplicateFestivals(fc.data.filter(f => dateRangeMatchesNamedPreset(f.date, f.endDate, 'all', { today })));
     const festCacheStale = !festScopeOk || !fc || !fc.data || fc.ver !== FEST_VER;
     if (festCacheStale && !window._festRefreshRunning) {
       window._festRefreshRunning = true;

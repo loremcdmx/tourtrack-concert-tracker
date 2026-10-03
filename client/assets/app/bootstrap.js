@@ -23,7 +23,7 @@ function hasScenarioAStoredSession() {
 }
 
 const _vbadge = document.getElementById('app-ver-badge');
-if (_vbadge) _vbadge.textContent = 'v' + (SERVER_CONFIG.appVersion || APP_VERSION);
+if (_vbadge) _vbadge.textContent = 'v' + APP_VERSION;
 const _onboardUrlInput = document.getElementById('onboard-url');
 if (_onboardUrlInput) {
   _onboardUrlInput.addEventListener('input', syncOnboardPrimaryAction);
