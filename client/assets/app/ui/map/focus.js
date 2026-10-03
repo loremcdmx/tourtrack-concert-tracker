@@ -329,6 +329,8 @@ function renderFocusMode(artist) {
     const mk = L.marker([ev.lat, ev.lng], { icon, bubblingMouseEvents: false })
       .addTo(lmap)
       .bindPopup(pop, { autoPan: true, autoPanPaddingTopLeft: [10,10], autoPanPaddingBottomRight: [10,80] });
+    _mapRegisterLabel(mk, 'focus:' + artist + '|' + _concertFocusKey(ev), first ? 5000 : 1000 - i,
+      [{ kind: 'tour', artist, ev, number: i + 1 }]);
     markersByKey.set(_concertFocusKey(ev), mk);
     mk.on('click', (e) => {
       L.DomEvent.stopPropagation(e);
@@ -342,6 +344,8 @@ function renderFocusMode(artist) {
     });
     tourMarkers.push(mk);
   });
+
+  scheduleMapLabelLayout();
 
   // Fly to fit all markers
   if (coords.length > 0) {

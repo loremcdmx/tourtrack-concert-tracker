@@ -98,9 +98,22 @@ header { min-height:88px; height:auto; padding:18px 28px; gap:26px; background:v
 .map-tour-marker,.map-fest-marker,.map-fest-cluster,.map-cluster-marker { background:var(--s1); box-shadow:0 4px 12px #20182730; }
 .map-tour-marker__name { font-family:'Segoe UI',sans-serif; font-size:.72rem; }
 .map-tour-marker__meta { font-family:'Segoe UI',sans-serif; font-size:.56rem; }
+.map-tour-marker { width:100%; height:100%; box-sizing:border-box; }
+.map-fest-marker-wrap { width:100%; height:40px; }
+.map-fest-marker { width:100%; height:28px; flex:0 0 28px; box-sizing:border-box; padding:4px 6px; }
+.map-fest-marker-wrap.is-selected .map-fest-marker { outline:2px solid var(--accent); outline-offset:2px; }
+.map-event-group { width:48px; height:28px; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px solid var(--accent); border-radius:9px; background:var(--s1); color:var(--text); box-shadow:0 3px 8px #20182730; font:700 12px/1 'Segoe UI',sans-serif; }
+.map-event-group span:last-child { color:var(--muted); font-size:7px; line-height:1.3; font-weight:400; }
+.map-layout-marker:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:8px; }
+.map-event-group-list { display:flex; flex-direction:column; gap:6px; overflow-y:auto; max-height:min(38vh,280px); margin:12px 0; }
+.map-event-group-row { flex-shrink:0; display:flex; flex-direction:column; gap:4px; width:100%; text-align:left; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--s1); color:var(--text); font:12px/1.35 'Segoe UI',sans-serif; cursor:pointer; }
+.map-event-group-row span { font-size:10px; color:var(--muted); }
+.map-event-group-row:hover,.map-event-group-row:focus-visible { border-color:var(--accent); outline:none; }
+.map-popup__chips--stacked { max-height:min(38vh,280px); overflow-y:auto; }
 .map-fest-marker__name,.map-fest-cluster__name { font-family:'Segoe UI',sans-serif; font-size:.72rem; }
 .map-pulse-ring,.map-glow { animation:none; }
 .leaflet-popup-content { font-family:'Segoe UI',sans-serif !important; }
+.leaflet-bottom.leaflet-left .leaflet-control-zoom { margin-bottom:90px; }
 .map-popup__eyebrow,.map-popup-metric__label { text-transform:none; letter-spacing:0; font-family:'Segoe UI',sans-serif; }
 .empty-msg { font-family:inherit; font-size:.9rem; max-width:32ch; }
 .modal-bg,.smodal-bg,.sl-panel,.ad-overlay,.fd-overlay,.gf-overlay { background:#201827bb; }

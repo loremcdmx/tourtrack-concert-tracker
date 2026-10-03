@@ -105,6 +105,12 @@ It loads the current viewport without background tile prefetching. Regression
 tests run with isolated browser storage and offline API responses, so they do
 not consume live provider quota or use your API credentials.
 
+Map labels share one screen-space layout across tours, festivals, city clusters,
+and focused routes. Labels avoid each other and map controls while venue
+coordinates and route geometry remain exact. Crowded areas become compact
+groups with a complete, scrollable event list. The layout follows pan, zoom,
+resize, and the phone's Agenda/Map switch, including open popup positions.
+
 The workspace has an agenda beside the live atlas on desktop, with separate
 Agenda and Map views on phones. Filters expand from the agenda header. Concert
 rows and artist controls support keyboard activation. Festival-only refreshes

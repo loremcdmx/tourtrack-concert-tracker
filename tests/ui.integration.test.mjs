@@ -1712,3 +1712,455 @@ test('clicking a concert artist opens playlist detail with preview and parrot sc
   assert.equal(detail.audioStub.playCalls, 1);
   assert.equal(detail.audioStub.lastSrc, 'https://cdn.example.test/night-drive.mp3');
 });
+
+function denseMapFixture({ tourCount = 16, festivalCount = 32, nearby = false } = {}) {
+  const artists = Array.from({ length: tourCount }, (_, index) => `Dense Artist ${index + 1}`);
+  const location = index => nearby
+    ? [52.52 + (index % 3 - 1) * 0.0007, 13.405 + (index % 5 - 2) * 0.0007]
+    : [52.52, 13.405];
+  return {
+    artists,
+    artistPlays: Object.fromEntries(artists.map(artist => [artist.toLowerCase(), 12])),
+    concerts: artists.map((artist, index) => makeConcert(
+      artist, index + 2, `Dense Tour Venue ${index + 1}`, `Tour City ${index + 1}`, 'DE',
+      ...location(index), { id: `dense-tour-${index + 1}` },
+    )),
+    festivals: Array.from({ length: festivalCount }, (_, index) => makeFestival(
+      `Dense Festival ${index + 1}`, index + 25, `Festival City ${index + 1}`, 'DE',
+      ...location(index + tourCount), {
+        id: `dense-fest-${index + 1}`, score: 85 - index,
+        matched: [{ artist: artists[index % artists.length], plays: 12 }],
+      },
+    )),
+  };
+}
+
+function mapLabelSnapshot() {
+  const itemId = item => item.kind === 'fest' ? item.f.id : item.ev.id;
+  const mapBounds = document.getElementById('map').getBoundingClientRect();
+  const markerBounds = element => {
+    const childBounds = element.firstElementChild?.getBoundingClientRect();
+    return childBounds?.width && childBounds?.height ? childBounds : element.getBoundingClientRect();
+  };
+  const descriptors = [];
+  lmap.eachLayer(layer => {
+    const descriptor = layer._ctLayout;
+    if (!descriptor || typeof layer.getLatLng !== 'function') return;
+    const point = layer.getLatLng();
+    const element = layer.getElement();
+    descriptors.push({
+      layoutId: element?.dataset.layoutId || '',
+      originalIds: descriptor.items.map(itemId).sort(),
+      displayedIds: (descriptor.displayItems || descriptor.items).map(itemId).sort(),
+      numbers: descriptor.items.map(item => item.number ?? null),
+      point: [point.lat, point.lng],
+    });
+  });
+  const visible = [...document.querySelectorAll('.map-layout-marker')].filter(element => {
+    const style = getComputedStyle(element);
+    const rect = markerBounds(element);
+    return element.getAttribute('aria-hidden') !== 'true' && style.visibility !== 'hidden'
+      && style.display !== 'none' && rect.width > 0 && rect.height > 0
+      && rect.right > mapBounds.left && rect.left < mapBounds.right
+      && rect.bottom > mapBounds.top && rect.top < mapBounds.bottom;
+  }).map(element => {
+    const rect = markerBounds(element);
+    return {
+      layoutId: element.dataset.layoutId,
+      members: Number(element.dataset.layoutMembers),
+      left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+    };
+  });
+  return { descriptors, visible };
+}
+
+function assertMapLabelsDoNotOverlap(snapshot, context = '') {
+  assert.ok(snapshot.visible.length > 0, `${context}: some map labels must remain visible`);
+  for (let i = 0; i < snapshot.visible.length; i++) {
+    const first = snapshot.visible[i];
+    assert.ok(first.layoutId, `${context}: a visible marker needs a layout identity`);
+    assert.ok(first.members >= 1, `${context}: a visible marker must expose its original events`);
+    for (const second of snapshot.visible.slice(i + 1)) {
+      const separated = first.right + 1.8 <= second.left || second.right + 1.8 <= first.left
+        || first.bottom + 1.8 <= second.top || second.bottom + 1.8 <= first.top;
+      assert.ok(separated, `${context}: labels ${first.layoutId} and ${second.layoutId} overlap or lack a 2px gap`);
+    }
+  }
+}
+
+function assertMapEventCoverage(snapshot, expectedIds) {
+  const originals = [...new Set(snapshot.descriptors.flatMap(marker => marker.originalIds))].sort();
+  assert.deepEqual(originals, [...expectedIds].sort(), 'Layout must retain every original event');
+  const visibleIds = new Set(snapshot.visible.flatMap(element => {
+    const descriptor = snapshot.descriptors.find(marker => marker.layoutId === element.layoutId);
+    assert.ok(descriptor, `Visible layout ${element.layoutId} must have an event descriptor`);
+    assert.equal(element.members, descriptor.displayedIds.length);
+    return descriptor.displayedIds;
+  }));
+  assert.deepEqual([...visibleIds].sort(), [...expectedIds].sort(), 'Every original event must remain accessible from a visible marker');
+  assert.equal(snapshot.visible.reduce((count, marker) => count + marker.members, 0), expectedIds.length, 'Visible groups must not duplicate or omit original events');
+}
+
+async function installDenseMap(pageRef, fixture) {
+  await pageRef.evaluate(installFixture, fixture);
+  await pageRef.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('map');
+    lmap.stop();
+    lmap.setView([52.52, 13.405], 10, { animate: false });
+    clearMapLayers();
+    renderOverview({ smartFit: false });
+    scheduleMapLabelLayout();
+  });
+  await settleUi(pageRef, 260);
+  await pageRef.evaluate(() => relayoutMapLabels());
+  await settleUi(pageRef, 80);
+}
+
+test('dense mixed tour and festival labels do not overlap and preserve all events on desktop and mobile', { concurrency: false }, async () => {
+  const fixture = denseMapFixture();
+  const expectedIds = [...fixture.concerts, ...fixture.festivals].map(event => event.id);
+  for (const viewport of [{ width: 1366, height: 900 }, { width: 375, height: 812 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    await installDenseMap(page, fixture);
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assertMapLabelsDoNotOverlap(snapshot, `${viewport.width}px`);
+    assertMapEventCoverage(snapshot, expectedIds);
+    assert.ok(snapshot.visible.some(marker => marker.members >= 12), 'A dense group must preserve more than a truncated preview');
+  }
+});
+
+test('mixed overflow groups list every event and preserve the festival and tour button actions', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture();
+  await installDenseMap(page, fixture);
+  const openLargestGroup = () => {
+    const groups = [...document.querySelectorAll('.map-layout-marker')]
+      .filter(element => element.getAttribute('aria-hidden') !== 'true'
+        && getComputedStyle(element).visibility !== 'hidden'
+        && (element.matches('.map-event-group') || element.querySelector('.map-event-group')))
+      .sort((a, b) => Number(b.dataset.layoutMembers) - Number(a.dataset.layoutMembers));
+    const group = groups[0];
+    if (!group) throw new Error('No visible overflow group');
+    const members = Number(group.dataset.layoutMembers);
+    let expectedIds = [];
+    lmap.eachLayer(layer => {
+      if (layer._ctLayout && layer.getElement?.() === group) {
+        expectedIds = layer._ctLayout.displayItems.map(item => item.kind === 'fest' ? item.f.id : item.ev.id).sort();
+      }
+    });
+    group.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return { members, expectedIds };
+  };
+  const expectedGroup = await page.evaluate(openLargestGroup);
+  await page.waitFor(() => document.querySelector('.map-event-group-list .map-event-group-row'));
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.map-event-group-list .map-event-group-row')].map(button => ({
+    tag: button.tagName, kind: button.dataset.kind, id: button.dataset.eventId,
+  })));
+  assert.ok(expectedGroup.members >= 12);
+  assert.equal(rows.length, expectedGroup.members, 'The group popup must list every represented event');
+  assert.deepEqual(rows.map(row => row.id).sort(), expectedGroup.expectedIds, 'The popup must retain the identities of all grouped events');
+  assert.equal(new Set(rows.map(row => row.id)).size, rows.length);
+  assert.ok(rows.every(row => row.tag === 'BUTTON'));
+  assert.ok(rows.some(row => row.kind === 'tour') && rows.some(row => row.kind === 'fest'));
+  const selectedFestival = rows.find(row => row.kind === 'fest');
+  await page.evaluate(id => document.querySelector(`.map-event-group-row[data-event-id="${id}"]`).click(), selectedFestival.id);
+  await page.waitFor(() => document.getElementById('fd-overlay').classList.contains('open'));
+  assert.equal(await page.evaluate(() => document.querySelector('.fd-name').textContent.trim()), fixture.festivals.find(festival => festival.id === selectedFestival.id).name);
+
+  await page.evaluate(() => { closeFestDetail(); lmap.closePopup(); });
+  await installDenseMap(page, fixture);
+  await page.evaluate(openLargestGroup);
+  await page.waitFor(() => document.querySelector('.map-event-group-row[data-kind="tour"]'));
+  const selectedTourId = await page.evaluate(() => {
+    const button = document.querySelector('.map-event-group-row[data-kind="tour"]');
+    const id = button.dataset.eventId;
+    button.click();
+    return id;
+  });
+  await settleUi(page, 260);
+  const focused = await page.evaluate(() => ({
+    artist: focusedArtist,
+    view: document.body.dataset.workspaceView,
+    title: document.getElementById('focus-name').textContent.trim(),
+  }));
+  const expectedArtist = fixture.concerts.find(concert => concert.id === selectedTourId).artist;
+  assert.deepEqual(focused, { artist: expectedArtist, view: 'map', title: expectedArtist });
+});
+
+test('nearby map labels remain separated through repeated pans and resizes without changing event coordinates', { concurrency: false }, async () => {
+  await setViewport(page, 1366, 900);
+  const fixture = denseMapFixture({ tourCount: 8, festivalCount: 16, nearby: true });
+  const expectedIds = [...fixture.concerts, ...fixture.festivals].map(event => event.id);
+  await installDenseMap(page, fixture);
+  const initial = await page.evaluate(mapLabelSnapshot);
+  const markerCoordinates = snapshot => snapshot.descriptors.map(marker => ({
+    ids: marker.originalIds.join('|'), point: marker.point,
+  })).sort((a, b) => a.ids.localeCompare(b.ids));
+  const originalCoordinates = markerCoordinates(initial);
+  assertMapLabelsDoNotOverlap(initial, 'initial');
+  assertMapEventCoverage(initial, expectedIds);
+  for (const width of [1100, 1440, 1200]) {
+    await page.evaluate(() => {
+      lmap.panBy([18, -12], { animate: false });
+      scheduleMapLabelLayout();
+    });
+    await setViewport(page, width, 900);
+    await settleUi(page, 220);
+    await page.evaluate(() => relayoutMapLabels());
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assertMapLabelsDoNotOverlap(snapshot, `${width}px after pan`);
+    assertMapEventCoverage(snapshot, expectedIds);
+    assert.deepEqual(markerCoordinates(snapshot), originalCoordinates, 'Collision layout must not relocate the actual Leaflet event coordinates');
+  }
+});
+
+test('numbered focus markers at a repeated venue preserve every show and do not overlap after zoom changes', { concurrency: false }, async () => {
+  await setViewport(page, 1366, 900);
+  const fixture = {
+    artists: ['Repeat Artist'], artistPlays: { 'repeat artist': 12 },
+    concerts: Array.from({ length: 12 }, (_, index) => makeConcert(
+      'Repeat Artist', index + 2, 'Repeated Venue', 'Berlin', 'DE', 52.52, 13.405,
+      { id: `repeated-venue-${index + 1}` },
+    )),
+  };
+  await page.evaluate(installFixture, fixture);
+  await page.evaluate(() => {
+    hideOnboard();
+    focusArtist('Repeat Artist');
+    lmap.stop();
+    lmap.setView([52.52, 13.405], 10, { animate: false });
+    scheduleMapLabelLayout();
+  });
+  const expectedIds = fixture.concerts.map(concert => concert.id);
+  for (const zoom of [10, 12, 9]) {
+    await page.evaluate(value => { lmap.setZoom(value, { animate: false }); scheduleMapLabelLayout(); }, zoom);
+    await settleUi(page, 240);
+    await page.evaluate(() => relayoutMapLabels());
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assertMapLabelsDoNotOverlap(snapshot, `focus zoom ${zoom}`);
+    assertMapEventCoverage(snapshot, expectedIds);
+    const focusBounds = await page.evaluate(() => {
+      const bounds = document.getElementById('focus-overlay').getBoundingClientRect();
+      return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom };
+    });
+    assert.ok(snapshot.visible.every(marker => marker.right <= focusBounds.left || marker.left >= focusBounds.right
+      || marker.bottom <= focusBounds.top || marker.top >= focusBounds.bottom), 'Focus markers must remain outside the artist overlay');
+    assert.deepEqual(snapshot.descriptors.flatMap(marker => marker.numbers).sort((a, b) => a - b), Array.from({ length: 12 }, (_, index) => index + 1));
+    assert.equal(await page.evaluate(() => document.querySelectorAll('#focus-list .fshow').length), 12);
+    assert.ok(snapshot.descriptors.every(marker => marker.point[0] === 52.52 && marker.point[1] === 13.405));
+  }
+});
+
+function openMapGroupForLifecycleTest() {
+  const groups = [...document.querySelectorAll('.map-layout-marker')]
+    .filter(element => element.getAttribute('aria-hidden') !== 'true'
+      && getComputedStyle(element).visibility !== 'hidden'
+      && element.querySelector('.map-event-group'))
+    .sort((first, second) => Number(second.dataset.layoutMembers) - Number(first.dataset.layoutMembers));
+  if (!groups.length) throw new Error('No visible overflow group');
+  lmap.eachLayer(layer => {
+    if (layer._ctLayout && layer.getElement?.() === groups[0]) window.__testPopupOwner = layer;
+  });
+  window.__testPopupOwner.openPopup();
+}
+
+function mapPopupLifecycleSnapshot() {
+  const owner = window.__testPopupOwner;
+  const element = owner.getElement();
+  const popup = owner.getPopup();
+  const open = owner.isPopupOpen();
+  if (!element) return { removed: true, open };
+  const popupBounds = open ? popup.getElement().getBoundingClientRect() : null;
+  const labelBounds = (element.firstElementChild || element).getBoundingClientRect();
+  const marginBottom = open ? Number.parseFloat(getComputedStyle(popup.getElement()).marginBottom) : 0;
+  const point = owner.getLatLng();
+  return {
+    open,
+    hidden: element.getAttribute('aria-hidden') === 'true',
+    compact: !!owner._ctLayout.compact,
+    expectedIds: owner._ctLayout.displayItems.map(item => item.kind === 'fest' ? item.f.id : item.ev.id).sort(),
+    popupIds: open ? [...popup.getElement().querySelectorAll('.map-event-group-row')].map(row => row.dataset.eventId).sort() : [],
+    centerError: open ? Math.abs((popupBounds.left + popupBounds.right - labelBounds.left - labelBounds.right) / 2) : 0,
+    topError: open ? Math.abs(popupBounds.bottom + marginBottom - labelBounds.top) : 0,
+    point: [point.lat, point.lng],
+    panCalls: window.__testPopupPanCalls || 0,
+  };
+}
+
+test('open overflow popup follows current group membership and label placement through pan and resize, and closes when hidden', { concurrency: false }, async () => {
+  // The startup seed importer otherwise rebuilds all markers after 1200ms.
+  // Keep that unrelated media refresh out of this popup reflow scenario.
+  await page.evaluate(() => { importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 }); });
+  await setViewport(page, 375, 812);
+  await installDenseMap(page, denseMapFixture());
+  await page.evaluate(openMapGroupForLifecycleTest);
+  await settleUi(page, 260);
+  const initial = await page.evaluate(mapPopupLifecycleSnapshot);
+  assert.equal(initial.open, true, 'Opening a visible compact group must keep its list open');
+  assert.equal(initial.compact, true);
+  assert.ok(initial.expectedIds.length >= 12);
+  assert.deepEqual(initial.popupIds, initial.expectedIds);
+  await page.evaluate(() => {
+    window.__testPopupPanCalls = 0;
+    const originalPanBy = lmap.panBy;
+    lmap.panBy = function (...args) {
+      window.__testPopupPanCalls++;
+      return originalPanBy.apply(this, args);
+    };
+  });
+  let expectedPanCalls = 0;
+  for (const width of [400, 420, 375]) {
+    await page.evaluate(() => { lmap.panBy([8, -5], { animate: false }); scheduleMapLabelLayout(); });
+    await setViewport(page, width, 812);
+    await settleUi(page, 180);
+    await page.evaluate(() => relayoutMapLabels());
+    const state = await page.evaluate(mapPopupLifecycleSnapshot);
+    assert.notEqual(state.removed, true, 'Pan and resize must retain the open popup owner');
+    assert.deepEqual(state.point, initial.point, 'Popup movement must not change the event coordinates');
+    assert.equal(state.panCalls, ++expectedPanCalls, 'Refreshing an open popup must not cause an auto-pan layout loop');
+    if (state.hidden) {
+      assert.equal(state.open, false, 'A popup whose marker becomes hidden must close');
+    } else {
+      assert.equal(state.open, true);
+      if (state.compact) assert.deepEqual(state.popupIds, state.expectedIds, 'An open group must show the current members after reflow');
+      assert.ok(state.centerError <= 1.1, `Popup horizontal anchor differs from its visible label by ${state.centerError}px`);
+      assert.ok(state.topError <= 1.1, `Popup vertical anchor differs from its visible label by ${state.topError}px`);
+    }
+  }
+  await page.evaluate(() => {
+    lmap.closePopup();
+    window.__testPopupOwner = null;
+  });
+  await page.evaluate(openMapGroupForLifecycleTest);
+  await settleUi(page, 180);
+  assert.equal((await page.evaluate(mapPopupLifecycleSnapshot)).open, true);
+  await page.evaluate(() => {
+    const overlay = document.getElementById('focus-overlay');
+    overlay.style.cssText = 'display:block;position:absolute;inset:0;width:100%;height:100%;max-width:none;';
+    relayoutMapLabels();
+  });
+  const hidden = await page.evaluate(mapPopupLifecycleSnapshot);
+  assert.equal(hidden.hidden, true, 'Labels covered by the focus overlay must be hidden');
+  assert.deepEqual(hidden.expectedIds, []);
+  assert.equal(hidden.open, false, 'The hidden owner must not leave a stale group popup open');
+});
+
+test('markers recreated while the mobile map is hidden receive real footprints when the map reopens', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture({ tourCount: 8, festivalCount: 16, nearby: true });
+  const expectedIds = [...fixture.concerts, ...fixture.festivals].map(event => event.id);
+  await installDenseMap(page, fixture);
+  const hidden = await page.evaluate(() => {
+    setWorkspaceView('agenda');
+    clearMapLayers();
+    renderOverview({ smartFit: false });
+    relayoutMapLabels();
+    const bounds = document.getElementById('map').getBoundingClientRect();
+    return {
+      width: bounds.width,
+      footprints: [...tourMarkers, ...festMarkers].map(marker => marker._ctLayout.footprint),
+    };
+  });
+  assert.equal(hidden.width, 0, 'The mobile agenda must actually hide the map');
+  assert.equal(hidden.footprints.length, expectedIds.length);
+  assert.ok(hidden.footprints.every(footprint => footprint === null), 'A hidden map must not cache zero-size marker measurements');
+  await settleUi(page, 120);
+  await page.evaluate(() => { setWorkspaceView('map'); scheduleMapLabelLayout(); });
+  await settleUi(page, 260);
+  await page.evaluate(() => relayoutMapLabels());
+  const footprints = await page.evaluate(() => [...tourMarkers, ...festMarkers].map(marker => marker._ctLayout.footprint));
+  assert.ok(footprints.every(footprint => footprint?.width > 0 && footprint?.height > 0), 'Every marker needs a measured footprint after returning to the map');
+  const snapshot = await page.evaluate(mapLabelSnapshot);
+  assertMapLabelsDoNotOverlap(snapshot, 'mobile map reopened');
+  assertMapEventCoverage(snapshot, expectedIds);
+});
+
+test('festival tab and highlighted festival preserve every coincident event in the shared collision layout', { concurrency: false }, async () => {
+  await setViewport(page, 1366, 900);
+  const fixture = denseMapFixture({ tourCount: 1, festivalCount: 32 });
+  fixture.concerts = [];
+  await page.evaluate(installFixture, fixture);
+  const expectedIds = fixture.festivals.map(festival => festival.id);
+  const highlightedId = expectedIds.at(-1);
+  for (const id of [null, highlightedId]) {
+    await page.evaluate(selectedId => {
+      hideOnboard();
+      setWorkspaceView('map');
+      if (selectedId === null) setTab('fests');
+      else renderFestMap(selectedId);
+      lmap.stop();
+      lmap.setView([52.52, 13.405], 10, { animate: false });
+      scheduleMapLabelLayout();
+    }, id);
+    await settleUi(page, 220);
+    await page.evaluate(() => relayoutMapLabels());
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assert.equal(snapshot.descriptors.length, expectedIds.length, 'The festival-only route must register every event for collision layout');
+    assertMapLabelsDoNotOverlap(snapshot, id ? 'highlighted festival' : 'festival tab');
+    assertMapEventCoverage(snapshot, expectedIds);
+    assert.ok(snapshot.descriptors.every(marker => marker.point[0] === 52.52 && marker.point[1] === 13.405));
+    const state = await page.evaluate(selectedId => {
+      const selected = festMarkers.find(marker => marker._ctLayout.items.some(item => item.f.id === selectedId));
+      return {
+        tab: sidebarTab,
+        focused: focusedFest,
+        selectedCard: document.querySelector('.fcard.hl')?.dataset.id || null,
+        selectedStyle: selected?._ctLayout.icon.options.html.includes('is-selected') || false,
+        selectedPriority: selected?._ctLayout.priority || 0,
+        otherPriority: Math.max(...festMarkers.filter(marker => marker !== selected).map(marker => marker._ctLayout.priority)),
+      };
+    }, id);
+    assert.equal(state.tab, 'fests');
+    assert.equal(state.focused, id);
+    if (id) {
+      assert.equal(state.selectedCard, id);
+      assert.equal(state.selectedStyle, true);
+      assert.ok(state.selectedPriority > state.otherPriority, 'The selected festival must have layout priority without an oversized absolute label');
+    }
+  }
+});
+
+test('mobile zoom controls stay clear of the legend, honesty button and event labels', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture({ tourCount: 8, festivalCount: 16, nearby: true });
+  await installDenseMap(page, fixture);
+  // Put an actual event underneath the zoom buttons so the layout must avoid them.
+  const eventPoint = await page.evaluate(() => {
+    const mapBounds = document.getElementById('map').getBoundingClientRect();
+    const zoomBounds = document.querySelector('.leaflet-control-zoom').getBoundingClientRect();
+    const point = lmap.containerPointToLatLng([
+      (zoomBounds.left + zoomBounds.right) / 2 - mapBounds.left,
+      (zoomBounds.top + zoomBounds.bottom) / 2 - mapBounds.top,
+    ]);
+    return { lat: point.lat, lng: point.lng };
+  });
+  Object.assign(fixture.concerts[0], eventPoint);
+  await installDenseMap(page, fixture);
+  const controls = await page.evaluate(() => {
+    const bounds = selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+    };
+    return {
+      map: bounds('#map'), zoom: bounds('.leaflet-control-zoom'),
+      legend: bounds('#map-legend'), honesty: bounds('#honesty-float-btn'),
+      clickable: [...document.querySelectorAll('.leaflet-control-zoom a')].map(button => {
+        const rect = button.getBoundingClientRect();
+        return !!document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)?.closest('.leaflet-control-zoom');
+      }),
+    };
+  });
+  const separate = (first, second) => first.right <= second.left || first.left >= second.right
+    || first.bottom <= second.top || first.top >= second.bottom;
+  assert.ok(controls.zoom.width > 0 && controls.zoom.height > 0);
+  assert.ok(controls.zoom.left >= controls.map.left && controls.zoom.right <= controls.map.right
+    && controls.zoom.top >= controls.map.top && controls.zoom.bottom <= controls.map.bottom, 'Both zoom buttons must fit inside the visible mobile map');
+  assert.ok(separate(controls.zoom, controls.legend), 'The legend must not cover the zoom buttons');
+  assert.ok(separate(controls.zoom, controls.honesty), 'The honesty button must not cover the zoom buttons');
+  assert.deepEqual(controls.clickable, [true, true], 'Both zoom buttons must receive pointer input');
+  const snapshot = await page.evaluate(mapLabelSnapshot);
+  assertMapLabelsDoNotOverlap(snapshot, 'mobile controls');
+  assertMapEventCoverage(snapshot, [...fixture.concerts, ...fixture.festivals].map(event => event.id));
+  assert.ok(snapshot.visible.every(marker => separate(marker, controls.zoom)), 'Event labels must leave the zoom controls accessible');
+});

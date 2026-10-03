@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '2.29.0053'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
+const APP_VERSION = '2.30.0057'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
 
 const PRODUCT_SCENARIO = Object.freeze({
   id: 'scenario-a',

@@ -31,6 +31,7 @@ function scheduleMapResize(delay = 0) {
       _mapResizeQueued = false;
       try {
         lmap.invalidateSize({ pan: false, debounceMoveend: true, animate: false });
+        scheduleMapLabelLayout();
       } catch (err) {
         console.error('[map resize]', err);
       }
@@ -43,11 +44,13 @@ function scheduleMapResize(delay = 0) {
 function clearTourMarkers() {
   tourMarkers.forEach(m => m.remove());
   tourMarkers = [];
+  scheduleMapLabelLayout();
 }
 
 function clearFestMarkers() {
   festMarkers.forEach(m => m.remove());
   festMarkers = [];
+  scheduleMapLabelLayout();
 }
 
 function clearRouteLines() {
@@ -77,7 +80,7 @@ function initMap() {
     minZoom: 2,
     worldCopyJump: true,
   }).setView([30, 10], 3);
-  L.control.zoom({ position:'bottomright' }).addTo(lmap);
+  L.control.zoom({ position:'bottomleft' }).addTo(lmap);
   prepareMapTileCache().then(() => L.tileLayer(CT_MAP_TILE_URL, {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19,
@@ -91,16 +94,17 @@ function initMap() {
 
   // Zoom-responsive re-render (overview only, not focus mode)
   lmap.on('zoomend', () => {
+    scheduleMapLabelLayout();
     // Always clear any pending timer first — even in focus mode.
     // If we return early without clearing, a prior-queued timer would
     // fire 180ms later and destroy focus mode with renderOverview().
     clearTimeout(_zRenderTimer);
-    if (focusedArtist || focusedFest) {
+    if (focusedArtist || focusedFest || sidebarTab === 'fests') {
       _setMapInteractionState(false);
       return;
     }
     _zRenderTimer = setTimeout(() => {
-      if (focusedArtist || focusedFest) return; // user may have entered focus during debounce
+      if (focusedArtist || focusedFest || sidebarTab === 'fests') return; // view may have changed during debounce
       try {
         clearOverviewDynamicLayers();
         renderOverview({ preserveRoutes: true });
@@ -121,6 +125,7 @@ function initMap() {
     clearTimeout(_moveTimer);
   });
   lmap.on('moveend', () => {
+    scheduleMapLabelLayout();
     _setMapInteractionState(false);
     clearTimeout(_moveTimer);
     if (_visiblePanelOpen) _moveTimer = setTimeout(updateVisiblePanel, 180);
