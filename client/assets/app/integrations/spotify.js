@@ -180,7 +180,7 @@ function renderOnboardSpotifyAuth() {
     tone = 'error';
   } else if (spotifyAccountState.connected) {
     const name = spotifyAccountState.user?.displayName || 'Spotify';
-    message = `${name} connected. Choose a playlist or open the sample.`;
+    message = `${name} connected. Paste a playlist link or choose one below.`;
     tone = 'ok';
   } else {
     message = 'Connect Spotify to browse your playlists, or paste any playlist link.';
@@ -340,7 +340,7 @@ function handleSpotifyAuthReturnFlag() {
   if (!status) return;
 
   if (status === 'connected') {
-    setSpotifyAuthFlash('Spotify connected. Choose a playlist or open the sample.', 'ok');
+    setSpotifyAuthFlash('Spotify connected. Paste a playlist link or choose one below.', 'ok');
   } else {
     setSpotifyAuthFlash(
       getSpotifyAuthErrorMessage(url.searchParams.get('code')),
@@ -353,7 +353,7 @@ function handleSpotifyAuthReturnFlag() {
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
-async function onboardSpotifyAuthAction() {
+async function onboardSpotifyAuthAction(opts = {}) {
   markOnboardManualIntent();
   if (isScenarioAProductMode()) {
     applyScenarioAProductMode();
@@ -370,9 +370,13 @@ async function onboardSpotifyAuthAction() {
     setTimeout(focusSpotifyLocalSetup, 60);
     return;
   }
-  if (!spotifyAccountState.connected) {
+  if (!spotifyAccountState.connected || opts.reconnect) {
+    const pending = document.getElementById('onboard-url')?.value || document.getElementById('sp-playlist-url')?.value || '';
+    try {
+      if (spExtractId(pending) || pending.startsWith('https://spotify.link/')) localStorage.setItem('tt_pending_spotify_playlist', pending);
+    } catch (_) {}
     const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    window.location.assign(`/api/auth/spotify/login?returnTo=${encodeURIComponent(returnTo)}`);
+    window.location.assign(`/api/auth/spotify/login?returnTo=${encodeURIComponent(returnTo)}${opts.reconnect ? '&show_dialog=1' : ''}`);
     return;
   }
   await loadSpotifyAccountPlaylists(true);
@@ -427,7 +431,7 @@ async function spotifyLogout() {
   spotifyAccountState.playlistsLoaded = false;
   spotifyAccountState.playlistsLoading = false;
   spotifyAccountState.error = '';
-  setSpotifyAuthFlash('Spotify disconnected. You can still open the sample below.');
+  setSpotifyAuthFlash('Spotify disconnected. Your saved playlists are still available.');
   renderOnboardSpotifyAuth();
   renderSpotifyAccessButton();
 }
@@ -479,7 +483,7 @@ function syncOnboardCacheSummary() {
         ? festivals.filter(fest => dateRangeMatchesNamedPreset(fest?.date, fest?.endDate, 'all', { today })).length
         : 0,
       cacheTimestamp: Number(cacheTimestamp) || 0,
-      latestPlaylistUrl: getOnboardHistory()[0]?.url || '',
+      latestPlaylistUrl: (typeof getActivePlaylistSessionId === 'function' && getActivePlaylistSessionId()) ? `https://open.spotify.com/playlist/${getActivePlaylistSessionId()}` : getOnboardHistory()[0]?.url || '',
       cHash: typeof countryHash === 'function' ? countryHash() : '',
       ts: Date.now(),
     };
@@ -498,7 +502,7 @@ function clearOnboardCacheSummary() {
 
 function getDefaultOnboardPlaylistUrl() {
   if (isScenarioAProductMode()) return PINNED_PLAYLIST.url;
-  return getOnboardHistory()[0]?.url || PINNED_PLAYLIST.url;
+  return getOnboardHistory()[0]?.url || '';
 }
 
 function focusOnboardPlaylistInput(selectText = false) {
@@ -559,40 +563,11 @@ function bindOnboardCardAction(el, handler, opts = {}) {
 }
 
 function startOnboardPlaylistUrl(url, label = 'playlist') {
-  const cleanUrl = String(url || '').trim();
   const input = document.getElementById('onboard-url');
-  if (input) input.value = cleanUrl;
-
+  if (input) input.value = String(url || '').trim();
   markOnboardManualIntent();
   syncOnboardPrimaryAction();
-
-  const latestUrl = getOnboardHistory()[0]?.url || '';
-  const cacheInfo = readOnboardCacheSummary();
-  const canResume =
-    samePlaylistUrl(cleanUrl, latestUrl) &&
-    Number(cacheInfo?.artistCount) > 0;
-
-  if (typeof onboardSetStatus === 'function') {
-    onboardSetStatus(`Opening "${label || 'playlist'}"...`);
-  }
-  if (!canResume && typeof onboardShowProgress === 'function') {
-    onboardShowProgress('Loading playlist...');
-  }
-  if (typeof onboardLog === 'function') {
-    onboardLog(`Opening playlist: ${label || cleanUrl || 'playlist'}`, 'ok');
-  }
-
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      Promise.resolve(handleOnboardPrimaryAction()).catch(error => {
-        if (typeof onboardSetStatus === 'function') {
-          onboardSetStatus(error?.message || 'Playlist import failed.', '#ff7070');
-        }
-      });
-    }, 16);
-  });
-
-  return Promise.resolve(true);
+  return handleOnboardPrimaryAction();
 }
 
 function installOnboardCardDelegates() {
@@ -651,8 +626,6 @@ function syncOnboardPrimaryAction() {
   const latestUrl = getOnboardHistory()[0]?.url || '';
   if (samePlaylistUrl(raw, latestUrl)) {
     btn.textContent = 'Open last result';
-  } else if (samePlaylistUrl(raw, PINNED_PLAYLIST.url)) {
-    btn.textContent = 'Open sample';
   } else {
     btn.textContent = 'Scan playlist';
   }
@@ -678,6 +651,7 @@ function canInstantResumeFor(rawValue, info) {
   if (!info || info.artistCount <= 0) return false;
   const latestUrl = getOnboardHistory()[0]?.url || '';
   if (!rawValue) return true;
+  if (!isScenarioAProductMode() && getActivePlaylistSessionId()) return spExtractId(rawValue) === getActivePlaylistSessionId();
   if (!latestUrl) return false;
   return samePlaylistUrl(rawValue, latestUrl);
 }
@@ -700,21 +674,21 @@ function obSetScore(level) {
 
 // Check IDB for cached artist data — returns summary or null
 async function checkIDBCache() {
+  const run = getScanContext();
+  const allowed = new Set(run.artists.map(name => name.toLowerCase()));
+  if (!allowed.size) return null;
   const cachedSummary = readOnboardCacheSummary();
   if (isScenarioAProductMode() && (!cachedSummary || !isPinnedPlaylistSelection(cachedSummary.latestPlaylistUrl || ''))) {
     return null;
   }
   try {
-    const [keys, records] = await Promise.all([
-      DB.keys('artists'),
-      DB.getAll('artists'),
-    ]);
+    const entries = await DB.entries('artists');
+    if (!isScanRunOwned(run)) return null;
     const artistRecords = [];
-    const pairCount = Math.min(keys.length, records.length);
-    for (let i = 0; i < pairCount; i++) {
-      if (keys[i] === '__ping__') continue;
-      if (!scanRecordMatchesCurrentCountryScope(records[i])) continue;
-      artistRecords.push(records[i]);
+    for (const [key, record] of entries) {
+      if (key === '__ping__' || !allowed.has(String(key).toLowerCase())) continue;
+      if (!scanRecordMatchesCurrentCountryScope(record)) continue;
+      artistRecords.push(record);
     }
     if (!artistRecords.length) {
       clearOnboardCacheSummary();
@@ -729,6 +703,7 @@ async function checkIDBCache() {
         festCount = fc.data.filter(fest => dateRangeMatchesNamedPreset(fest?.date, fest?.endDate, 'all', { today })).length;
       }
     } catch {}
+    if (!isScanRunOwned(run)) return null;
     return {
       artistCount: artistRecords.length,
       concertCount: artistRecords.reduce((sum, record) => (
@@ -743,7 +718,7 @@ async function checkIDBCache() {
       cHash: countryHash(),
     };
   } catch {
-    return cachedSummary?.cHash === countryHash() ? cachedSummary : null;
+    return isScanRunOwned(run) && cachedSummary?.cHash === countryHash() ? cachedSummary : null;
   }
 }
 
@@ -753,33 +728,13 @@ async function checkIDBCache() {
 // FEST_VER (e.g. after shipping new country sweeps). Keeps the user on their
 // stale-but-visible data until the new data lands, then re-renders.
 async function _autoRefreshFestivals() {
-  if (!API_KEY) return;
-  scanAborted = false;
-  const runtimeOwned = typeof window._rateLimitedWait !== 'function';
-  let runtime = null;
-  if (runtimeOwned && typeof createScanRuntime === 'function' && typeof installScanRuntime === 'function') {
-    runtime = installScanRuntime(createScanRuntime());
-  }
-  try {
-    if (typeof setStatus === 'function') setStatus('Refreshing festivals in background…', false);
-    await fetchFestivalsData();
-    festivals = deduplicateFestivals(festivals.filter(f => dateRangeMatchesNamedPreset(f.date, f.endDate, 'all')));
-    if (typeof scoreFestivals === 'function' && festivals.length) scoreFestivals();
-    const now = Date.now();
-    const cHash = typeof countryHash === 'function' ? countryHash() : '';
-    DB.put('meta', 'festivals', { ts: scanAborted ? 0 : now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
-    if (typeof persistData === 'function') persistData();
-    if (typeof buildCalChips === 'function') buildCalChips();
-    if (typeof renderCalendar === 'function') renderCalendar();
-    if (typeof renderMap === 'function') renderMap();
-    if (typeof setStatus === 'function') setStatus(`Festivals refreshed: ${festivals.length} on file`, true);
-  } finally {
-    if (runtimeOwned && typeof clearScanRuntime === 'function') clearScanRuntime();
-  }
+  return runFestivalRefresh({ background: true });
 }
 
 // Rebuild concerts + festivals from IDB cache instantly
 async function instantResume(opts = {}) {
+  const run = getScanContext();
+  const current = () => isScanRunOwned(run) && (!opts.isCurrent || opts.isCurrent());
   if (!opts.manual && hasOnboardManualIntent()) return false;
 
   const btn = document.getElementById('onboard-resume-btn');
@@ -839,24 +794,20 @@ async function instantResume(opts = {}) {
     // loop (e.g. 384 sequential round-trips → one scan for the pinned playlist).
     // Festival meta fetch rides the same Promise.all so both stores are read
     // concurrently instead of one after the other.
-    const [keys, records, fc] = await Promise.all([
-      DB.keys('artists'),
-      DB.getAll('artists'),
+    const [entries, fc] = await Promise.all([
+      DB.entries('artists'),
       DB.get('meta', 'festivals').catch(() => null),
     ]);
+    if (!current()) return false;
+    const allowed = new Set(ARTISTS.map(name => name.toLowerCase()));
     const artistKeys = [];
     const artistRecords = [];
-    // keys and records come from two separate IDB transactions so a
-    // concurrent write (e.g. from another tab mid-import) could leave them
-    // at different lengths. Only consume pairs that exist on both sides;
-    // skip any bare key without a record rather than push `undefined`.
-    const pairCount = Math.min(keys.length, records.length);
-    for (let i = 0; i < pairCount; i++) {
-      if (keys[i] === '__ping__') continue;
-      if (!records[i]) continue;
-      if (!scanRecordMatchesCurrentCountryScope(records[i])) continue;
-      artistKeys.push(keys[i]);
-      artistRecords.push(records[i]);
+    // Read keys and values from one transaction so another tab cannot shift pairs.
+    for (const [key, record] of entries) {
+      if (key === '__ping__' || !allowed.has(String(key).toLowerCase())) continue;
+      if (!scanRecordMatchesCurrentCountryScope(record)) continue;
+      artistKeys.push(key);
+      artistRecords.push(record);
     }
     if (!artistRecords.length) {
       clearOnboardCacheSummary();
@@ -872,7 +823,7 @@ async function instantResume(opts = {}) {
     for (const rec of artistRecords) {
       if (rec?.shows) {
         for (const show of rec.shows) {
-          if (show.date >= today) concerts.push(show);
+          if (show.date >= today && allowed.has(String(show.artist || '').toLowerCase())) concerts.push(show);
         }
       }
     }
@@ -890,6 +841,7 @@ async function instantResume(opts = {}) {
     if (festCacheStale && !window._festRefreshRunning) {
       window._festRefreshRunning = true;
       setTimeout(() => {
+        if (!current()) { window._festRefreshRunning = false; return; }
         _autoRefreshFestivals()
           .catch(err => dblog && dblog('warn', `Auto fest refresh failed: ${err?.message || err}`))
           .finally(() => { window._festRefreshRunning = false; });
@@ -908,8 +860,11 @@ async function instantResume(opts = {}) {
 
     buildCalChips(); renderCalendar(); renderMap();
     hideOnboard();
+    renderPlaylistContext();
+    return true;
 
   } catch(e) {
+    if (!current()) return false;
     if (btn) { btn.disabled = false; btn.textContent = '▶ Resume session'; }
     const statusEl = document.getElementById('onboard-status-text');
     if (statusEl) statusEl.textContent = '⚠ Resume failed: ' + e.message;
@@ -1044,7 +999,7 @@ function renderOnboardHistory() {
   // Hide quick-load card if this playlist is already in history (avoid duplication)
   const alreadyInHistory = list.some(p => samePlaylistUrl(p.url || '', PINNED_PLAYLIST.url));
   const ql = document.getElementById('onboard-quickload');
-  if (ql) ql.style.display = alreadyInHistory ? 'none' : '';
+  if (ql) ql.style.display = 'none';
 }
 
 function removeOnboardHistory(e, i) {
@@ -1191,6 +1146,7 @@ function onboardClearProgress() {
 }
 
 function onboardCancel() {
+  if (typeof cancelPlaylistImport === 'function') cancelPlaylistImport();
   _onboardAborted = true;
   onboardHideProgress();
   onboardSetStatus('Import canceled.');
@@ -1426,140 +1382,7 @@ async function legacyRunSpotifyImport(opts = {}) {
 }
 
 async function runSpotifyImport(opts = {}) {
-  const mode = opts.mode || 'onboard';
-  const isOnboard = mode === 'onboard';
-  const urlInputId = isOnboard ? 'onboard-url' : 'sp-playlist-url';
-  const btnId = isOnboard ? 'onboard-btn' : 'sp-import-btn';
-  const raw = resolveSpotifyImportUrl(
-    (document.getElementById(urlInputId)?.value || '').trim(),
-    isOnboard,
-  );
-  const pid = spExtractId(raw);
-
-  if (!pid) {
-    if (isOnboard) onboardSetStatus('Paste a valid Spotify playlist URL.', '#ff7070');
-    else spSetError("Couldn't parse playlist ID. Paste the full Spotify URL.");
-    return false;
-  }
-
-  const btn = document.getElementById(btnId);
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = isOnboard ? 'Loading...' : 'Importing...';
-  }
-
-  spotifyAccountState.pendingPlaylistId = pid;
-  renderSpotifyPlaylistChoices();
-
-  if (isOnboard) onboardShowProgress('Loading playlist...');
-  if (isOnboard) {
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  }
-
-  const setStatus = isOnboard
-    ? (msg, color) => onboardSetStatus(msg, color)
-    : (msg, color) => {
-        const el = document.getElementById('hero-status-text');
-        if (!el) return;
-        el.style.color = color || '';
-        el.textContent = msg;
-      };
-  const setProgress = isOnboard
-    ? (done, total) => {
-        if (_onboardAborted) return;
-        onboardSetProgress(done, total);
-      }
-    : (done, total) => spSetProgress(done, total);
-  const clearProgress = isOnboard ? onboardClearProgress : spClearProgress;
-
-  let success = false;
-  try {
-    setStatus('Loading playlist from Spotify...', '');
-    setProgress(1, 4);
-    onboardLog('Requesting playlist from the local server...', 'ok');
-
-    const payload = await spFetchPlaylistImport(pid);
-    if (isOnboard && _onboardAborted) return false;
-
-    const pl = payload?.playlist || {};
-    const tracks = Array.isArray(payload?.tracks) ? payload.tracks : [];
-    if (!tracks.length) {
-      throw new Error('This playlist has no tracks to scan.');
-    }
-
-    setProgress(3, 4);
-    onboardLog(`Playlist loaded: ${tracks.length} tracks`, 'ok');
-
-    const artistMap = spBuildArtistMap(tracks);
-    const allArtists = Object.values(artistMap).sort((a, b) => b.count - a.count);
-    if (!allArtists.length) {
-      throw new Error('This playlist has no scannable artist data.');
-    }
-
-    const minT = getEffectiveMinTracks();
-    const artists = minT > 1 ? allArtists.filter(a => a.count >= minT) : allArtists;
-    setTrackedArtists(allArtists.map(a => a.name));
-    ARTIST_PLAYS = Object.fromEntries(allArtists.map(a => [a.name.toLowerCase(), a.count]));
-    setArtistTrackState(
-      spBuildArtistTrackIndex(tracks),
-      spBuildPlaylistMeta(pl, raw, tracks.length)
-    );
-    persistArtistTrackState().catch(() => {});
-    setMinTracks(minT);
-    if (!artists.length) {
-      throw new Error(`No artists matched the current threshold (${minT}+ tracks).`);
-    }
-
-    const skipped = allArtists.length - artists.length;
-    if (skipped > 0) {
-      dblog('info', `Min-tracks filter (>=${minT}): kept ${artists.length} artists, skipped ${skipped} with fewer tracks`);
-    }
-
-    const lines = artists.map(a => `${a.name} ${a.count}`);
-    const ta = document.getElementById('artists-ta');
-    if (ta) ta.value = lines.join('\n');
-    updateArtistCount();
-
-    const coverUrl = pl.images?.[0]?.url || '';
-    const topArtists = artists.slice(0, 8).map(a => a.name);
-    addToOnboardHistory(pl.name || 'Playlist', raw, tracks.length, artists.length, coverUrl, topArtists);
-    renderOnboardHistory();
-
-    const onboardInput = document.getElementById('onboard-url');
-    const settingsInput = document.getElementById('sp-playlist-url');
-    if (onboardInput && onboardInput.value !== raw) onboardInput.value = raw;
-    if (settingsInput && settingsInput.value !== raw) settingsInput.value = raw;
-
-    setProgress(4, 4);
-    clearProgress();
-    const skipNote = skipped > 0 ? ` (${skipped} skipped below ${minT})` : '';
-    setStatus(`"${pl.name || 'Playlist'}" loaded. ${artists.length} artists${skipNote}. Starting concert scan...`, 'var(--accent)');
-
-    setTimeout(() => {
-      if (isOnboard) profHideEmpty();
-      else closeSettings();
-      saveAndFetch(false);
-    }, 500);
-
-    success = true;
-    return true;
-  } catch (error) {
-    clearProgress();
-    onboardLog(error.message || 'Playlist import failed.', 'err');
-    setStatus(error.message || 'Playlist import failed.', '#ff7070');
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = isOnboard ? 'Try again' : 'Import & Scan';
-    }
-    if (isOnboard) syncOnboardPrimaryAction();
-    return false;
-  } finally {
-    spotifyAccountState.pendingPlaylistId = '';
-    renderSpotifyPlaylistChoices();
-    if (!success && !isOnboard && btn) {
-      btn.disabled = false;
-    }
-  }
+  return importPlaylistByLink(opts);
 }
 
 async function runSpotifyImportV2(opts = {}) {
@@ -1568,17 +1391,10 @@ async function runSpotifyImportV2(opts = {}) {
 
 // Smart entry point: if IDB has cached data, resume instantly; otherwise run full Spotify import
 async function resumeOrImport() {
-  const raw = resolveSpotifyImportUrl((document.getElementById('onboard-url')?.value || '').trim(), true);
-  const latestUrl = getOnboardHistory()[0]?.url || '';
-  if (raw && (!latestUrl || !samePlaylistUrl(raw, latestUrl))) {
-    return onboardImport();
-  }
+  if (!isScenarioAProductMode()) return resumePlaylistByLink();
+  const raw = resolveSpotifyImportUrl(document.getElementById("onboard-url")?.value || "", true);
   const info = await checkIDBCache().catch(() => null);
-  if (canInstantResumeFor(raw, info)) {
-    return instantResume({ manual: true });
-  } else {
-    return onboardImport();
-  }
+  return canInstantResumeFor(raw, info) ? instantResume({ manual: true }) : onboardImport();
 }
 
 // Thin wrappers that delegate to the shared function

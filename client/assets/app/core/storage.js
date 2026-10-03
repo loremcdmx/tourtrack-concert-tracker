@@ -23,8 +23,12 @@ const DB = (() => {
     return open().then(() => new Promise((res, rej) => {
       const t = _db.transaction(store, mode);
       const req = fn(t.objectStore(store));
-      req.onsuccess = () => res(req.result);
+      let result;
+      req.onsuccess = () => { result = req.result; };
       req.onerror   = () => rej(req.error);
+      t.oncomplete = () => res(result);
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error || new Error('IndexedDB transaction aborted'));
     }));
   }
 
@@ -47,6 +51,21 @@ const DB = (() => {
     delete:  (store, key)      => tx(store, 'readwrite', s => s.delete(key)),
     keys:    (store)           => tx(store, 'readonly',  s => s.getAllKeys()),
     getAll:  (store)           => tx(store, 'readonly',  s => s.getAll()),
+    entries: (store)           => open().then(() => new Promise((res, rej) => {
+      const entries = [];
+      const t = _db.transaction(store, 'readonly');
+      const req = t.objectStore(store).openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return;
+        entries.push([cursor.key, cursor.value]);
+        cursor.continue();
+      };
+      req.onerror = () => rej(req.error);
+      t.oncomplete = () => res(entries);
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error || new Error('IndexedDB transaction aborted'));
+    })),
     clear:   (store)           => tx(store, 'readwrite', s => s.clear()),
   };
 })();
@@ -168,6 +187,229 @@ function uniqueArtistNames(names) {
   return out;
 }
 
+// Provider facts remain shared. Only playlist taste and displayed scan results
+// are snapshotted, so switching playlists does not duplicate the provider DB.
+let _activePlaylistSessionId = (() => {
+  try { return localStorage.getItem('tt_active_playlist') || ''; } catch (_) { return ''; }
+})();
+let _playlistSessionTransitionDepth = 0;
+let _playlistActivationGeneration = 0;
+const _playlistSessionWrites = new Map();
+
+function getActivePlaylistSessionId() { return _activePlaylistSessionId; }
+function isPlaylistSessionTransitioning() { return _playlistSessionTransitionDepth > 0; }
+function playlistSessionStoreKey(id) { return `playlistSession:${String(id || 'Main')}`; }
+function _playlistCopy(value) { return JSON.parse(JSON.stringify(value)); }
+
+function _capturePlaylistSession(id = getActivePlaylistSessionId()) {
+  return _playlistCopy({
+    version: 1, playlistId: id, savedAt: Date.now(),
+    artists: ARTISTS, trackedArtists: TRACKED_ARTISTS, scannedArtists: SCANNED_ARTISTS,
+    artistPlays: ARTIST_PLAYS, artistTracks: ARTIST_TRACKS, playlistMeta: SPOTIFY_PLAYLIST_META,
+    minTracks: typeof _minTracksFilter !== 'undefined' ? _minTracksFilter : 1,
+    concerts, festivals, fetchErrors, cacheTimestamp, cHash: countryHash(),
+  });
+}
+
+function _writePlaylistSession(snapshot) {
+  const key = playlistSessionStoreKey(snapshot.playlistId);
+  const previous = _playlistSessionWrites.get(key) || Promise.resolve();
+  // Serialize writes for one playlist; a slower earlier autosave cannot win.
+  const write = previous.catch(() => {}).then(() => DB.put('meta', key, snapshot));
+  _playlistSessionWrites.set(key, write);
+  write.finally(() => {
+    if (_playlistSessionWrites.get(key) === write) _playlistSessionWrites.delete(key);
+  }).catch(() => {});
+  return write;
+}
+
+async function persistActivePlaylistSession() {
+  // Capture before the first await: a subsequent activation may replace globals.
+  const snapshot = _capturePlaylistSession();
+  if (!snapshot.playlistId) return false;
+  await _writePlaylistSession(snapshot);
+  return true;
+}
+
+async function getPlaylistSession(id) {
+  const key = playlistSessionStoreKey(id);
+  const pending = _playlistSessionWrites.get(key);
+  if (pending) await pending.catch(() => {});
+  const record = await DB.get('meta', key);
+  return record && record.version === 1 && Array.isArray(record.artists) ? _playlistCopy(record) : null;
+}
+
+function _persistPlaylistContextMirror() {
+  if (!getActivePlaylistSessionId()) return;
+  try {
+    localStorage.setItem('tt_active_playlist', getActivePlaylistSessionId());
+    // Results already have localStorage mirrors; large track indexes live in IDB.
+    localStorage.setItem('tt_playlist_session', JSON.stringify({
+      playlistId: getActivePlaylistSessionId(), artists: ARTISTS, trackedArtists: TRACKED_ARTISTS,
+      artistPlays: ARTIST_PLAYS, playlistMeta: SPOTIFY_PLAYLIST_META,
+      minTracks: typeof _minTracksFilter !== 'undefined' ? _minTracksFilter : 1,
+      fetchErrors,
+    }));
+  } catch (_) {}
+}
+
+function resetActivePlaylistSessionContext() {
+  _activePlaylistSessionId = '';
+  _artistTrackStateRevision += 1;
+  try {
+    localStorage.removeItem('tt_active_playlist');
+    localStorage.removeItem('tt_playlist_session');
+  } catch (_) {}
+}
+
+async function _preserveLegacyMainPlaylistSession() {
+  const snapshot = _capturePlaylistSession('');
+  if (typeof activeProf !== 'undefined' && activeProf !== 'Main') {
+    snapshot.artists = JSON.parse(localStorage.getItem('tt_main_artists') || localStorage.getItem('tt_artists') || '[]');
+    snapshot.artistPlays = JSON.parse(localStorage.getItem('tt_main_plays') || localStorage.getItem('tt_plays') || '{}');
+    snapshot.trackedArtists = JSON.parse(localStorage.getItem('tt_main_tracked_artists') || localStorage.getItem('tt_tracked_artists') || '[]');
+    snapshot.concerts = []; snapshot.festivals = []; snapshot.scannedArtists = []; snapshot.fetchErrors = {};
+    snapshot.artistTracks = {}; snapshot.playlistMeta = null; snapshot.cacheTimestamp = 0;
+  }
+  if (await getPlaylistSession('Main')) return;
+  const legacyTracks = await DB.get('meta', 'artistTracks:Main');
+  if (!snapshot.playlistMeta && legacyTracks?.playlistMeta) snapshot.playlistMeta = _playlistCopy(legacyTracks.playlistMeta);
+  if (!Object.keys(snapshot.artistTracks || {}).length && legacyTracks?.data) snapshot.artistTracks = _playlistCopy(legacyTracks.data);
+  await _writePlaylistSession(snapshot);
+  // Old releases saved only one global playlist. Give it its real session id
+  // once while retaining the original Main backup and canonical artist keys.
+  let legacyId = snapshot.playlistMeta?.id || snapshot.playlistMeta?.playlistId || '';
+  if (!legacyId) {
+    try {
+      const latest = JSON.parse(localStorage.getItem('tt_pl_history') || '[]')[0];
+      legacyId = String(latest?.url || '').match(/(?:playlist\/|spotify:playlist:)([a-zA-Z0-9]{22})/)?.[1] || '';
+    } catch (_) {}
+  }
+  if (legacyId && !(await getPlaylistSession(legacyId))) {
+    await _writePlaylistSession({ ...snapshot, playlistId: legacyId });
+  }
+}
+
+function _prepareImportedPlaylistSession(payload) {
+  const id = String(payload?.playlistId || '').trim();
+  const artists = uniqueArtistNames(payload?.artists);
+  if (!id || !/^[a-zA-Z0-9_-]{1,128}$/.test(id) || !artists.length) {
+    throw new Error('Playlist must have an id and at least one selected artist');
+  }
+  return _playlistCopy({
+    version: 1, playlistId: id, savedAt: Date.now(), artists,
+    trackedArtists: uniqueArtistNames(payload.trackedArtists || artists),
+    artistPlays: payload.artistPlays && typeof payload.artistPlays === 'object' ? payload.artistPlays : {},
+    artistTracks: payload.artistTracks && typeof payload.artistTracks === 'object' ? payload.artistTracks : {},
+    playlistMeta: payload.playlistMeta && typeof payload.playlistMeta === 'object' ? payload.playlistMeta : { id },
+    minTracks: Math.max(1, Number(payload.minTracks) || 1),
+    scannedArtists: [], concerts: [], festivals: [], fetchErrors: {}, cacheTimestamp: 0, cHash: countryHash(),
+  });
+}
+
+function _commitPlaylistSession(snapshot) {
+  const artists = uniqueArtistNames(snapshot.artists);
+  const tracked = uniqueArtistNames(snapshot.trackedArtists || artists);
+  const allowed = new Set(artists.map(name => name.toLowerCase()));
+  const scopeMatches = snapshot.cHash === countryHash();
+  const shows = scopeMatches && Array.isArray(snapshot.concerts)
+    ? snapshot.concerts.filter(show => allowed.has(String(show?.artist || '').toLowerCase())) : [];
+  const fests = scopeMatches && Array.isArray(snapshot.festivals) ? snapshot.festivals : [];
+  const scanned = scopeMatches ? uniqueArtistNames((Array.isArray(snapshot.scannedArtists) ? snapshot.scannedArtists : [])
+    .filter(name => allowed.has(String(name || '').toLowerCase()))) : [];
+  const errors = scopeMatches ? Object.fromEntries(Object.entries(snapshot.fetchErrors || {})
+    .filter(([name]) => allowed.has(name.toLowerCase()))) : {};
+  _activePlaylistSessionId = snapshot.playlistId;
+  ARTISTS = artists;
+  TRACKED_ARTISTS = tracked;
+  ARTIST_PLAYS = { ...(snapshot.artistPlays || {}) };
+  setArtistTrackState(snapshot.artistTracks || {}, snapshot.playlistMeta || null);
+  if (typeof _minTracksFilter !== 'undefined') _minTracksFilter = Math.max(1, Number(snapshot.minTracks) || 1);
+  concerts = shows;
+  festivals = fests;
+  SCANNED_ARTISTS = scanned;
+  fetchErrors = errors;
+  cacheTimestamp = scopeMatches ? Number(snapshot.cacheTimestamp) || 0 : 0;
+  focusedArtist = null;
+  if (typeof focusedFest !== 'undefined') focusedFest = null;
+  window._mergeMode = false; window._mergeBaseKeys = null; window._mergeBaseByArtist = null;
+  // Scores belong to this playlist, even when discovery facts were reused.
+  if (festivals.length && typeof scoreFestivals === 'function') scoreFestivals();
+  persistData();
+  persistArtistTrackState().catch(() => {});
+}
+
+async function _activatePlaylistSession(id, imported, { isCurrent = () => true } = {}) {
+  const result = { committed: false, resumed: false, playlistId: id };
+  // A stale import must not invalidate or stop a newer scan.
+  if (!isCurrent()) return result;
+  const generation = ++_playlistActivationGeneration;
+  const current = () => generation === _playlistActivationGeneration && isCurrent();
+  _playlistSessionTransitionDepth += 1;
+  try {
+    let existing = await getPlaylistSession(id);
+    if (!current() || (!imported && !existing)) return result;
+    if (typeof stopActiveScanAndWait === 'function') await stopActiveScanAndWait();
+    if (!current()) return result;
+    // Deferred frames have not run yet; capture the old state before replacing it.
+    if (typeof flushScheduledUiRefresh === 'function') flushScheduledUiRefresh();
+    persistSettings();
+    await persistActivePlaylistSession();
+    if (!current()) return result;
+    if (!getActivePlaylistSessionId()) await _preserveLegacyMainPlaylistSession();
+    if (!current()) return result;
+    existing = await getPlaylistSession(id); // legacy migration may have created it
+    if (!current()) return result;
+    let next = imported || existing;
+    if (imported && existing) {
+      next = { ...imported, concerts: existing.concerts, festivals: existing.festivals,
+        scannedArtists: existing.scannedArtists, fetchErrors: existing.fetchErrors,
+        cacheTimestamp: existing.cacheTimestamp, cHash: existing.cHash };
+    }
+    // Clone all validated locals before the synchronous commit starts.
+    next = _playlistCopy(next);
+    if (!current()) return result;
+    // Do not expose a new active playlist until its first snapshot commits.
+    // A quota/storage error must leave the previous globals and mirror intact.
+    await _writePlaylistSession(next);
+    if (!current()) return result;
+    _commitPlaylistSession(next);
+    return { committed: true, resumed: !!existing, playlistId: id };
+  } finally {
+    _playlistSessionTransitionDepth -= 1;
+  }
+}
+
+function activateImportedPlaylistSession(payload, options) {
+  let prepared;
+  try { prepared = _prepareImportedPlaylistSession(payload); } catch (error) { return Promise.reject(error); }
+  return _activatePlaylistSession(prepared.playlistId, prepared, options);
+}
+
+function resumePlaylistSession(id, options) {
+  const playlistId = String(id || '').trim();
+  if (!playlistId) return Promise.resolve({ committed: false, resumed: false, playlistId });
+  return _activatePlaylistSession(playlistId, null, options);
+}
+
+async function leavePlaylistSessionForProfile(apply) {
+  const generation = ++_playlistActivationGeneration;
+  _playlistSessionTransitionDepth += 1;
+  try {
+    if (typeof stopActiveScanAndWait === 'function') await stopActiveScanAndWait();
+    if (generation !== _playlistActivationGeneration) return false;
+    persistSettings();
+    await persistActivePlaylistSession();
+    if (generation !== _playlistActivationGeneration) return false;
+    const originalMain = getActivePlaylistSessionId() ? await getPlaylistSession('Main') : null;
+    if (generation !== _playlistActivationGeneration) return false;
+    resetActivePlaylistSessionContext();
+    // Applying a manual profile is part of the same synchronous commit.
+    apply(originalMain);
+    return true;
+  } finally { _playlistSessionTransitionDepth -= 1; }
+}
+
 function scenarioArtistKeys(name) {
   const raw = String(name || '').trim();
   if (!raw) return [];
@@ -246,6 +488,7 @@ function artistTrackLookupKeys(name) {
 }
 
 function artistTrackStoreKey(profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
+  if (getActivePlaylistSessionId()) return `artistTracks:playlist:${getActivePlaylistSessionId()}`;
   return `artistTracks:${String(profileName || 'Main')}`;
 }
 
@@ -262,13 +505,10 @@ function setArtistTrackState(index, playlistMeta, profileName = (typeof activePr
 async function persistArtistTrackState(profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
   const profile = String(profileName || 'Main');
   setArtistTrackState(ARTIST_TRACKS, SPOTIFY_PLAYLIST_META, profile);
+  const storeKey = artistTrackStoreKey(profile);
+  const record = _playlistCopy({ profile, ts: Date.now(), data: ARTIST_TRACKS, playlistMeta: SPOTIFY_PLAYLIST_META });
   try {
-    await DB.put('meta', artistTrackStoreKey(profile), {
-      profile,
-      ts: Date.now(),
-      data: ARTIST_TRACKS,
-      playlistMeta: SPOTIFY_PLAYLIST_META,
-    });
+    await DB.put('meta', storeKey, record);
   } catch (_) {}
   return ARTIST_TRACKS;
 }
@@ -280,8 +520,21 @@ async function hydrateArtistTrackState(profileName = (typeof activeProf !== 'und
     return ARTIST_TRACKS;
   }
   const revision = ++_artistTrackStateRevision;
+  const playlistId = getActivePlaylistSessionId();
   try {
-    const record = await DB.get('meta', storeKey);
+    let record = await DB.get('meta', storeKey);
+    if (!record && playlistId && revision === _artistTrackStateRevision) {
+      const session = await getPlaylistSession(playlistId);
+      if (session) record = { data: session.artistTracks, playlistMeta: session.playlistMeta };
+      if (!record) {
+        const legacy = await DB.get('meta', `artistTracks:${profile}`);
+        const legacyId = legacy?.playlistMeta?.id || legacy?.playlistMeta?.playlistId;
+        if (legacyId === playlistId) record = legacy;
+      }
+      if (record && revision === _artistTrackStateRevision) {
+        DB.put('meta', storeKey, _playlistCopy(record)).catch(() => {});
+      }
+    }
     if (revision === _artistTrackStateRevision) {
       setArtistTrackState(record?.data || {}, record?.playlistMeta || null, profile);
     }
@@ -358,7 +611,7 @@ if (typeof window !== 'undefined') {
   });
 }
 
-function persistSettings() {
+function persistSettings(saveSession = true) {
   try {
     localStorage.setItem('tt_key',     API_KEY);
     localStorage.setItem('tt_keys_pool', JSON.stringify(TM_KEYS.map(k => ({ key: k.key, label: k.label }))));
@@ -371,7 +624,7 @@ function persistSettings() {
     localStorage.setItem('tt_geo_preset', geoPreset);
     localStorage.setItem('tt_artist_preset', artistPreset);
 
-    if (activeProf === PROF_MAIN) {
+    if (activeProf === PROF_MAIN && !getActivePlaylistSessionId()) {
       // Only write the canonical artist keys when Main is active.
       // These keys ARE the Main profile's data — no other profile
       // should ever overwrite them.
@@ -390,6 +643,8 @@ function persistSettings() {
 
   // For non-Main profiles, keep the profile snapshot in sync.
   profPersistCurrent();
+  _persistPlaylistContextMirror();
+  if (saveSession && getActivePlaylistSessionId()) persistActivePlaylistSession().catch(() => {});
 }
 
 function persistFestivalData() {
@@ -398,10 +653,12 @@ function persistFestivalData() {
     localStorage.setItem('tt_festivals_chash', countryHash());
   } catch(e) {}
   if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
+  _persistPlaylistContextMirror();
+  if (getActivePlaylistSessionId()) persistActivePlaylistSession().catch(() => {});
 }
 
 function persistData() {
-  persistSettings();
+  persistSettings(false);
   try {
     localStorage.setItem('tt_concerts',  JSON.stringify(concerts));
     localStorage.setItem('tt_festivals', JSON.stringify(festivals));
@@ -410,6 +667,7 @@ function persistData() {
     localStorage.setItem('tt_data_chash', countryHash());
   } catch(e) {}
   if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
+  if (getActivePlaylistSessionId()) persistActivePlaylistSession().catch(() => {});
 }
 
 // Coalesces bursts of persistData() calls (retryAllErrors loop, rapid
@@ -508,6 +766,23 @@ function restore() {
     if (!Array.isArray(TRACKED_ARTISTS)) TRACKED_ARTISTS = [];
     if (!Array.isArray(SCANNED_ARTISTS)) SCANNED_ARTISTS = [];
     favoriteArtists = new Set(JSON.parse(localStorage.getItem('tt_favs') || '[]'));
+    if (getActivePlaylistSessionId()) {
+      const session = JSON.parse(localStorage.getItem('tt_playlist_session') || 'null');
+      if (session?.playlistId === getActivePlaylistSessionId() && Array.isArray(session.artists)) {
+        ARTISTS = uniqueArtistNames(session.artists);
+        TRACKED_ARTISTS = uniqueArtistNames(session.trackedArtists || session.artists);
+        ARTIST_PLAYS = session.artistPlays || {};
+        SPOTIFY_PLAYLIST_META = session.playlistMeta || null;
+        fetchErrors = session.fetchErrors || {};
+        if (typeof _minTracksFilter !== 'undefined') _minTracksFilter = Math.max(1, Number(session.minTracks) || 1);
+        const allowed = new Set(ARTISTS.map(name => name.toLowerCase()));
+        concerts = concerts.filter(show => allowed.has(String(show?.artist || '').toLowerCase()));
+        SCANNED_ARTISTS = SCANNED_ARTISTS.filter(name => allowed.has(String(name || '').toLowerCase()));
+      } else {
+        ARTISTS = []; TRACKED_ARTISTS = []; ARTIST_PLAYS = {};
+        concerts = []; festivals = []; SCANNED_ARTISTS = []; cacheTimestamp = 0;
+      }
+    }
     // Re-apply dedup to cached data (catches duplicates from old scans)
     if (concerts.length) concerts = deduplicateConcerts(concerts);
     if (festivals.length && typeof normalizeFestivalLabels === 'function') festivals = normalizeFestivalLabels(festivals);
@@ -553,9 +828,12 @@ function cacheAge() {
 const SAVE_VER = 1;
 
 function buildSavePayload(label) {
-  // Grab playlist info from history if available
-  const hist = getOnboardHistory();
-  const pl = hist[0] || {};
+  const playlistId = getActivePlaylistSessionId();
+  const meta = SPOTIFY_PLAYLIST_META || {};
+  const history = typeof getOnboardHistory === 'function' ? getOnboardHistory() : [];
+  const pl = playlistId
+    ? (history.find(item => String(item?.url || '').includes(`/playlist/${playlistId}`)) || {})
+    : {};
   return {
     _tt: true, _ver: SAVE_VER,
     label: label || 'Save',
@@ -573,12 +851,15 @@ function buildSavePayload(label) {
     hiddenArtists,
     favoriteArtists: [...favoriteArtists],
     artistPreset,
+    playlistId,
+    minTracks: typeof _minTracksFilter !== 'undefined' ? _minTracksFilter : 1,
+    fetchErrors: _playlistCopy(fetchErrors || {}),
     // Playlist metadata for future load-without-rescan
-    playlistName: pl.name || '',
-    playlistUrl:  pl.url  || '',
-    coverUrl:     pl.coverUrl || '',
-    topArtists:   pl.topArtists || ARTISTS.slice(0, 4),
-    trackCount:   pl.trackCount || ARTISTS.length,
+    playlistName: meta.name || pl.name || '',
+    playlistUrl: meta.spotifyUrl || (playlistId ? `https://open.spotify.com/playlist/${playlistId}` : '') || pl.url || '',
+    coverUrl: meta.coverUrl || pl.coverUrl || '',
+    topArtists: meta.topArtists || pl.topArtists || ARTISTS.slice(0, 4),
+    trackCount: meta.trackCount || pl.trackCount || ARTISTS.length,
     artistTracks: ARTIST_TRACKS,
     playlistMeta: SPOTIFY_PLAYLIST_META,
   };
@@ -618,17 +899,24 @@ function getSaveIndex() {
   try { return JSON.parse(localStorage.getItem('tt_saves') || '[]'); } catch(e) { return []; }
 }
 
+let _savedStateLoadGeneration = 0;
 function loadGameFile(ev) {
   const file = ev.target.files[0];
   if (!file) return;
+  if (typeof cancelPlaylistImport === 'function') cancelPlaylistImport();
+  const generation = ++_savedStateLoadGeneration;
+  const importGeneration = typeof _playlistImportGeneration !== 'undefined' ? _playlistImportGeneration : null;
+  const current = () => generation === _savedStateLoadGeneration
+    && (importGeneration === null || importGeneration === _playlistImportGeneration);
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
+      if (!current()) return;
       const data = JSON.parse(e.target.result);
       if (!data._tt) throw new Error('Not a ConcertTracker save file');
-      applyLoadedState(data, file.name);
+      await applyLoadedState(data, file.name, { isCurrent: current, cancelImport: false });
     } catch(err) {
-      softNotice(`Load failed: ${err.message}`, 'error');
+      if (current()) softNotice(`Load failed: ${err.message}`, 'error');
     }
     // Reset file input so same file can be loaded again
     document.getElementById('sl-file-input').value = '';
@@ -636,84 +924,128 @@ function loadGameFile(ev) {
   reader.readAsText(file);
 }
 
-function applyLoadedState(data, filename) {
-  ARTISTS          = data.artists      || [];
-  TRACKED_ARTISTS  = data.trackedArtists || data.playlistArtists || data.artists || [];
-  SCANNED_ARTISTS  = data.scannedArtists || [];
-  ARTIST_PLAYS     = data.plays        || {};
-  concerts         = data.concerts     || [];
-  festivals        = data.festivals    || [];
-  cacheTimestamp   = data.cacheTimestamp || 0;
-  countryMode      = data.countryMode  || 'world';
-  includeCountries = new Set(data.includeCountries || []);
-  excludeCountries = new Set(data.excludeCountries || []);
-  geoPreset        = data.geoPreset || 'all';
-  hiddenArtists    = data.hiddenArtists || {};
-  favoriteArtists  = new Set(data.favoriteArtists || []);
-  artistPreset     = data.artistPreset || 'all';
-  setArtistTrackState(
-    data.artistTracks || {},
-    data.playlistMeta || {
+function _prepareLoadedState(data) {
+  if (!data || !Array.isArray(data.artists)) throw new Error('Save file must contain an artist list');
+  for (const key of ['concerts', 'festivals', 'trackedArtists', 'scannedArtists', 'includeCountries', 'excludeCountries', 'favoriteArtists']) {
+    if (data[key] !== undefined && !Array.isArray(data[key])) throw new Error(`Invalid saved ${key}`);
+  }
+  const copy = _playlistCopy(data);
+  const metadata = copy.playlistMeta || {
       name: data.playlistName || '',
       spotifyUrl: data.playlistUrl || '',
       coverUrl: data.coverUrl || '',
       topArtists: data.topArtists || [],
       trackCount: data.trackCount || 0,
       importedAt: data.savedAt || Date.now(),
-    },
-    (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main'
-  );
+  };
+  const playlistId = String(copy.playlistId || metadata.id
+    || String(metadata.spotifyUrl || copy.playlistUrl || '').match(/(?:playlist\/|spotify:playlist:)([a-zA-Z0-9]{22})/)?.[1] || '');
+  if (playlistId && !/^[a-zA-Z0-9_-]{1,128}$/.test(playlistId)) throw new Error('Invalid saved playlist id');
+  const mode = ['world', 'include', 'exclude'].includes(copy.countryMode) ? copy.countryMode : 'world';
+  const include = uniqueArtistNames(copy.includeCountries || []).map(code => code.toUpperCase());
+  const exclude = uniqueArtistNames(copy.excludeCountries || []).map(code => code.toUpperCase());
+  const scope = mode === 'world' ? 'world' : `${mode}:${[...(mode === 'include' ? include : exclude)].sort().join(',')}`;
+  const plays = copy.plays || {};
+  const artists = isScenarioAProductMode()
+    ? filterArtistsByPlayThreshold(copy.trackedArtists || copy.artists, plays, scenarioAFixedMinTracks())
+    : uniqueArtistNames(copy.artists);
+  const shows = deduplicateConcerts(copy.concerts || []);
+  return { data: copy, mode, include, exclude, session: {
+    version: 1, playlistId, savedAt: Date.now(), artists,
+    trackedArtists: uniqueArtistNames(copy.trackedArtists || copy.playlistArtists || copy.artists),
+    scannedArtists: uniqueArtistNames(copy.scannedArtists?.length ? copy.scannedArtists : inferConcertArtists(shows)),
+    artistPlays: plays, artistTracks: copy.artistTracks || {}, playlistMeta: { ...metadata, id: playlistId },
+    concerts: shows, festivals: copy.festivals || [], fetchErrors: copy.fetchErrors || {},
+    minTracks: isScenarioAProductMode() ? scenarioAFixedMinTracks() : Math.max(1, Number(copy.minTracks) || 1),
+    cacheTimestamp: Number(copy.cacheTimestamp) || 0, cHash: scope,
+  } };
+}
 
-  // Re-apply dedup (may have been saved before 2-pass dedup)
-  if (concerts.length) concerts = deduplicateConcerts(concerts);
-  if (!SCANNED_ARTISTS.length && concerts.length) SCANNED_ARTISTS = inferConcertArtists(concerts);
-  if (!TRACKED_ARTISTS.length) {
-    TRACKED_ARTISTS = uniqueArtistNames([
-      ...ARTISTS,
-      ...Object.keys(ARTIST_PLAYS || {}),
-      ...SCANNED_ARTISTS,
-    ]);
-  }
-  if (isScenarioAProductMode()) {
-    applyScenarioAArtistThreshold();
-    applyScenarioAResultFilter();
-  }
+async function applyLoadedState(data, filename, { isCurrent = () => true, cancelImport = true } = {}) {
+  // Parse/clone every input before stopping anything or replacing globals.
+  const prepared = _prepareLoadedState(data);
+  if (!isCurrent()) return false;
+  if (cancelImport && typeof cancelPlaylistImport === 'function') cancelPlaylistImport();
+  const generation = ++_playlistActivationGeneration;
+  const importGeneration = typeof _playlistImportGeneration !== 'undefined' ? _playlistImportGeneration : null;
+  const current = () => generation === _playlistActivationGeneration && isCurrent()
+    && (importGeneration === null || importGeneration === _playlistImportGeneration);
+  _playlistSessionTransitionDepth += 1;
+  try {
+    if (typeof stopActiveScanAndWait === 'function') await stopActiveScanAndWait();
+    if (!current()) return false;
+    persistSettings();
+    await persistActivePlaylistSession();
+    if (!current()) return false;
+    if (!getActivePlaylistSessionId()) await _preserveLegacyMainPlaylistSession();
+    if (!current()) return false;
+    if (prepared.session.playlistId) await _writePlaylistSession(prepared.session);
+    if (!current()) return false;
+    countryMode = prepared.mode;
+    includeCountries = new Set(prepared.include);
+    excludeCountries = new Set(prepared.exclude);
+    geoPreset = prepared.data.geoPreset || 'all';
+    hiddenArtists = prepared.data.hiddenArtists || {};
+    favoriteArtists = new Set(prepared.data.favoriteArtists || []);
+    artistPreset = prepared.data.artistPreset || 'all';
+    resetActivePlaylistSessionContext();
+    _commitPlaylistSession(prepared.session);
+    const textarea = document.getElementById('artists-ta');
+    if (textarea) textarea.value = ARTISTS.map(name => {
+      const plays = ARTIST_PLAYS[name.toLowerCase()] || 0;
+      return plays ? `${name} ${plays}` : name;
+    }).join('\n');
+    if (typeof updateArtistCount === 'function') updateArtistCount();
+    const playlistUrl = SPOTIFY_PLAYLIST_META?.spotifyUrl
+      || (getActivePlaylistSessionId() ? `https://open.spotify.com/playlist/${getActivePlaylistSessionId()}` : '');
+    for (const id of ['onboard-url', 'sp-playlist-url']) {
+      const input = document.getElementById(id);
+      if (input) input.value = playlistUrl;
+    }
 
-  persistData();
-  persistArtistTrackState().catch(() => {});
+    const age = data.savedAt ? new Date(data.savedAt).toLocaleString('en-GB',{
+      day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'
+    }) : '?';
+    const msg = `Loaded ${filename} · ${concerts.length} shows · ${festivals.length} festivals · saved ${age}`;
+    setStatus(msg, true);
+    dblog('info', `LOAD: ${msg}`);
 
-  const age = data.savedAt ? new Date(data.savedAt).toLocaleString('en-GB',{
-    day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'
-  }) : '?';
-  const msg = `Loaded ${filename} · ${concerts.length} shows · ${festivals.length} festivals · saved ${age}`;
-  setStatus(msg, true);
-  dblog('info', `LOAD: ${msg}`);
+    closeSaveLoad();
+    hideOnboard();
 
-  closeSaveLoad();
-  hideOnboard();
+    // Track that this data came from a save (not a scan) — mark in history
+    try {
+      if (playlistUrl || data.playlistName) {
+        addToOnboardHistory(
+          SPOTIFY_PLAYLIST_META?.name || data.playlistName || filename,
+          playlistUrl,
+          SPOTIFY_PLAYLIST_META?.trackCount || data.trackCount || ARTISTS.length,
+          ARTISTS.length,
+          SPOTIFY_PLAYLIST_META?.coverUrl || data.coverUrl || '',
+          (data.topArtists || ARTISTS.slice(0, 4)),
+          { fromSave: true, saveFile: filename }
+        );
+      }
+      if (typeof renderOnboardHistory === 'function') renderOnboardHistory();
+    } catch (error) {
+      // The loaded session has already committed. History is secondary and
+      // cannot turn a successful load into a misleading "Load failed" state.
+      if (typeof softNotice === 'function') softNotice('Loaded successfully; playlist history could not be saved.', 'warn');
+    }
 
-  // Track that this data came from a save (not a scan) — mark in history
-  if (data.playlistUrl || data.playlistName) {
-    addToOnboardHistory(
-      data.playlistName || filename,
-      data.playlistUrl  || '',
-      data.trackCount   || ARTISTS.length,
-      ARTISTS.length,
-      data.coverUrl     || '',
-      (data.topArtists  || ARTISTS.slice(0, 4)),
-      { fromSave: true, saveFile: filename }
-    );
-  }
+    // Re-render everything
+    buildCalChips();
+    renderCalendar();
+    renderMap();
 
-  // Re-render everything
-  buildCalChips();
-  renderCalendar();
-  renderMap();
-
-  // If settings open, refresh them
-  if (!document.getElementById('settings-bg').classList.contains('off')) {
-    openSettings();
-  }
+    // If settings open, refresh them
+    if (typeof renderPlaylistContext === 'function') renderPlaylistContext();
+    const settings = document.getElementById('settings-bg');
+    if (settings && !settings.classList.contains('off')) {
+      openSettings();
+    }
+    return true;
+  } finally { _playlistSessionTransitionDepth -= 1; }
 }
 
 // ── Reset map + lists, keep artists — rescan from scratch ──────────

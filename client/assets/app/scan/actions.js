@@ -97,53 +97,25 @@ async function mergeRescan() {
     'This will use Ticketmaster API quota. Continue?'
   )) return;
 
-  dblog('info', `MERGE RESCAN start — ${concerts.length} shows in DB, ${ARTISTS.length} artists to re-fetch`);
-
-  // Step 1: expire every per-artist IDB entry by setting ts=0.
-  // The TTL check is:  (now - cached.ts) < artistCacheTTLForRecord(cached)
-  // Setting ts=0 makes any freshness window fail immediately,
-  // so processArtist falls through to a live TM fetch for every single artist.
-  // We keep the .shows[] in each entry intact — processArtist uses them as
-  // the "existingShows" diff base in force-refresh mode, but in smart mode
-  // (which we use here) they're just ignored after the TTL miss. That's fine;
-  // the merge logic below handles combining old + new shows independently.
-  try {
-    const allIdbKeys = await DB.keys('artists');
-    await Promise.all(allIdbKeys.map(async k => {
-      try {
-        const entry = await DB.get('artists', k);
-        if (entry) await DB.put('artists', k, { ...entry, ts: 0 });
-      } catch(e) {}
-    }));
-    dblog('info', `IDB: expired ${allIdbKeys.length} artist cache entries (ts=0)`);
-  } catch(e) {
-    dblog('warn', `IDB invalidation failed: ${e.message} — will scan anyway`);
-  }
-
-  // Step 2: set the merge mode flag.
-  // fetchAll checks this flag at three injection points (see below).
-  window._mergeMode = true;
-
-  // Step 3: snapshot dedup keys of ALL current concerts.
-  // When processArtist returns fresh shows for artist X, we want to add
-  // any existing shows for X that are NOT in the fresh result set.
-  // Building the key set once here avoids O(n²) lookups during the scan.
-  window._mergeBaseKeys = new Set(concerts.map(_concertKey));
-
-  // Group baseline concerts by artist (lowercase) for fast lookup during merge.
-  window._mergeBaseByArtist = {};
-  for (const c of concerts) {
-    const k = (c.artist||'').toLowerCase();
-    (window._mergeBaseByArtist[k] = window._mergeBaseByArtist[k] || []).push(c);
-  }
-
-  dblog('info', `Merge baseline: ${window._mergeBaseKeys.size} dedup keys across ${Object.keys(window._mergeBaseByArtist).length} artists`);
-
-  // Step 4: run smart scan (false = respect IDB cache).
-  // Since we zeroed all ts values in step 1, every artist will miss the TTL
-  // check and trigger a live TM fetch. The three injection points in fetchAll
-  // handle the merge behaviour.
-  fetchAll(false);
+  return withTrackedScanJob('merge-rescan', async run => {
+    const allowed = new Set(run.artists.map(name => name.toLowerCase()));
+    const entries = await DB.entries('artists');
+    if (!isScanRunCurrent(run)) return false;
+    for (const [key, entry] of entries) {
+      if (!allowed.has(String(key).toLowerCase())) continue;
+      await DB.put('artists', key, { ...entry, ts: 0 });
+      if (!isScanRunCurrent(run)) return false;
+    }
+    window._mergeMode = true;
+    window._mergeBaseKeys = new Set(concerts.map(_concertKey));
+    window._mergeBaseByArtist = {};
+    for (const concert of concerts) {
+      const key = String(concert.artist || '').toLowerCase();
+      (window._mergeBaseByArtist[key] ||= []).push(concert);
+    }
+    // This body stays in the same tracked outer job as cache expiration.
+    return _fetchAllForRun(false, run);
+  });
 }
 
 // ── Purge concerts that have already happened ──────────────────────
@@ -243,7 +215,7 @@ function triggerFileLoad() {
 // ═══════════════════════════════════════════════════════════════
 let spTokenCache = null; // { token, exp }
 const SPOTIFY_SERVER_TIMEOUT_MS = 15000;
-const SPOTIFY_IMPORT_TIMEOUT_MS = 45000;
+const SPOTIFY_IMPORT_TIMEOUT_MS = 180000;
 
 // ═══════════════════════════════════════════════════════════════
 // UNIFIED PROXY SYSTEM  (Spotify + Ticketmaster)
@@ -576,11 +548,16 @@ async function spGetToken() {
 }
 
 function spExtractId(raw) {
-  raw = (raw || '').trim();
-  const m = raw.match(/playlist\/([a-zA-Z0-9]+)/);
-  if (m) return m[1];
+  raw = String(raw || '').trim();
   if (/^[a-zA-Z0-9]{22}$/.test(raw)) return raw;
-  return null;
+  const uri = raw.match(/^spotify:playlist:([a-zA-Z0-9]{22})$/);
+  if (uri) return uri[1];
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.hostname !== 'open.spotify.com' || url.username || url.password || url.port) return null;
+    const path = url.pathname.match(/^\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?(?:embed\/)?playlist\/([a-zA-Z0-9]{22})\/?$/i);
+    return path?.[1] || null;
+  } catch (_) { return null; }
 }
 
 async function spFetchAllTracks(token, pid) {
@@ -621,9 +598,10 @@ async function spFetchAllTracks(token, pid) {
   return { playlist, tracks };
 }
 
-async function spFetchPlaylistImport(pid) {
+async function spFetchPlaylistImport(pid, opts = {}) {
   return spFetchServerJson(`/api/spotify/playlists/${encodeURIComponent(pid)}/import`, {
     credentials: 'same-origin',
+    signal: opts.signal,
   }, {
     label: 'Spotify playlist import',
     timeoutMs: SPOTIFY_IMPORT_TIMEOUT_MS,
@@ -633,6 +611,10 @@ async function spFetchPlaylistImport(pid) {
 async function spFetchServerJson(url, fetchOptions = {}, opts = {}) {
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : SPOTIFY_SERVER_TIMEOUT_MS;
   const controller = new AbortController();
+  const externalSignal = fetchOptions.signal;
+  const abortFromCaller = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -644,28 +626,35 @@ async function spFetchServerJson(url, fetchOptions = {}, opts = {}) {
     if (!response.ok) {
       const error = new Error(data.error || data.message || `${opts.label || 'Spotify request'} failed (${response.status}).`);
       error.status = response.status;
+      error.code = data.code || '';
+      error.retryAfter = Number(data.retryAfter || response.headers.get('Retry-After')) || 0;
       error.detail = data.detail;
       throw error;
     }
     return data;
   } catch (error) {
     if (error && error.name === 'AbortError') {
+      if (externalSignal?.aborted) throw error;
       throw new Error(`${opts.label || 'Spotify request'} timed out after ${Math.round(timeoutMs / 1000)}s.`);
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
   }
 }
 
 function spBuildArtistMap(tracks) {
   // artist.id → { name, count }
-  const map = {};
+  const map = Object.create(null);
   tracks.forEach(track => {
     if (!track || track.is_local) return;
     (track.artists || []).forEach(a => {
-      if (!map[a.id]) map[a.id] = { name: a.name, count: 0 };
-      map[a.id].count++;
+      const name = String(a?.name || '').trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      if (!map[key]) map[key] = { name, count: 0 };
+      map[key].count++;
     });
   });
   return map;
@@ -675,83 +664,58 @@ function spBuildArtistMap(tracks) {
 // ═══════════════════════════════════════════════════════════════
 // IMPORT FESTIVALS ONLY
 // ═══════════════════════════════════════════════════════════════
-async function importFestivalsOnly() {
-  const btn = document.getElementById('fest-import-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Importing…'; }
-  scanAborted = false;
+function importFestivalsOnly() { return runFestivalRefresh(); }
+function rescanFestsOnly() { return runFestivalRefresh({ force: true }); }
 
-  try {
-    setStatus('Importing festivals…', false);
-    await fetchFestivalsData();
-
-    // Persist festivals
-    persistFestivalData();
-    DB.put('meta', 'festivals', { data: festivals, ts: scanAborted ? 0 : Date.now(), cHash: countryHash(), ver: FEST_VER }).catch(() => {});
-
-    buildFestPanel();
-    renderMap();
-    setStatus(scanAborted ? `${festivals.length} festivals — stopped (partial results)` : `✓ ${festivals.length} festivals imported`, true);
-    dblog(scanAborted ? 'warn' : 'info', `${scanAborted ? 'Festival-only import stopped' : 'Festival-only import done'}: ${festivals.length} festivals`);
-  } catch(e) {
-    setStatus('Festival import failed: ' + e.message, false);
-    dblog('error', 'Festival import error: ' + e.message);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '⬇ Import festivals'; }
-  }
-}
-
-async function rescanFestsOnly() {
-  if (!ARTISTS.length) { setStatus('No artists loaded — import a playlist first', false); return; }
-  const btn     = document.getElementById('fest-rescan-btn');
-  const stopBtn = document.getElementById('stop-btn');
-  const loadbar = document.getElementById('loadbar');
-  const hdProg  = document.getElementById('hd-progress');
-  if (btn) { btn.disabled = true; btn.textContent = 'Fests...'; }
-  scanAborted = false;
-
-  // Show scan UI (loadbar + hd-progress + stop btn)
-  if (loadbar) { loadbar.style.display = 'block'; document.getElementById('loadbar-fill').style.width = '0%'; }
-  if (hdProg)  { hdProg.style.display = ''; hdProg.textContent = ''; }
-  if (stopBtn) stopBtn.style.display = '';
-  document.getElementById('pulse').className = 'pulse';
-
-  const ongoingFestivalSnapshot = snapshotOngoingFestivals();
-  try {
-    // Replace future data while retaining known festivals that are still running.
-    await DB.delete('meta', 'festivals').catch(() => {});
-    festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, []);
-    buildFestPanel(); renderMap();
-
-    setStatus('Fetching festivals...', false);
-    setProgress('Festivals: starting...', 2);
-
-    // fetchFestivalsData calls setProgress internally throughout
-    await fetchFestivalsData();
-
-    // Post-process: dedup + score against current artist set
-    festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, festivals);
-    if (ARTISTS.length) scoreFestivals();
-
-    // Save fresh data to IDB
-    DB.put('meta', 'festivals', { data: festivals, ts: scanAborted ? 0 : Date.now(), cHash: countryHash(), ver: FEST_VER }).catch(() => {});
-    persistFestivalData();
-
-    setProgress('', 100);
-    buildCalChips(); renderCalendar();
-    buildFestPanel(); renderMap();
-
-    setStatus(festivals.length + (scanAborted ? ' festivals — stopped (partial results)' : ' festivals — re-scanned'), true);
-    dblog(scanAborted ? 'warn' : 'info', (scanAborted ? 'Fest-only rescan stopped: ' : 'Fest-only rescan done: ') + festivals.length + ' festivals');
-  } catch(e) {
-    setStatus('Festival rescan failed: ' + e.message, false);
-    dblog('error', 'Fest rescan error: ' + e.message);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '\uD83C\uDFAA Fests'; }
-    if (stopBtn) stopBtn.style.display = 'none';
-    if (loadbar) setTimeout(() => { loadbar.style.display = 'none'; }, 800);
-    if (hdProg)  setTimeout(() => { hdProg.style.display = 'none'; hdProg.textContent = ''; }, 800);
-    document.getElementById('pulse').className = 'pulse live';
-  }
+function runFestivalRefresh({ force = false, background = false } = {}) {
+  if (!API_KEY || (force && !ARTISTS.length)) return Promise.resolve(false);
+  return withTrackedScanJob('festivals', async run => {
+    const runtime = installScanRuntime(createScanRuntime(), run);
+    const btn = document.getElementById(force ? 'fest-rescan-btn' : 'fest-import-btn');
+    const stop = document.getElementById('stop-btn');
+    const loadbar = document.getElementById('loadbar');
+    const progress = document.getElementById('hd-progress');
+    const baseline = snapshotOngoingFestivals();
+    if (btn && !background) { btn.disabled = true; btn.textContent = 'Importing…'; }
+    if (stop) stop.style.display = '';
+    try {
+      if (force) {
+        await DB.delete('meta', 'festivals');
+        if (!isScanRunCurrent(run)) return false;
+        festivals = mergeOngoingFestivals(baseline, []);
+        buildFestPanel(); renderMap();
+      }
+      setStatus(background ? 'Refreshing festivals in background…' : 'Fetching festivals…', false);
+      await fetchFestivalsData(run);
+      if (!isScanRunOwned(run)) return false;
+      const stopped = scanAborted;
+      festivals = mergeOngoingFestivals(baseline, festivals);
+      if (ARTISTS.length) scoreFestivals();
+      await DB.put('meta', 'festivals', { data: festivals, ts: stopped ? 0 : Date.now(), cHash: run.cHash, ver: FEST_VER });
+      if (!isScanRunOwned(run)) return false;
+      persistFestivalData();
+      await persistActivePlaylistSession();
+      if (!isScanRunOwned(run)) return false;
+      buildCalChips(); renderCalendar(); buildFestPanel(); renderMap();
+      setStatus(festivals.length + (stopped ? ' festivals — stopped (partial results)' : ' festivals imported'), true);
+      return true;
+    } catch (error) {
+      if (isScanRunCurrent(run)) {
+        setStatus('Festival import failed: ' + error.message, false);
+        dblog('error', 'Festival import error: ' + error.message);
+      }
+      return false;
+    } finally {
+      clearScanRuntime(runtime);
+      if (btn && !background) { btn.disabled = false; btn.textContent = force ? 'Actions' : '⬇ Import festivals'; }
+      if (isScanRunOwned(run)) {
+        if (stop) stop.style.display = 'none';
+        if (loadbar) loadbar.style.display = 'none';
+        if (progress) { progress.style.display = 'none'; progress.textContent = ''; }
+        document.getElementById('pulse').className = 'pulse live';
+      }
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════

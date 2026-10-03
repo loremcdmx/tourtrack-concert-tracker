@@ -152,11 +152,23 @@ class CdpBrowser {
     });
   }
 
-  async newPage(url) {
+  async newPage(url, { pinnedPlaylistOnly = false } = {}) {
     const target = await this.send('Target.createTarget', { url: 'about:blank' });
     const attached = await this.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     const page = new CdpPage(this, target.targetId, attached.sessionId);
     await page.enable();
+    if (pinnedPlaylistOnly) {
+      await this.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `(() => {
+          let config;
+          Object.defineProperty(window, '__SERVER_CONFIG__', {
+            configurable: true,
+            get: () => config,
+            set: value => { config = { ...value, pinnedPlaylistOnly: true }; },
+          });
+        })();`,
+      }, page.sessionId);
+    }
     await page.navigate(url);
     return page;
   }
@@ -459,8 +471,9 @@ after(async () => {
   }
 });
 
-beforeEach(async () => {
-  page = await browser.newPage(baseUrl);
+beforeEach(async context => {
+  // Only the explicit legacy baseline gets the product-lock flag.
+  page = await browser.newPage(baseUrl, { pinnedPlaylistOnly: context.name.startsWith('scenario A ') });
 });
 
 afterEach(async () => {
@@ -1092,6 +1105,7 @@ test('festival-only refresh retains ongoing events and saves a restorable cache'
   const result = await page.evaluate(async fresh => {
     const originalFetch = fetchFestivalsData;
     fetchFestivalsData = async () => { festivals.push(fresh); };
+    API_KEY = 'offline-ui-test';
     try {
       await rescanFestsOnly();
       const cache = await DB.get('meta', 'festivals');
@@ -1148,8 +1162,12 @@ for (const action of ['importFestivalsOnly', 'rescanFestsOnly']) {
       })],
     });
     const result = await page.evaluate(async actionName => {
+      await DB.put('meta', 'festivals', {
+        data: festivals, ts: Date.now(), cHash: countryHash(), ver: FEST_VER,
+      });
       const originalFetch = fetchFestivalsData;
       fetchFestivalsData = async () => { scanAborted = true; };
+      API_KEY = 'offline-ui-test';
       try {
         await window[actionName]();
         const cache = await DB.get('meta', 'festivals');
@@ -2163,4 +2181,421 @@ test('mobile zoom controls stay clear of the legend, honesty button and event la
   assertMapLabelsDoNotOverlap(snapshot, 'mobile controls');
   assertMapEventCoverage(snapshot, [...fixture.concerts, ...fixture.festivals].map(event => event.id));
   assert.ok(snapshot.visible.every(marker => separate(marker, controls.zoom)), 'Event labels must leave the zoom controls accessible');
+});
+
+const IMPORT_IDS = { a: '1'.repeat(22), b: '2'.repeat(22), c: '3'.repeat(22) };
+const importUrl = id => `https://open.spotify.com/playlist/${id}`;
+
+function spotifyImportFixture(id, name, credits = [['Alpha', 'Beta'], ['Alpha'], ['Gamma'], ['Alpha'], ['Beta']], extra = {}) {
+  const tracks = credits.map((artists, index) => ({
+    type: 'track', id: `${id}-${index}`, name: `${name} Track ${index + 1}`,
+    uri: `spotify:track:${id}`, duration_ms: 180000 + index, is_local: false,
+    external_urls: { spotify: `https://open.spotify.com/track/${id}` },
+    album: { name: `${name} Album`, images: [] },
+    artists: artists.map(artist => ({ id: `artist-${artist.toLowerCase().replace(/\W/g, '-')}`, name: artist })),
+  }));
+  return {
+    playlist: {
+      id, name, owner: { display_name: 'Offline Listener' }, images: [],
+      external_urls: { spotify: importUrl(id) }, tracks: { total: tracks.length }, snapshot_id: `snapshot-${id}`,
+    },
+    tracks, ...extra,
+  };
+}
+
+async function configureSpotifyImports(playlists) {
+  const response = await fetch(`${baseUrl}/__test/spotify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playlists }),
+  });
+  assert.equal(response.status, 200);
+}
+
+async function prepareSpotifyImportTest(pageRef, original = {}) {
+  await pageRef.evaluate(async () => {
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    await DB.clear('artists');
+    await DB.clear('meta');
+  });
+  await pageRef.evaluate(installFixture, original);
+  await pageRef.evaluate(() => {
+    if (typeof resetActivePlaylistSessionContext === 'function') resetActivePlaylistSessionContext();
+    saveOnboardHistory([]);
+    setMinTracks(1);
+    openPlaylistImport();
+    setPlaylistImportMinTracks(1);
+    window.__testImportScanCalls = [];
+    saveAndFetch = () => {
+      window.__testImportScanCalls.push({ id: SPOTIFY_PLAYLIST_META?.id || '', artists: [...ARTISTS] });
+    };
+  });
+}
+
+function spotifySessionSnapshot() {
+  return {
+    artists: [...ARTISTS], tracked: [...TRACKED_ARTISTS], plays: { ...ARTIST_PLAYS },
+    tracks: ARTIST_TRACKS, playlist: SPOTIFY_PLAYLIST_META,
+    concerts: concerts.map(event => event.id), festivals: festivals.map(event => event.id),
+    scanned: [...SCANNED_ARTISTS], cacheTimestamp, active: localStorage.getItem('tt_active_playlist'),
+    minTracks: getEffectiveMinTracks(), history: getOnboardHistory(),
+  };
+}
+
+async function runOfflineSpotifyImport(pageRef, url, mode = 'onboard') {
+  return pageRef.evaluate(async (value, importMode) => {
+    document.getElementById(importMode === 'onboard' ? 'onboard-url' : 'sp-playlist-url').value = value;
+    return runSpotifyImport({ mode: importMode });
+  }, url, mode);
+}
+
+test('playlist links mode is the editable default and the header opens an import that works with Enter', { concurrency: false }, async () => {
+  await configureSpotifyImports({ [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Keyboard Playlist') });
+  await page.evaluate(() => localStorage.clear());
+  await page.navigate(baseUrl);
+  const initial = await page.evaluate(() => ({
+    mode: PRODUCT_SCENARIO.id, pinned: isScenarioAProductMode(), minTracks: getEffectiveMinTracks(),
+    onboardReadonly: document.getElementById('onboard-url').readOnly,
+    settingsReadonly: document.getElementById('sp-playlist-url').readOnly,
+    title: document.getElementById('onboard-main-title').textContent,
+    cutoffVisible: getComputedStyle(document.getElementById('onboard-mintracks-chips')).display !== 'none',
+  }));
+  assert.equal(initial.mode, 'playlist-links');
+  assert.equal(initial.pinned, false);
+  assert.equal(initial.minTracks, 1);
+  assert.equal(initial.onboardReadonly, false);
+  assert.equal(initial.settingsReadonly, false);
+  assert.equal(initial.cutoffVisible, true);
+  assert.doesNotMatch(initial.title, /pinned/i);
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(url => {
+    hideOnboard();
+    document.getElementById('playlist-open-btn').click();
+    const input = document.getElementById('onboard-url');
+    input.value = url;
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  }, importUrl(IMPORT_IDS.a));
+  await page.waitFor(() => SPOTIFY_PLAYLIST_META?.id === '1'.repeat(22));
+  const imported = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(imported.playlist.name, 'Keyboard Playlist');
+  assert.deepEqual(imported.artists, ['Alpha', 'Beta', 'Gamma']);
+  await settleUi(page, 560);
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [{ id: IMPORT_IDS.a, artists: ['Alpha', 'Beta', 'Gamma'] }]);
+});
+
+test('Spotify link parsing accepts canonical URI localized and embed links and rejects unrelated hosts and paths', { concurrency: false }, async () => {
+  const valid = [
+    importUrl(IMPORT_IDS.a), `${importUrl(IMPORT_IDS.a)}?si=share&utm_source=copy-link`,
+    `spotify:playlist:${IMPORT_IDS.a}`, `https://open.spotify.com/intl-ru/playlist/${IMPORT_IDS.a}`,
+    `https://open.spotify.com/embed/playlist/${IMPORT_IDS.a}`, IMPORT_IDS.a,
+  ];
+  const invalid = [
+    `https://evil.example/playlist/${IMPORT_IDS.a}`, `https://open.spotify.com.evil.example/playlist/${IMPORT_IDS.a}`,
+    `https://open.spotify.com@evil.example/playlist/${IMPORT_IDS.a}`, `https://open.spotify.com/artist/${IMPORT_IDS.a}`,
+    `https://open.spotify.com/playlist/${IMPORT_IDS.a}/extra`, 'https://open.spotify.com/playlist/short',
+    `spotify:track:${IMPORT_IDS.a}`, `javascript:playlist/${IMPORT_IDS.a}`, `http://open.spotify.com/playlist/${IMPORT_IDS.a}`,
+  ];
+  const parsed = await page.evaluate((good, bad) => ({
+    valid: good.map(value => spExtractId(value)), invalid: bad.map(value => spExtractId(value)),
+  }), valid, invalid);
+  assert.deepEqual(parsed.valid, valid.map(() => IMPORT_IDS.a));
+  assert.ok(parsed.invalid.every(id => id === null), 'Only a real Spotify playlist resource may select a playlist');
+});
+
+test('arbitrary playlist import retains metadata and multi-artist counts while applying the selected cutoff', { concurrency: false }, async () => {
+  await configureSpotifyImports({ [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'My Joint Credits') });
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(() => setPlaylistImportMinTracks(2));
+  assert.equal(await runOfflineSpotifyImport(page, `spotify:playlist:${IMPORT_IDS.a}`), true);
+  const state = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(state.playlist.id, IMPORT_IDS.a);
+  assert.equal(state.playlist.name, 'My Joint Credits');
+  assert.equal(state.playlist.ownerName, 'Offline Listener');
+  assert.equal(state.playlist.trackCount, 5);
+  assert.equal(state.playlist.spotifyUrl, importUrl(IMPORT_IDS.a));
+  assert.deepEqual(state.artists, ['Alpha', 'Beta']);
+  assert.deepEqual(state.tracked, ['Alpha', 'Beta', 'Gamma']);
+  assert.deepEqual(state.plays, { alpha: 3, beta: 2, gamma: 1 });
+  assert.equal(state.tracks.alpha.totalTrackHits, 3);
+  assert.equal(state.tracks.beta.totalTrackHits, 2);
+  assert.equal(state.tracks.gamma.totalTrackHits, 1);
+  assert.equal(state.minTracks, 2);
+  assert.equal(state.active, IMPORT_IDS.a);
+  assert.ok(state.history.some(item => item.url === importUrl(IMPORT_IDS.a) && item.name === 'My Joint Credits'));
+  assert.deepEqual(await page.evaluate(() => ({ onboard: document.getElementById('onboard-url').value, settings: document.getElementById('sp-playlist-url').value })), {
+    onboard: importUrl(IMPORT_IDS.a), settings: importUrl(IMPORT_IDS.a),
+  });
+});
+
+test('failed and empty-threshold Spotify imports preserve the previous playlist session atomically', { concurrency: false }, async () => {
+  const successful = spotifyImportFixture(IMPORT_IDS.a, 'Keep This Playlist');
+  await configureSpotifyImports({ [IMPORT_IDS.a]: successful, [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Rejected Playlist') });
+  await prepareSpotifyImportTest(page);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  await settleUi(page, 560);
+  const originalConcert = makeConcert('Alpha', 4, 'Saved Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'saved-before-failure' });
+  await page.evaluate(event => { concerts = [event]; SCANNED_ARTISTS = ['Alpha']; persistData(); }, originalConcert);
+  for (const scenario of [
+    { fixture: spotifyImportFixture(IMPORT_IDS.b, 'Server Failure', undefined, { error: { status: 503, message: 'Spotify is temporarily unavailable' } }), cutoff: 1 },
+    { fixture: spotifyImportFixture(IMPORT_IDS.b, 'Empty Playlist', []), cutoff: 1 },
+    { fixture: spotifyImportFixture(IMPORT_IDS.b, 'No Threshold Match'), cutoff: 20 },
+  ]) {
+    await configureSpotifyImports({ [IMPORT_IDS.a]: successful, [IMPORT_IDS.b]: scenario.fixture });
+    await page.evaluate(cutoff => setPlaylistImportMinTracks(cutoff), scenario.cutoff);
+    const before = await page.evaluate(spotifySessionSnapshot);
+    assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), false);
+    const after = await page.evaluate(spotifySessionSnapshot);
+    assert.deepEqual(after, before, 'A rejected import must not replace artists, tracks, events, history or active playlist');
+    assert.equal(await page.evaluate(() => document.getElementById('onboard-url').value), importUrl(IMPORT_IDS.b), 'Keep the attempted link editable so the user can correct or retry it');
+  }
+});
+
+test('a newer Spotify import wins when an older playlist responds late', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Slow Playlist', [['Slow Artist']], { delayMs: 250 }),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Fast Playlist', [['Fast Artist']]),
+  });
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(url => {
+    document.getElementById('onboard-url').value = url;
+    window.__testSlowImport = runSpotifyImport({ mode: 'onboard' });
+  }, importUrl(IMPORT_IDS.a));
+  await page.waitFor(() => spotifyAccountState.pendingPlaylistId === '1'.repeat(22));
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), true);
+  assert.equal(await page.evaluate(() => window.__testSlowImport), false);
+  await settleUi(page, 600);
+  const state = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(state.active, IMPORT_IDS.b);
+  assert.equal(state.playlist.name, 'Fast Playlist');
+  assert.deepEqual(state.artists, ['Fast Artist']);
+  assert.deepEqual(state.plays, { 'fast artist': 1 });
+  assert.ok(state.history.every(item => item.url !== importUrl(IMPORT_IDS.a)), 'A superseded response must not enter playlist history');
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [{ id: IMPORT_IDS.b, artists: ['Fast Artist'] }]);
+});
+
+test('superseded 500ms scan callbacks and canceled imports cannot replace or scan the previous session', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Initial Playlist', [['Alpha']]),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Pending Playlist', [['Beta']], { delayMs: 900 }),
+  });
+  await prepareSpotifyImportTest(page);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  await page.evaluate(url => {
+    document.getElementById('onboard-url').value = url;
+    window.__testCanceledImport = runSpotifyImport({ mode: 'onboard' });
+  }, importUrl(IMPORT_IDS.b));
+  await page.waitFor(() => spotifyAccountState.pendingPlaylistId === '2'.repeat(22));
+  await settleUi(page, 550);
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [], 'The older delayed scan must not run while a newer import owns the UI');
+  await page.evaluate(() => onboardCancel());
+  assert.equal(await page.evaluate(() => window.__testCanceledImport), false);
+  await settleUi(page, 600);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before);
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [], 'Cancel must invalidate pending scan callbacks as well as the HTTP request');
+  assert.match(await page.evaluate(() => document.getElementById('onboard-status-text').textContent), /cancel/i);
+});
+
+test('Spotify access denial offers a clear reconnect action while retaining the link and current results', { concurrency: false }, async () => {
+  await configureSpotifyImports({ [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Private Playlist', undefined, {
+    error: { status: 403, message: 'Playlist access denied' },
+  }) });
+  await prepareSpotifyImportTest(page, {
+    artists: ['Saved Artist'], artistPlays: { 'saved artist': 6 },
+    concerts: [makeConcert('Saved Artist', 5, 'Saved Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'kept-on-denial' })],
+  });
+  const before = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), false);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before);
+  const ui = await page.evaluate(() => ({
+    input: document.getElementById('onboard-url').value,
+    status: document.getElementById('onboard-status-text').textContent,
+    authLabel: document.getElementById('onboard-auth-btn').textContent,
+    authDisabled: document.getElementById('onboard-auth-btn').disabled,
+    authVisible: getComputedStyle(document.getElementById('onboard-auth-btn')).display !== 'none'
+      && document.getElementById('onboard-auth-btn').getBoundingClientRect().height > 0,
+    retryDisabled: document.getElementById('onboard-btn').disabled,
+  }));
+  assert.equal(ui.input, importUrl(IMPORT_IDS.b));
+  assert.match(ui.status, /connect|sign in|access|private/i);
+  assert.match(ui.authLabel, /Spotify/i);
+  assert.equal(ui.authDisabled, false);
+  assert.equal(ui.authVisible, true);
+  assert.equal(ui.retryDisabled, false);
+
+  await page.evaluate(() => {
+    spotifyAccountState.loaded = true;
+    spotifyAccountState.loading = false;
+    spotifyAccountState.connected = true;
+    spotifyAccountState.user = { id: 'other-listener', displayName: 'Other Listener' };
+    spotifyAccountState.playlistsLoaded = true;
+    renderOnboardSpotifyAuth();
+  });
+  const typedLink = `${importUrl(IMPORT_IDS.b)}?si=keep-the-typed-link`;
+  assert.equal(await runOfflineSpotifyImport(page, typedLink), false);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, 'An access error from a connected account must preserve the previous session');
+  const connectedUi = await page.evaluate(() => {
+    const action = document.getElementById('playlist-login-action');
+    return {
+      label: action.textContent.trim(),
+      visible: !action.hidden && action.getBoundingClientRect().height > 0,
+      input: document.getElementById('onboard-url').value,
+    };
+  });
+  assert.equal(connectedUi.label, 'Switch Spotify account');
+  assert.equal(connectedUi.visible, true);
+  assert.equal(connectedUi.input, typedLink);
+  const reconnect = await page.evaluate(async () => {
+    window.__testAuthRoutes = [];
+    window.__testAuthOptions = [];
+    window.__testPlaylistListReloads = 0;
+    // Run the real auth handler with its navigation boundary replaced.
+    // The UI click must select reconnection without leaving this offline page.
+    const realAuthHandler = onboardSpotifyAuthAction;
+    const offlineAuthHandler = new Function('window', `return (${realAuthHandler.toString()});`)({
+      location: {
+        pathname: location.pathname, search: location.search, hash: location.hash,
+        assign: url => window.__testAuthRoutes.push(url),
+      },
+    });
+    onboardSpotifyAuthAction = opts => {
+      window.__testAuthOptions.push(opts || {});
+      window.__testAuthAction = offlineAuthHandler(opts);
+      return window.__testAuthAction;
+    };
+    loadSpotifyAccountPlaylists = async () => { window.__testPlaylistListReloads++; return []; };
+    document.getElementById('playlist-login-action').click();
+    await window.__testAuthAction;
+    return {
+      routes: window.__testAuthRoutes, options: window.__testAuthOptions,
+      listReloads: window.__testPlaylistListReloads,
+      pendingLink: localStorage.getItem('tt_pending_spotify_playlist'),
+      input: document.getElementById('onboard-url').value,
+    };
+  });
+  assert.deepEqual(reconnect.options, [{ reconnect: true }]);
+  assert.equal(reconnect.listReloads, 0, 'Switching accounts must enter login rather than refresh the current account playlists');
+  assert.equal(reconnect.routes.length, 1);
+  const route = new URL(reconnect.routes[0], baseUrl);
+  assert.equal(route.origin, baseUrl);
+  assert.equal(route.pathname, '/api/auth/spotify/login');
+  assert.equal(route.searchParams.get('show_dialog'), '1');
+  assert.equal(route.searchParams.get('returnTo'), '/');
+  assert.equal(reconnect.pendingLink, typedLink);
+  assert.equal(reconnect.input, typedLink);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, 'Starting account reconnection must not discard the working playlist results');
+});
+
+test('desktop and mobile playlist importers keep readable text and usable link widths within the viewport', { concurrency: false }, async () => {
+  await prepareSpotifyImportTest(page);
+  for (const viewport of [{ width: 1440, height: 900, minInputWidth: 260 }, { width: 375, height: 667, minInputWidth: 200 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    await page.evaluate(url => {
+      hideOnboard();
+      document.getElementById('playlist-open-btn').click();
+      document.getElementById('onboard-url').value = url;
+    }, `${importUrl(IMPORT_IDS.a)}?si=${'a'.repeat(100)}`);
+    await settleUi(page, 120);
+    const ui = await page.evaluate(() => {
+      const bounds = selector => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { left: rect.left, right: rect.right, width: rect.width };
+      };
+      const text = selector => {
+        const element = document.querySelector(selector);
+        const style = getComputedStyle(element);
+        return {
+          ...bounds(selector), text: element.textContent.trim(),
+          clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+          clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+          overflowX: style.overflowX, overflowY: style.overflowY,
+        };
+      };
+      return {
+        viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+        card: bounds('.onboard-card'), input: bounds('#onboard-url'), button: bounds('#onboard-btn'),
+        title: text('#onboard-main-title'), sub: text('#onboard-sub-text'),
+        editable: !document.getElementById('onboard-url').readOnly,
+      };
+    });
+    assert.equal(ui.editable, true);
+    assert.ok(ui.scrollWidth <= ui.viewport + 1, `${viewport.width}px: the importer must not create horizontal page scrolling`);
+    assert.ok(ui.input.width >= viewport.minInputWidth, `${viewport.width}px: link field needs at least ${viewport.minInputWidth}px, got ${ui.input.width}px`);
+    for (const [name, rect] of Object.entries({ card: ui.card, input: ui.input, button: ui.button, title: ui.title, sub: ui.sub })) {
+      assert.ok(rect.width > 0 && rect.left >= -1 && rect.right <= ui.viewport + 1, `${viewport.width}px: ${name} must fit within the viewport`);
+    }
+    for (const [name, element] of Object.entries({ title: ui.title, subtitle: ui.sub })) {
+      assert.ok(element.text.length > 0, `${viewport.width}px: ${name} must remain visible`);
+      assert.ok(element.clientHeight > 0 && (element.scrollHeight <= element.clientHeight + 1 || element.overflowY === 'visible')
+        && element.scrollWidth <= element.clientWidth + 1, `${viewport.width}px: the full ${name} must wrap without clipping: ${JSON.stringify(element)}`);
+    }
+  }
+});
+
+test('saved playlist sessions restore A after importing B and reloading without Spotify calls or cross-playlist cache data', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Saved Playlist A', [['Alpha', 'Shared'], ['Alpha']]),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Saved Playlist B', [['Beta'], ['Beta']]),
+  });
+  await prepareSpotifyImportTest(page, { artists: ['Original Main'], artistPlays: { 'original main': 8 } });
+  await page.evaluate(() => persistSettings());
+  const mainArtists = await page.evaluate(() => localStorage.getItem('tt_main_artists'));
+  assert.deepEqual(JSON.parse(mainArtists), ['Original Main']);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  const concertA = makeConcert('Alpha', 4, 'A Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'session-a-show' });
+  const festivalA = makeFestival('A Festival', 6, 'Berlin', 'DE', 52.52, 13.405, { id: 'session-a-fest', lineup: ['Alpha'], matched: [{ artist: 'Alpha', plays: 2 }] });
+  const concertB = makeConcert('Beta', 9, 'B Venue', 'Paris', 'FR', 48.8566, 2.3522, { id: 'session-b-show' });
+  await page.evaluate(async (event, festival) => {
+    concerts = [event]; festivals = [festival]; SCANNED_ARTISTS = ['Alpha']; cacheTimestamp = Date.now();
+    persistData();
+    await persistActivePlaylistSession();
+  }, concertA, festivalA);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), true);
+  await page.evaluate(async event => {
+    concerts = [event]; festivals = []; SCANNED_ARTISTS = ['Beta']; cacheTimestamp = Date.now();
+    persistData();
+    await persistActivePlaylistSession();
+    await DB.put('artists', 'beta', { ts: Date.now(), cHash: countryHash(), shows: [event] });
+    await DB.put('artists', 'unrelated', { ts: Date.now(), cHash: countryHash(), shows: [{ ...event, id: 'unrelated-cached-show', artist: 'Unrelated' }] });
+  }, concertB);
+  const callsBeforeReload = (await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls;
+  await page.navigate(baseUrl);
+  await page.waitFor(() => window.__testImportScanCalls === undefined
+    && SPOTIFY_PLAYLIST_META?.id === '2'.repeat(22) && concerts.some(event => event.id === 'session-b-show'));
+  const reloadedB = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(reloadedB.active, IMPORT_IDS.b);
+  assert.deepEqual(reloadedB.artists, ['Beta']);
+  assert.deepEqual(reloadedB.plays, { beta: 2 });
+  assert.deepEqual(reloadedB.concerts, ['session-b-show']);
+  assert.deepEqual(reloadedB.festivals, []);
+  assert.deepEqual(reloadedB.scanned, ['Beta']);
+  await page.evaluate(url => {
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    window.__testImportScanCalls = [];
+    saveAndFetch = () => window.__testImportScanCalls.push(true);
+    openPlaylistImport();
+    renderOnboardHistory();
+    const historyCard = [...document.querySelectorAll('#onboard-history [data-playlist-url]')].find(card => card.dataset.playlistUrl === url);
+    if (!historyCard) throw new Error('Saved playlist A is missing from history');
+    historyCard.click();
+  }, importUrl(IMPORT_IDS.a));
+  await page.waitFor(() => SPOTIFY_PLAYLIST_META?.id === '1'.repeat(22) && concerts.some(event => event.id === 'session-a-show'));
+  await settleUi(page, 620);
+  const restoredA = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(restoredA.active, IMPORT_IDS.a);
+  assert.equal(restoredA.playlist.name, 'Saved Playlist A');
+  assert.deepEqual(restoredA.artists, ['Alpha', 'Shared']);
+  assert.deepEqual(restoredA.tracked, ['Alpha', 'Shared']);
+  assert.deepEqual(restoredA.plays, { alpha: 2, shared: 1 });
+  assert.equal(restoredA.tracks.alpha.totalTrackHits, 2);
+  assert.equal(restoredA.tracks.shared.totalTrackHits, 1);
+  assert.equal(restoredA.tracks.beta, undefined, 'Artist track caches must belong to the selected playlist');
+  assert.deepEqual(restoredA.concerts, ['session-a-show']);
+  assert.deepEqual(restoredA.festivals, ['session-a-fest']);
+  assert.deepEqual(restoredA.scanned, ['Alpha']);
+  assert.deepEqual((await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls, callsBeforeReload, 'History restore must use saved sessions without calling Spotify again');
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [], 'Opening a cached session must not start a replacement discovery scan');
+  assert.equal(await page.evaluate(() => localStorage.getItem('tt_main_artists')), mainArtists, 'Arbitrary imports must preserve the original Main artist source');
+  const sessions = await page.evaluate(async (first, second) => ({ a: await getPlaylistSession(first), b: await getPlaylistSession(second) }), IMPORT_IDS.a, IMPORT_IDS.b);
+  assert.deepEqual(sessions.a.concerts.map(event => event.id), ['session-a-show']);
+  assert.deepEqual(sessions.b.concerts.map(event => event.id), ['session-b-show']);
 });

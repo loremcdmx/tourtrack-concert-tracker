@@ -1,11 +1,83 @@
 'use strict';
 
+let _scanRunGeneration = 0;
+const _trackedScanJobs = new Set();
+let _installedScanRuntime = null;
+let _scanStopDepth = 0;
+
+function getScanContext() {
+  return Object.freeze({
+    generation: _scanRunGeneration,
+    playlistId: typeof getActivePlaylistSessionId === 'function' ? getActivePlaylistSessionId() : '',
+    profile: typeof activeProf !== 'undefined' ? activeProf : 'Main',
+    artists: Object.freeze([...(Array.isArray(ARTISTS) ? ARTISTS : [])]),
+    cHash: countryHash(),
+  });
+}
+
+function isScanRunOwned(run) {
+  return !!run && run.generation === _scanRunGeneration
+    && run.playlistId === (typeof getActivePlaylistSessionId === 'function' ? getActivePlaylistSessionId() : '')
+    && run.profile === (typeof activeProf !== 'undefined' ? activeProf : 'Main')
+    && run.cHash === countryHash();
+}
+
+function isScanRunCurrent(run) {
+  return isScanRunOwned(run) && !scanAborted;
+}
+
+function invalidateScanRun() {
+  _scanRunGeneration += 1;
+  scanAborted = true;
+  window._scanActive = false;
+}
+
+// Wrap the entire outer job, including its postprocessing and persistence.
+// Nested provider calls use the context; they must not start another job.
+function withTrackedScanJob(kind, work) {
+  if (typeof work !== 'function') return Promise.reject(new TypeError('Scan work must be a function'));
+  if (_trackedScanJobs.size || _scanStopDepth
+      || (typeof isPlaylistSessionTransitioning === 'function' && isPlaylistSessionTransitioning())) {
+    return Promise.resolve(false);
+  }
+  _scanRunGeneration += 1;
+  scanAborted = false;
+  const run = getScanContext();
+  const job = { kind, run, promise: null };
+  _trackedScanJobs.add(job);
+  window._scanActive = true;
+  job.promise = Promise.resolve().then(() => isScanRunCurrent(run) ? work(run) : false)
+    .finally(() => {
+      _trackedScanJobs.delete(job);
+      if (_installedScanRuntime?.run === run) clearScanRuntime(_installedScanRuntime);
+      if (run.generation === _scanRunGeneration) window._scanActive = false;
+    });
+  return job.promise;
+}
+
+async function stopActiveScanAndWait() {
+  _scanStopDepth += 1;
+  invalidateScanRun();
+  const generation = _scanRunGeneration;
+  try {
+    // An aborted dispatcher still owns its workers until every promise settles.
+    await Promise.allSettled([..._trackedScanJobs].map(job => job.promise));
+    if (generation === _scanRunGeneration) {
+      for (const id of ['loadbar', 'hd-progress', 'stop-btn']) {
+        const node = typeof document !== 'undefined' ? document.getElementById(id) : null;
+        if (node) node.style.display = 'none';
+      }
+    }
+  } finally {
+    _scanStopDepth -= 1;
+  }
+}
+
 function createScanCounters() {
   return { cached: 0, fresh: 0, error: 0, done: 0, skipped: 0, geoSweep: 0, bit: 0 };
 }
 
-function beginScanRun(forceRefresh = false) {
-  scanAborted = false;
+function beginScanRun(forceRefresh = false, run = getScanContext()) {
 
   document.getElementById('loadbar').style.display = 'block';
   document.getElementById('hd-progress').style.display = '';
@@ -35,7 +107,7 @@ function beginScanRun(forceRefresh = false) {
     staleConcertCount,
     staleFestivalCount,
     ongoingFestivalSnapshot,
-    total: ARTISTS.length,
+    total: run.artists.length,
     now: Date.now(),
     today,
     cHash: countryHash(),
@@ -145,28 +217,35 @@ function handleTmHardQuota(runtime) {
   showQuotaModal(resetStr, concerts.length + festivals.length);
 }
 
-function installScanRuntime(runtime) {
+function installScanRuntime(runtime, run = getScanContext()) {
+  runtime.run = run;
+  _installedScanRuntime = runtime;
   resetScanDiagnostics();
-  window._rateLimitedWait = () => scanRateLimitedWait(runtime);
-  window._onTm429 = () => noteTmRateLimit(runtime);
-  window._onTmOk = () => noteTmRecovery(runtime);
-  window._onTmHardQuota = () => handleTmHardQuota(runtime);
+  window._rateLimitedWait = () => isScanRunCurrent(run) ? scanRateLimitedWait(runtime) : Promise.resolve();
+  window._onTm429 = () => { if (isScanRunCurrent(run)) noteTmRateLimit(runtime); };
+  window._onTmOk = () => { if (isScanRunCurrent(run)) noteTmRecovery(runtime); };
+  window._onTmHardQuota = () => { if (isScanRunCurrent(run)) handleTmHardQuota(runtime); };
   window._onTmNet = null;
   return runtime;
 }
 
-function clearScanRuntime() {
+function clearScanRuntime(runtime = _installedScanRuntime) {
+  if (!runtime || runtime !== _installedScanRuntime) return;
+  _installedScanRuntime = null;
   window._rateLimitedWait = null;
+  window._onTm429 = null;
+  window._onTmOk = null;
+  window._onTmHardQuota = null;
 }
 
-async function waitForCircuitRecovery() {
+async function waitForCircuitRecovery(run = getScanContext()) {
   if (!circuitOpen) return;
   dblog('warn', 'Circuit open - pausing dispatch until network recovers (or Stop is pressed)');
   setProgress('Network errors - paused. Check Debug Log or press Diagnose.', null);
-  while (circuitOpen && !scanAborted) {
+  while (circuitOpen && isScanRunCurrent(run)) {
     await sleep(500);
   }
-  if (!scanAborted) dblog('info', 'Resuming scan...');
+  if (isScanRunCurrent(run)) dblog('info', 'Resuming scan...');
 }
 
 function noteArtistScanSuccess(runtime) {

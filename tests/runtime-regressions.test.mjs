@@ -31,6 +31,7 @@ function runtimeContext(stored = {}) {
     concerts: [], festivals: [], cacheTimestamp: 0, countryMode: 'world',
     includeCountries: new Set(), excludeCountries: new Set(), hiddenArtists: {}, favoriteArtists: new Set(),
     geoPreset: 'all', artistPreset: 'all', scanAborted: false,
+    fetchErrors: {}, netErrStreak: 0, netErrTotal: 0, circuitOpen: false, dbgBannerDismissed: false,
     isScenarioAProductMode: () => false,
     deduplicateConcerts: list => list,
     normalizeFestivalLabels: list => list,
@@ -40,6 +41,7 @@ function runtimeContext(stored = {}) {
     dbDelete: async () => {}, dbPut: async () => {},
   });
   load(context, 'core/storage.js');
+  load(context, 'scan/runtime.js');
   load(context, 'scan/actions.js');
   vm.runInContext('DB.delete = dbDelete; DB.put = dbPut;', context);
   context.snapshotOngoingFestivals = () => ({ cHash: context.countryHash(), data: [] });

@@ -9,6 +9,39 @@
   color-scheme:dark;
 }
 body { font-family:'Segoe UI',sans-serif; background:var(--bg); }
+[hidden] { display:none !important; }
+body.playlist-links .prof-bar,body.playlist-links #spotify-auth-btn,
+body.playlist-links #tab-match,body.playlist-links #tab-match-float,
+body.playlist-links #pane-match,body.playlist-links #onboard-quickload { display:none !important; }
+body.scenario-a #playlist-open-btn { display:none; }
+.agenda-heading a { color:var(--muted); text-decoration:none; overflow-wrap:anywhere; }
+.agenda-heading a:hover { color:var(--accent); text-decoration:underline; }
+.playlist-error-actions { display:flex; flex-wrap:wrap; gap:12px; font-size:.85rem; margin:12px 0; }
+.playlist-error-actions a { color:var(--accent); }
+body.playlist-links .onboard-title { font-family:'Syne',sans-serif; font-size:2.2rem; letter-spacing:-.05em; line-height:1.12; max-width:none; margin:0; }
+body.playlist-links .onboard-sub { color:var(--muted); font-size:.9rem; line-height:1.6; margin:0; }
+body.playlist-links .onboard-headnote,body.playlist-links .onboard-history-label { font-family:inherit; color:var(--muted); letter-spacing:0; text-transform:none; }
+body.playlist-links .onboard-pl { background:var(--s2); border-color:var(--border2); border-radius:10px; }
+body.playlist-links .onboard-pl:hover { border-color:var(--accent); background:var(--s3); }
+body.playlist-links .onboard-mintracks-row { display:flex; flex-wrap:wrap; background:var(--s2); border-color:var(--border); gap:10px; }
+body.playlist-links .onboard-card { max-width:680px; width:min(680px,100%); gap:14px; }
+body.playlist-links .onboard-logo { font-size:clamp(1.15rem,5vw,1.6rem); }
+body.playlist-links .onboard-headnote { margin:0 0 8px; font-size:.8rem; }
+body.playlist-links #onboard-import-panel { display:flex; flex-direction:column; gap:16px; }
+body.playlist-links #onboard-import-panel > * { width:100%; min-width:0; }
+body.playlist-links .onboard-input-wrap { margin:0; }
+body.playlist-links .onboard-input { min-width:0; font-size:.9rem; }
+body.playlist-links .onboard-mintracks-row { margin:0; }
+body.playlist-links .onboard-auth-divider { display:none; }
+body.playlist-links #onboard-history-wrap { padding-top:0; border-top:0; }
+body.playlist-links .onboard-status { font-size:.85rem; line-height:1.5; }
+@media(max-width:600px) {
+  body.playlist-links .onboard-card { padding:22px; }
+  body.playlist-links .onboard-title { font-size:1.9rem; }
+  body.playlist-links .onboard-input-wrap { flex-direction:column; }
+  body.playlist-links .onboard-btn { width:100%; min-height:44px; }
+  body.playlist-links .onboard-mintracks-hint { width:100%; margin-left:0; }
+}
 button,input,select,textarea { font-family:'Segoe UI',sans-serif; }
 button { touch-action:manipulation; }
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,

@@ -24,7 +24,8 @@ function mergeOngoingFestivals(snapshot, list = festivals, today = _isoDateOnly(
   return deduplicateFestivals([...retained, ...(Array.isArray(list) ? list : [])]);
 }
 
-async function fetchFestivalsData() {
+async function fetchFestivalsData(run = getScanContext()) {
+  if (!isScanRunCurrent(run)) return;
   const today = _isoDateOnly(new Date());
   const geoTargets = buildFestivalGeoTargets();
   const alwaysSweep = buildAlwaysSweepFestivalCountries();
@@ -67,12 +68,12 @@ async function fetchFestivalsData() {
 
   async function runOne(task) {
     await (window._rateLimitedWait?.());
-    if (scanAborted) return;
+    if (!isScanRunCurrent(run)) return;
     try {
       const response = await apiFetch(task.url);
-      if (scanAborted || !response.ok) return;
+      if (!isScanRunCurrent(run) || !response.ok) return;
       const data = await response.json();
-      if (scanAborted) return; // user hit Stop mid-flight; don't pollute festivals[]
+      if (!isScanRunCurrent(run)) return;
       const events = data?._embedded?.events || [];
       if (events.length) ingestFestEvents(events, task.hint);
     } catch (error) {
@@ -81,10 +82,11 @@ async function fetchFestivalsData() {
   }
 
   async function worker() {
-    while (!scanAborted) {
+    while (isScanRunCurrent(run)) {
       const myIndex = cursor++;
       if (myIndex >= tasks.length) return;
       await runOne(tasks[myIndex]);
+      if (!isScanRunCurrent(run)) return;
       done++;
       if (done % 8 === 0 || done === total) {
         const pct = 87 + Math.round((done / Math.max(1, total)) * 6);
@@ -98,6 +100,7 @@ async function fetchFestivalsData() {
     () => worker(),
   );
   await Promise.all(workers);
+  if (!isScanRunCurrent(run)) return;
 
   festivals = deduplicateFestivals(festivals);
   scoreFestivals();

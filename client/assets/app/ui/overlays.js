@@ -864,11 +864,11 @@ async function testUrl(url, label) {
 // State mirrored from onboard filter panel (applied before entering app)
 const DEFAULT_ONBOARD_TITLE = isScenarioAProductMode()
   ? 'Pinned playlist import'
-  : 'See upcoming concerts from a Spotify playlist';
+  : 'Find your music, live.';
 const DEFAULT_ONBOARD_SUB =
   isScenarioAProductMode()
     ? `${PINNED_PLAYLIST.name}: scan ${PINNED_PLAYLIST.trackCount} tracks, keep artists with ${scenarioAFixedMinTracks()}+ repeats, then show worldwide tour dates.`
-    : 'Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.';
+    : 'Paste a Spotify playlist link to find its artists on tour and at festivals. Each playlist keeps its own results on this device.';
 const spotifyAccountState = {
   loaded: false,
   loading: false,

@@ -4,7 +4,7 @@ function showInitialOnboardImport() {
   setStatus(
     isScenarioAProductMode()
       ? `Pinned playlist ready — only artists with ${scenarioAFixedMinTracks()}+ repeats enter the product`
-      : 'Connect Spotify or open the sample to get started',
+      : 'Paste a Spotify playlist link to get started',
     false,
   );
   renderOnboardHistory();
@@ -44,6 +44,7 @@ if (isScenarioAProductMode() && !hasScenarioAStoredSession()) {
   cacheTimestamp = 0;
 }
 if (isScenarioAProductMode()) applyScenarioAProductMode();
+else applyPlaylistLinkProductMode();
 renderSpotifyAccessButton();
 renderOnboardSpotifyAuth();
 installOnboardCardDelegates();
@@ -77,11 +78,14 @@ if (concerts.length || festivals.length) {
   // FEST_VER, quietly re-fetch in the background so shipping a new sweep
   // (like the country-level MX/LatAm pass) actually reaches these users.
   if (typeof DB !== 'undefined' && typeof _autoRefreshFestivals === 'function') {
+    const bootstrapRun = getScanContext();
     DB.get('meta', 'festivals').then(fc => {
+      if (!isScanRunOwned(bootstrapRun)) return;
       if (!fc || fc.ver === FEST_VER) return;
       if (window._festRefreshRunning) return;
       window._festRefreshRunning = true;
       setTimeout(() => {
+        if (!isScanRunOwned(bootstrapRun)) { window._festRefreshRunning = false; return; }
         _autoRefreshFestivals()
           .catch(err => typeof dblog === 'function' && dblog('warn', `Auto fest refresh failed: ${err?.message || err}`))
           .finally(() => { window._festRefreshRunning = false; });
@@ -108,3 +112,5 @@ if (concerts.length || festivals.length) {
     });
   }
 }
+
+if (window.__ttRestorePlaylistImport) { showOnboard(); showNewImport(); }

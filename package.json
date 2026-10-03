@@ -8,7 +8,7 @@
     "dev": "node --watch server/index.js",
     "env:pull:dev": "node scripts/pull-vercel-env.mjs development",
     "check": "node -e \"const fs=require('fs'); const cp=require('child_process'); const files=['server/index.js','api/index.js','client/map-cache-sw.js']; (function walk(dir){ for (const entry of fs.readdirSync(dir,{withFileTypes:true})) { const full=dir+'/'+entry.name; if (entry.isDirectory()) walk(full); else if (full.endsWith('.js')) files.push(full); } })('client/assets/app'); for (const file of files) cp.execFileSync(process.execPath,['--check',file],{stdio:'inherit'}); console.log('syntax ok');\"",
-    "test": "node --test tests/map-label-layout.test.mjs tests/map-tile-cache.test.mjs tests/date-filters.test.mjs tests/render-performance.test.mjs tests/runtime-regressions.test.mjs tests/ui.integration.test.mjs",
+    "test": "node --test tests/map-label-layout.test.mjs tests/map-tile-cache.test.mjs tests/date-filters.test.mjs tests/render-performance.test.mjs tests/runtime-regressions.test.mjs tests/playlist-session.test.mjs tests/scan-ownership.test.mjs tests/spotify-playlist-import.test.mjs tests/ui.integration.test.mjs",
     "test:ui": "node --test tests/ui.integration.test.mjs"
   },
   "engines": {

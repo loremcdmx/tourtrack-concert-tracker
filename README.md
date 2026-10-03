@@ -119,6 +119,36 @@ Late track-cache responses cannot overwrite a newer import or profile choice.
 Deterministic regressions also cover batched filter redraws and reuse of festival
 matching patterns; these verify work counts rather than machine timing.
 
+## Playlist links
+
+Use **Playlist** in the header to paste a Spotify playlist link. Full
+`open.spotify.com/playlist/...` links (including locale and embed variants),
+`spotify:playlist:...` URIs, playlist IDs, and mobile `spotify.link` share links
+are accepted. Import includes every available music track, with all artists
+selected by default and an optional minimum track count. Unavailable tracks,
+local files and podcast episodes are counted separately. A failed page or a
+playlist edited during import never produces a successful partial import.
+
+Each imported playlist keeps its own artists, track counts, track details,
+concerts, festival scores and scan progress on this device. Previously imported
+playlists reopen from history without Spotify requests. Discovery caches remain
+shared for reuse; results are restricted to the active playlist's artists and
+country scope. Switching playlists stops and drains the old scan before the
+new session is activated. Failed or canceled imports preserve the active session.
+The original Main session is preserved during migration.
+
+Spotify access rules still apply. Since the February 2026 Development Mode
+migration, playlist items are available only to the playlist owner or a
+collaborator; app-only credentials cannot bypass this restriction. Connect the
+appropriate Spotify account when prompted. Extended Quota applications can
+retain the older public-playlist access. See the official
+[playlist items reference](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
+and [migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
+Other streaming services are not supported by this importer.
+
+The old pinned-playlist experience is available only with an explicit
+`window.__SERVER_CONFIG__.pinnedPlaylistOnly === true` configuration.
+
 ## External-user readiness
 
 This restructure is aimed at deployable sharing:
