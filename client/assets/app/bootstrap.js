@@ -65,7 +65,7 @@ updateArtistCount();
 
 if (concerts.length || festivals.length) {
   if (festivals.length && ARTISTS.length) scoreFestivals();
-  setStatus(`${concerts.length} concerts · ${festivals.length} festivals · cached ${cacheAge()} — use ↻ Merge rescan to refresh`, true);
+  setStatus(`${concerts.length} concerts · ${festivals.length} festivals · cached ${cacheAge()}`, true);
   buildCalChips();
   renderCalendar();
   renderMap();

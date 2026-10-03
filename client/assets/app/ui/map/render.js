@@ -71,6 +71,8 @@ function _mapShouldSmartFit(points) {
 
 function _mapMaybeFitFilteredView(opts = {}) {
   if (!lmap) return;
+  const size = lmap.getSize();
+  if (size.x <= 0 || size.y <= 0) return;
   const markerPoints = _mapMarkerLatLngPoints();
   const routePoints = markerPoints.length ? [] : _mapRouteLatLngPoints();
   const fitPoints = markerPoints.length ? markerPoints : routePoints;
@@ -953,7 +955,7 @@ function renderOverview(opts = {}) {
   // of all visible markers so the map opens at a sensible zoom level.
   // We only do this once (_mapFirstFit flag) so that filter changes don't
   // re-center the map while the user is panning/zooming.
-  if (!_mapFirstFit && lmap) {
+  if (!_mapFirstFit && lmap && lmap.getSize().x > 0 && lmap.getSize().y > 0) {
     const allPts = [];
     tourMarkers.forEach(m => { const ll = m.getLatLng(); allPts.push([ll.lat, ll.lng]); });
     festMarkers.forEach(m => { const ll = m.getLatLng(); allPts.push([ll.lat, ll.lng]); });

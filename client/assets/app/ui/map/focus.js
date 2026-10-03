@@ -19,6 +19,7 @@ function _concertFocusKey(ev) {
 
 function focusConcert(ev) {
   if (!ev?.artist) return;
+  if (typeof setWorkspaceView === 'function') setWorkspaceView('map');
   focusedConcertKey = _concertFocusKey(ev);
   focusArtist(ev.artist);
   const mapEl = document.getElementById('map');

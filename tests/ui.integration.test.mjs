@@ -190,6 +190,7 @@ class CdpPage {
     await this.browser.send('Runtime.enable', {}, this.sessionId);
     await this.browser.send('Page.enable', {}, this.sessionId);
     await this.browser.send('Network.enable', {}, this.sessionId);
+    await this.browser.send('Network.setBypassServiceWorker', { bypass: true }, this.sessionId);
     await this.browser.send('Network.setBlockedURLs', { urls: ['https://*'] }, this.sessionId);
   }
 
@@ -398,6 +399,38 @@ async function settleUi(pageRef, extraMs = 120) {
   );
 }
 
+async function setViewport(pageRef, width, height) {
+  await pageRef.browser.send('Emulation.setDeviceMetricsOverride', {
+    width, height, deviceScaleFactor: 1, mobile: false,
+  }, pageRef.sessionId);
+  await settleUi(pageRef);
+}
+
+function workspaceLayoutSnapshot() {
+  const panel = selector => {
+    const element = document.querySelector(selector);
+    const bounds = element.getBoundingClientRect();
+    return {
+      visible: getComputedStyle(element).display !== 'none' && bounds.width > 0 && bounds.height > 0,
+      left: bounds.left, right: bounds.right, bottom: bounds.bottom,
+      width: bounds.width, height: bounds.height,
+    };
+  };
+  return {
+    view: document.body.dataset.workspaceView,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    agenda: panel('.cal-panel'),
+    map: panel('.map-panel'),
+    controls: [...document.querySelectorAll('button[data-workspace-view]')].map(button => ({
+      view: button.dataset.workspaceView,
+      tag: button.tagName,
+      pressed: button.getAttribute('aria-pressed'),
+    })),
+  };
+}
+
 before(async () => {
   serverPort = await getFreePort();
   baseUrl = `http://127.0.0.1:${serverPort}`;
@@ -467,6 +500,175 @@ test('scenario A locks onboarding to the pinned playlist and hides multi-user ch
   assert.match(state.title, /pinned playlist/i);
   assert.equal(state.hint, '384 of 2477 artists shown (>=4 repeats)');
   assert.equal(state.button, 'Open playlist');
+});
+
+test('mobile agenda occupies the workspace without a second map pane or horizontal overflow', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas'], artistPlays: { atlas: 12 },
+    concerts: [makeConcert('Atlas', 4, 'A venue with a deliberately long name', 'Berlin', 'DE', 52.52, 13.405)],
+  });
+  await page.evaluate(() => {
+    hideOnboard();
+    document.querySelector('[data-workspace-view="agenda"]').click();
+  });
+  await settleUi(page);
+  const result = await page.evaluate(workspaceLayoutSnapshot);
+  assert.equal(result.view, 'agenda');
+  assert.equal(result.agenda.visible, true);
+  assert.equal(result.map.visible, false);
+  assert.ok(result.agenda.width >= result.width - 32);
+  assert.ok(result.agenda.height > result.height / 2);
+  assert.ok(result.agenda.left >= -1 && result.agenda.right <= result.width + 1);
+  assert.ok(result.agenda.bottom <= result.height + 1);
+  assert.ok(result.scrollWidth <= result.width + 1);
+  assert.deepEqual(result.controls, [
+    { view: 'agenda', tag: 'BUTTON', pressed: 'true' },
+    { view: 'map', tag: 'BUTTON', pressed: 'false' },
+  ]);
+});
+
+test('mobile workspace buttons support keyboard activation and resize Leaflet to the visible map', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas'], artistPlays: { atlas: 12 },
+    concerts: [makeConcert('Atlas', 4, 'Forum', 'Berlin', 'DE', 52.52, 13.405)],
+  });
+  await page.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('agenda');
+    document.querySelector('[data-workspace-view="map"]').focus();
+  });
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await settleUi(page, 180);
+  const result = await page.evaluate(workspaceLayoutSnapshot);
+  const mapSize = await page.evaluate(() => {
+    const element = document.getElementById('map');
+    const size = lmap.getSize();
+    return { width: size.x, height: size.y, clientWidth: element.clientWidth, clientHeight: element.clientHeight };
+  });
+  assert.equal(result.view, 'map');
+  assert.equal(result.agenda.visible, false);
+  assert.equal(result.map.visible, true);
+  assert.ok(result.map.width >= result.width - 32);
+  assert.ok(result.map.height > result.height / 2);
+  assert.ok(result.map.left >= -1 && result.map.right <= result.width + 1);
+  assert.ok(result.map.bottom <= result.height + 1);
+  assert.ok(result.scrollWidth <= result.width + 1);
+  assert.deepEqual(result.controls, [
+    { view: 'agenda', tag: 'BUTTON', pressed: 'false' },
+    { view: 'map', tag: 'BUTTON', pressed: 'true' },
+  ]);
+  assert.equal(mapSize.width, mapSize.clientWidth);
+  assert.equal(mapSize.height, mapSize.clientHeight);
+  assert.ok(mapSize.width > 0 && mapSize.height > 0);
+});
+
+test('first opening a mobile map fits the events after its hidden viewport becomes visible', { concurrency: false }, async () => {
+  await setViewport(page, 390, 844);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon'], artistPlays: { atlas: 12, beacon: 9 },
+    concerts: [
+      makeConcert('Atlas', 3, 'Forum', 'Berlin', 'DE', 52.52, 13.405),
+      makeConcert('Beacon', 18, 'Auditorio', 'Mexico City', 'MX', 19.4326, -99.1332),
+    ],
+  });
+  const before = await page.evaluate(() => {
+    setWorkspaceView('agenda');
+    _mapFirstFit = false;
+    lmap.invalidateSize({pan:false});
+    renderMap();
+    return _mapFirstFit;
+  });
+  assert.equal(before, false);
+  await page.evaluate(() => setWorkspaceView('map'));
+  await settleUi(page, 180);
+  const after = await page.evaluate(() => ({
+    fitted: _mapFirstFit,
+    berlin: lmap.getBounds().contains([52.52, 13.405]),
+    mexico: lmap.getBounds().contains([19.4326, -99.1332]),
+  }));
+  assert.deepEqual(after, { fitted:true, berlin:true, mexico:true });
+});
+
+test('mobile filters collapse accessibly and retain the selected date filter when switching views', { concurrency: false }, async () => {
+  await setViewport(page, 390, 844);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon'], artistPlays: { atlas: 12, beacon: 9 },
+    concerts: [
+      makeConcert('Atlas', 3, 'Forum', 'Berlin', 'DE', 52.52, 13.405),
+      makeConcert('Beacon', 18, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+    ],
+  });
+  await page.evaluate(() => { hideOnboard(); setWorkspaceView('agenda'); });
+  const collapsed = await page.evaluate(() => {
+    const toggle = document.getElementById('calendar-filters-toggle');
+    const toolbar = document.querySelector('.cal-toolbar');
+    return {
+      tag: toggle.tagName,
+      expanded: toggle.getAttribute('aria-expanded'),
+      controlsToolbar: document.getElementById(toggle.getAttribute('aria-controls')) === toolbar,
+      toolbarVisible: toolbar.getClientRects().length > 0,
+      chipVisible: toolbar.querySelector('[data-d="7"]').getClientRects().length > 0,
+    };
+  });
+  assert.deepEqual(collapsed, { tag: 'BUTTON', expanded: 'false', controlsToolbar: true, toolbarVisible: false, chipVisible: false });
+
+  await page.evaluate(() => document.getElementById('calendar-filters-toggle').click());
+  const expanded = await page.evaluate(() => ({
+    expanded: document.getElementById('calendar-filters-toggle').getAttribute('aria-expanded'),
+    toolbarVisible: document.querySelector('.cal-toolbar').getClientRects().length > 0,
+  }));
+  assert.deepEqual(expanded, { expanded: 'true', toolbarVisible: true });
+  await page.evaluate(() => {
+    document.querySelector('.cal-toolbar [data-d="7"]').click();
+    document.getElementById('calendar-filters-toggle').click();
+    document.querySelector('[data-workspace-view="map"]').click();
+  });
+  await settleUi(page);
+  const filtered = await page.evaluate(() => ({
+    view: document.body.dataset.workspaceView,
+    filter: dateFilter,
+    expanded: document.getElementById('calendar-filters-toggle').getAttribute('aria-expanded'),
+    calendarArtists: [...document.querySelectorAll('#cal-body .ev-headline .ev-name')]
+      .map(element => (element.firstChild?.textContent || element.textContent || '').trim()),
+    mapArtists: Object.keys(allTourData).sort(),
+  }));
+  assert.deepEqual(filtered, { view: 'map', filter: '7', expanded: 'false', calendarArtists: ['Atlas'], mapArtists: ['Atlas'] });
+});
+
+test('resizing from the mobile map to desktop restores both panels without losing results', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas'], artistPlays: { atlas: 12 },
+    concerts: [makeConcert('Atlas', 4, 'Forum', 'Berlin', 'DE', 52.52, 13.405)],
+  });
+  await page.evaluate(() => { hideOnboard(); setWorkspaceView('map'); });
+  await settleUi(page);
+  await setViewport(page, 1366, 900);
+  const desktop = await page.evaluate(workspaceLayoutSnapshot);
+  assert.equal(desktop.agenda.visible, true);
+  assert.equal(desktop.map.visible, true);
+  assert.ok(desktop.agenda.right <= desktop.map.left + 16);
+  assert.ok(desktop.agenda.width >= 280 && desktop.map.width >= 500);
+  assert.ok(desktop.scrollWidth <= desktop.width + 1);
+  const retained = await page.evaluate(() => ({
+    rows: document.querySelectorAll('#cal-body .ev-row').length,
+    mapArtists: Object.keys(allTourData),
+    filter: dateFilter,
+  }));
+  assert.deepEqual(retained, { rows: 1, mapArtists: ['Atlas'], filter: 'all' });
+  await setViewport(page, 375, 812);
+  const mobile = await page.evaluate(workspaceLayoutSnapshot);
+  assert.equal(mobile.view, 'map');
+  assert.equal(mobile.agenda.visible, false);
+  assert.equal(mobile.map.visible, true);
+  assert.ok(mobile.scrollWidth <= mobile.width + 1);
 });
 
 test('scenario A keeps low-frequency cached artists out of calendar and map', { concurrency: false }, async () => {
@@ -739,7 +941,7 @@ test('scenario A migrates legacy UK-only scope back to worldwide', { concurrency
   assert.equal(state.cacheTimestamp, 0);
   assert.equal(state.storedMode, 'world');
   assert.equal(state.storedGeoPreset, 'all');
-  assert.equal(state.storedConcerts, null);
+  assert.equal(state.storedConcerts, '[]');
 });
 
 test('scenario A clears legacy UK-only snapshot without a stored scope hash', { concurrency: false }, async () => {
@@ -777,7 +979,7 @@ test('scenario A clears legacy UK-only snapshot without a stored scope hash', { 
   assert.equal(state.geoPreset, 'all');
   assert.equal(state.concerts, 0);
   assert.equal(state.cacheTimestamp, 0);
-  assert.equal(state.storedConcerts, null);
+  assert.equal(state.storedConcerts, '[]');
 });
 
 test('instant resume ignores artist cache from a different search scope', { concurrency: false }, async () => {
@@ -1038,6 +1240,71 @@ test('concert rows focus the selected artist', { concurrency: false }, async () 
   assert.equal(focusState.focusedArtist, 'Nova');
   assert.equal(focusState.focusName, 'Nova');
   assert.notEqual(focusState.overlayDisplay, 'none');
+});
+
+test('Enter on a concert row opens its map on mobile', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Nova'], artistPlays: { nova: 10 },
+    concerts: [
+      makeConcert('Nova', 3, 'Roundhouse', 'London', 'GB', 51.54, -0.15),
+      makeConcert('Nova', 6, 'Ancienne Belgique', 'Brussels', 'BE', 50.847, 4.349, { id: 'nova-keyboard-show' }),
+    ],
+  });
+  const semantics = await page.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('agenda');
+    const row = [...document.querySelectorAll('#cal-body .ev-row.is-clickable')].find(row => row.querySelector('.ev-sub strong')?.textContent === 'Ancienne Belgique');
+    row.focus();
+    return { role: row.getAttribute('role'), tabIndex: row.tabIndex, focused: document.activeElement === row };
+  });
+  assert.deepEqual(semantics, { role: 'button', tabIndex: 0, focused: true });
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+  }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+  }, page.sessionId);
+  await settleUi(page);
+  const result = await page.evaluate(() => ({
+    view: document.body.dataset.workspaceView,
+    mapVisible: getComputedStyle(document.querySelector('.map-panel')).display !== 'none',
+    focusedArtist,
+    activeVenue: document.querySelector('#focus-list .fshow.active .fshow-venue')?.textContent,
+    artistDetailOpen: document.getElementById('ad-overlay').classList.contains('open'),
+  }));
+  assert.deepEqual(result, { view: 'map', mapVisible: true, focusedArtist: 'Nova', activeVenue: 'Ancienne Belgique', artistDetailOpen: false });
+});
+
+test('Space on a concert headline opens artist detail without triggering its parent map action', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Nova'], artistPlays: { nova: 10 },
+    concerts: [makeConcert('Nova', 6, 'Ancienne Belgique', 'Brussels', 'BE', 50.847, 4.349)],
+  });
+  const semantics = await page.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('agenda');
+    const headline = document.querySelector('#cal-body .ev-row .ev-headline');
+    headline.focus();
+    return { role: headline.getAttribute('role'), tabIndex: headline.tabIndex, focused: document.activeElement === headline };
+  });
+  assert.deepEqual(semantics, { role: 'button', tabIndex: 0, focused: true });
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await page.waitFor(() => document.getElementById('ad-overlay').classList.contains('open'));
+  const result = await page.evaluate(() => ({
+    view: document.body.dataset.workspaceView,
+    artistDetailOpen: document.getElementById('ad-overlay').classList.contains('open'),
+    detailArtist: document.querySelector('#ad-body .ad-name')?.textContent.trim(),
+    focusedArtist,
+    focusedConcertKey,
+  }));
+  assert.deepEqual(result, { view: 'agenda', artistDetailOpen: true, detailArtist: 'Nova', focusedArtist: null, focusedConcertKey: '' });
 });
 
 test('artist avatars render cached media when knowledge exists', { concurrency: false }, async () => {

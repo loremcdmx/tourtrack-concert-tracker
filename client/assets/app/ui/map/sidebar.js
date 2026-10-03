@@ -44,8 +44,12 @@ function buildSidebarArtistRow(artist, evs, ctx) {
     <button class="msb-focus">→</button>`;
   row.querySelector('.msb-star').onclick  = e => toggleFavorite(artist, e);
   row.querySelector('.msb-focus').onclick = e => { e.stopPropagation(); focusArtist(artist); };
-  row.onclick = () => focusArtist(artist);
-  return row;
+  row.onclick = event => {
+    const action = event.target.closest('button,a,[role="button"]');
+    if (action && action !== row) return;
+    focusArtist(artist);
+  };
+  return bindKeyboardClick(row);
 }
 
 function renderSidebarArtistList(list, artists, ctx) {
@@ -110,7 +114,8 @@ function createFestCardNode(festival) {
   const score = festival.score || 0;
   const matched = festival.matched || [];
   const lineup = festival.lineupResolved || _resolvedFestivalLineup(festival);
-  const linkedShows = festival.linkedShows || _festivalLinkedConcerts(festival).length;
+  const linkedShows = Number.isFinite(festival.linkedShows)
+    ? festival.linkedShows : _festivalLinkedConcerts(festival).length;
   const perfect = score >= 80 && matched.length >= 2;
   const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
   const loc = [festival.city, festival.country ? flag(festival.country) : ''].filter(Boolean).join(' ');
@@ -579,7 +584,7 @@ function buildFestPanel() {
   sorted.forEach(f => {
     const score = f.score || 0, matched = f.matched || [];
     const lineup = f.lineupResolved || _resolvedFestivalLineup(f);
-    const linkedShows = f.linkedShows || _festivalLinkedConcerts(f).length;
+    const linkedShows = Number.isFinite(f.linkedShows) ? f.linkedShows : _festivalLinkedConcerts(f).length;
     // score is already 0-100 (normalized in scoreFestivals)
     const perfect = score >= 80 && matched.length >= 2;
     const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
@@ -664,7 +669,8 @@ function createFestCardNode(festival) {
   const score = festival.score || 0;
   const matched = festival.matched || [];
   const lineup = festival.lineupResolved || _resolvedFestivalLineup(festival);
-  const linkedShows = festival.linkedShows || _festivalLinkedConcerts(festival).length;
+  const linkedShows = Number.isFinite(festival.linkedShows)
+    ? festival.linkedShows : _festivalLinkedConcerts(festival).length;
   const perfect = score >= 80 && matched.length >= 2;
   const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
   const loc = [festival.city, festival.country ? flag(festival.country) : ''].filter(Boolean).join(' ');

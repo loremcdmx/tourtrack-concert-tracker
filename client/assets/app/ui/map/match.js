@@ -266,39 +266,45 @@ function matchScoreFestivals() {
   const mySet  = new Set(ARTISTS.map(a => a.toLowerCase()));
   const herSet = new Set(Object.keys(matchHerMap));
   const re = a => new RegExp(`(^|[^a-z])${(a||'').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}([^a-z]|$)`);
+  // Patterns and play weights depend on the profiles, not on the festival.
+  const myArtists = ARTISTS.map(name => {
+    const key = name.toLowerCase();
+    const shared = herSet.has(key);
+    const myWeight = pw(ARTIST_PLAYS[key] || 0);
+    return {
+      name, pattern: re(name), shared,
+      weight: shared ? (myWeight + pw(matchHerMap[key].count)) * 1.5 : myWeight,
+    };
+  });
+  const herOnlyArtists = [...herSet].filter(key => !mySet.has(key)).map(key => ({
+    name: matchHerMap[key].name,
+    pattern: re(matchHerMap[key].name),
+    weight: pw(matchHerMap[key].count),
+  }));
 
   return festivals.map(f => {
     const ll   = (f.lineup||[]).map(n => n.toLowerCase());
     const fn   = (f.name||'').toLowerCase();
-    const test = name => {
-      const r = re(name);
-      return ll.length ? ll.some(l => r.test(l)) : r.test(fn);
-    };
+    const test = pattern => ll.length ? ll.some(name => pattern.test(name)) : pattern.test(fn);
 
     const matchedShared = [], matchedMe = [], matchedHer = [];
     let score = 0;
 
     // My artists
-    for (const myName of ARTISTS) {
-      if (!test(myName)) continue;
-      const key = myName.toLowerCase();
-      const myW = pw(ARTIST_PLAYS[key] || 0);
-      if (herSet.has(key)) {
-        const herW = pw(matchHerMap[key].count);
-        matchedShared.push(myName);
-        score += (myW + herW) * 1.5; // shared = bonus
+    for (const artist of myArtists) {
+      if (!test(artist.pattern)) continue;
+      if (artist.shared) {
+        matchedShared.push(artist.name);
       } else {
-        matchedMe.push(myName);
-        score += myW;
+        matchedMe.push(artist.name);
       }
+      score += artist.weight;
     }
     // Her-only artists
-    for (const herKey of herSet) {
-      if (mySet.has(herKey)) continue; // already handled
-      const herName = matchHerMap[herKey].name;
-      if (!test(herName)) continue;
-      matchedHer.push(herName);
-      score += pw(matchHerMap[herKey].count);
+    for (const artist of herOnlyArtists) {
+      if (!test(artist.pattern)) continue;
+      matchedHer.push(artist.name);
+      score += artist.weight;
     }
 
     return { ...f, matchScore: score, matchedShared, matchedMe, matchedHer };

@@ -78,15 +78,16 @@ function initMap() {
     worldCopyJump: true,
   }).setView([30, 10], 3);
   L.control.zoom({ position:'bottomright' }).addTo(lmap);
-  L.tileLayer(CT_MAP_TILE_URL, {
+  prepareMapTileCache().then(() => L.tileLayer(CT_MAP_TILE_URL, {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19,
     keepBuffer: 2,
     updateWhenIdle: true,
     updateWhenZooming: false,
     referrerPolicy: 'strict-origin-when-cross-origin',
+    crossOrigin: 'anonymous',
     className: 'ct-map-tile ct-map-tile--osm'
-  }).addTo(lmap);
+  }).addTo(lmap));
 
   // Zoom-responsive re-render (overview only, not focus mode)
   lmap.on('zoomend', () => {

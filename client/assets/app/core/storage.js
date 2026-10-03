@@ -78,18 +78,29 @@ function scanSnapshotLooksUkOnly() {
   return [...countries].every(code => code === 'GB' || code === 'IE');
 }
 
-function clearLocalScanSnapshot() {
+function clearLocalConcertSnapshot() {
   concerts = [];
-  festivals = [];
   SCANNED_ARTISTS = [];
   cacheTimestamp = 0;
   try {
-    localStorage.removeItem('tt_concerts');
-    localStorage.removeItem('tt_festivals');
+    localStorage.setItem('tt_concerts', '[]');
     localStorage.removeItem('tt_scanned_artists');
     localStorage.removeItem('tt_cachets');
-    localStorage.removeItem('tt_data_chash');
+    localStorage.setItem('tt_data_chash', countryHash());
   } catch(e) {}
+}
+
+function clearLocalFestivalSnapshot() {
+  festivals = [];
+  try {
+    localStorage.setItem('tt_festivals', '[]');
+    localStorage.setItem('tt_festivals_chash', countryHash());
+  } catch(e) {}
+}
+
+function clearLocalScanSnapshot() {
+  clearLocalConcertSnapshot();
+  clearLocalFestivalSnapshot();
 }
 
 function normalizeScenarioAGeoState() {
@@ -238,7 +249,10 @@ function artistTrackStoreKey(profileName = (typeof activeProf !== 'undefined' &&
   return `artistTracks:${String(profileName || 'Main')}`;
 }
 
+let _artistTrackStateRevision = 0;
+
 function setArtistTrackState(index, playlistMeta, profileName = (typeof activeProf !== 'undefined' && activeProf) ? activeProf : 'Main') {
+  _artistTrackStateRevision += 1;
   ARTIST_TRACKS = index && typeof index === 'object' ? index : {};
   SPOTIFY_PLAYLIST_META = playlistMeta && typeof playlistMeta === 'object' ? playlistMeta : null;
   _artistTracksHydratedProfile = artistTrackStoreKey(profileName);
@@ -265,11 +279,14 @@ async function hydrateArtistTrackState(profileName = (typeof activeProf !== 'und
   if (!force && _artistTracksHydratedProfile === storeKey && ARTIST_TRACKS && typeof ARTIST_TRACKS === 'object') {
     return ARTIST_TRACKS;
   }
+  const revision = ++_artistTrackStateRevision;
   try {
     const record = await DB.get('meta', storeKey);
-    setArtistTrackState(record?.data || {}, record?.playlistMeta || null, profile);
+    if (revision === _artistTrackStateRevision) {
+      setArtistTrackState(record?.data || {}, record?.playlistMeta || null, profile);
+    }
   } catch (_) {
-    setArtistTrackState({}, null, profile);
+    if (revision === _artistTrackStateRevision) setArtistTrackState({}, null, profile);
   }
   return ARTIST_TRACKS;
 }
@@ -294,6 +311,7 @@ async function clearAllArtistTrackState() {
   ARTIST_TRACKS = {};
   SPOTIFY_PLAYLIST_META = null;
   _artistTracksHydratedProfile = '';
+  _artistTrackStateRevision += 1;
 }
 
 function artistNameInList(list, name) {
@@ -374,11 +392,20 @@ function persistSettings() {
   profPersistCurrent();
 }
 
+function persistFestivalData() {
+  try {
+    localStorage.setItem('tt_festivals', JSON.stringify(festivals));
+    localStorage.setItem('tt_festivals_chash', countryHash());
+  } catch(e) {}
+  if (typeof syncOnboardCacheSummary === 'function') syncOnboardCacheSummary();
+}
+
 function persistData() {
   persistSettings();
   try {
     localStorage.setItem('tt_concerts',  JSON.stringify(concerts));
     localStorage.setItem('tt_festivals', JSON.stringify(festivals));
+    localStorage.setItem('tt_festivals_chash', countryHash());
     localStorage.setItem('tt_scanned_artists', JSON.stringify(SCANNED_ARTISTS));
     localStorage.setItem('tt_data_chash', countryHash());
   } catch(e) {}
@@ -408,6 +435,7 @@ if (typeof window !== 'undefined') {
 }
 
 function restore() {
+  _artistTrackStateRevision += 1;
   try {
     ARTIST_TRACKS = {};
     SPOTIFY_PLAYLIST_META = null;
@@ -453,22 +481,25 @@ function restore() {
     excludeCountries = new Set(JSON.parse(localStorage.getItem('tt_exc') || '[]'));
     hiddenArtists    = JSON.parse(localStorage.getItem('tt_hidden') || '{}');
     const storedDataHash = localStorage.getItem('tt_data_chash') || '';
-    concerts         = JSON.parse(localStorage.getItem('tt_concerts') || '[]');
-    festivals        = JSON.parse(localStorage.getItem('tt_festivals') || '[]');
+    const storedFestivalHash = localStorage.getItem('tt_festivals_chash') || storedDataHash;
+    const storedConcertSnapshot = localStorage.getItem('tt_concerts');
+    const storedFestivalSnapshot = localStorage.getItem('tt_festivals');
+    concerts         = JSON.parse(storedConcertSnapshot || '[]');
+    festivals        = JSON.parse(storedFestivalSnapshot || '[]');
     SCANNED_ARTISTS  = JSON.parse(localStorage.getItem('tt_scanned_artists') || '[]');
     cacheTimestamp   = parseInt(localStorage.getItem('tt_cachets') || '0', 10);
     geoPreset        = localStorage.getItem('tt_geo_preset') || 'all';
     artistPreset     = localStorage.getItem('tt_artist_preset') || 'all';
     const resetScanSnapshot = normalizeScenarioAGeoState();
-    const legacyUkOnlySnapshot = isScenarioAProductMode() && !storedDataHash && scanSnapshotLooksUkOnly();
+    const legacyUkOnlySnapshot = isScenarioAProductMode() && !storedDataHash && !storedFestivalHash && scanSnapshotLooksUkOnly();
     const scanSnapshotCleared = resetScanSnapshot || legacyUkOnlySnapshot || (storedDataHash && storedDataHash !== countryHash());
-    if (scanSnapshotCleared) {
-      clearLocalScanSnapshot();
-    }
+    const festivalSnapshotCleared = resetScanSnapshot || legacyUkOnlySnapshot || (storedFestivalHash && storedFestivalHash !== countryHash());
+    if (scanSnapshotCleared) clearLocalConcertSnapshot();
+    if (festivalSnapshotCleared) clearLocalFestivalSnapshot();
     // Migrate from old keys
     if (!ARTISTS.length)    ARTISTS   = JSON.parse(localStorage.getItem('tt3_artists') || '[]');
-    if (!scanSnapshotCleared && !concerts.length)   concerts  = JSON.parse(localStorage.getItem('tt3_concerts') || '[]');
-    if (!scanSnapshotCleared && !festivals.length)  festivals = JSON.parse(localStorage.getItem('tt3_festivals') || '[]');
+    if (!scanSnapshotCleared && storedConcertSnapshot === null && !concerts.length) concerts = JSON.parse(localStorage.getItem('tt3_concerts') || '[]');
+    if (!festivalSnapshotCleared && storedFestivalSnapshot === null && !festivals.length) festivals = JSON.parse(localStorage.getItem('tt3_festivals') || '[]');
     if (!scanSnapshotCleared && !cacheTimestamp)    cacheTimestamp = parseInt(localStorage.getItem('tt3_cachets') || '0', 10);
     // Migrate old exclude-mode default (US,JP,AU excluded) → include EU by default
     const oldExc = localStorage.getItem('tt3_exc') || localStorage.getItem('tt_exc_legacy');

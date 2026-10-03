@@ -843,7 +843,9 @@ function drpRender() {
   }
   for (let d = 1; d <= lastDay; d++) {
     const iso = _drpYear + '-' + String(_drpMonth + 1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-    const el = document.createElement('div');
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.setAttribute('aria-label', iso);
     el.className = 'drp-day';
     el.textContent = d;
     if (iso < today) el.classList.add('drp-past');
@@ -972,7 +974,6 @@ function toggleFavorite(artistName, e) {
   if (favoriteArtists.has(key)) favoriteArtists.delete(key);
   else favoriteArtists.add(key);
   persistSettingsDeferred();
-  buildSidebar();
   renderMap();
   // Show/hide fav-only toggle
   const favBtn = document.getElementById('lt-fav');
@@ -992,7 +993,6 @@ function resetFavorites() {
   const btn = document.getElementById('lt-fav');
   if (btn) btn.style.display = 'none';
   persistSettings();
-  buildSidebar();
   refreshFilteredMap();
 }
 
@@ -1179,7 +1179,7 @@ function scheduleFilterRefresh(opts = {}) {
   if (_scheduledFilterRefreshRaf) return;
 
   // Let the pressed-state paint before we start the expensive list/map rebuild.
-  requestAnimationFrame(() => {
+  _scheduledFilterRefreshRaf = requestAnimationFrame(() => {
     _scheduledFilterRefreshRaf = requestAnimationFrame(flushScheduledFilterRefresh);
   });
 }
@@ -1329,8 +1329,17 @@ function _syncGeoButtons() {
     btn.classList.toggle('on', btn.dataset.gp === geoPreset));
 }
 
+let _geoPresetLookupPreset = null;
+let _geoPresetLookupCountryMap = null;
+let _geoPresetLookupCodes = null;
+
 function geoPresetCodes(preset) {
-  return getDisplayGeoPresetCodes(preset);
+  if (_geoPresetLookupPreset !== preset || _geoPresetLookupCountryMap !== COUNTRY_MAP) {
+    _geoPresetLookupCodes = getDisplayGeoPresetCodes(preset);
+    _geoPresetLookupPreset = preset;
+    _geoPresetLookupCountryMap = COUNTRY_MAP;
+  }
+  return _geoPresetLookupCodes;
 }
 
 function geoPresetOk(cc) {
@@ -1761,6 +1770,19 @@ function createCalendarMonthSeparator(month) {
   return sep;
 }
 
+function bindKeyboardClick(node) {
+  if (!node) return node;
+  node.setAttribute('role', 'button');
+  node.tabIndex = 0;
+  node.onkeydown = event => {
+    if (event.target !== node || event.repeat || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    node.click();
+  };
+  return node;
+}
+
 function bindArtistDetailTrigger(node, artistName, options = {}) {
   if (!node || !artistName) return node;
   const { title = 'Open artist card' } = options;
@@ -1773,7 +1795,7 @@ function bindArtistDetailTrigger(node, artistName, options = {}) {
     if (typeof openArtistDetail === 'function') openArtistDetail(artistName);
     else focusArtist(artistName);
   };
-  return node;
+  return bindKeyboardClick(node);
 }
 
 function createCalendarScoreRow(artistName) {
@@ -1951,6 +1973,7 @@ function buildCalendarEventRow(ev, ctx) {
         event.stopPropagation();
         openExternalUrl(ev.url);
       };
+      bindKeyboardClick(vLink);
       sub.appendChild(vLink);
       if (loc) sub.appendChild(document.createTextNode(' · ' + loc));
     } else {
@@ -1972,6 +1995,7 @@ function buildCalendarEventRow(ev, ctx) {
       chip.className = 'ev-artist-chip mine';
       chip.textContent = `Festival · ${fest.name}`;
       chip.onclick = e => { e.stopPropagation(); openFestDetail(fest.id); };
+      bindKeyboardClick(chip);
       metaRow.appendChild(chip);
     }
     if (artistTourCount > 1) {
@@ -2005,6 +2029,7 @@ function buildCalendarEventRow(ev, ctx) {
   row.appendChild(dayblock);
   row.appendChild(main);
   row.appendChild(actions);
+  if (row.onclick) bindKeyboardClick(row);
   return row;
 }
 

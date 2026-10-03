@@ -685,7 +685,7 @@ async function importFestivalsOnly() {
     await fetchFestivalsData();
 
     // Persist festivals
-    try { localStorage.setItem('tt_festivals', JSON.stringify(festivals)); } catch(e) {}
+    persistFestivalData();
     DB.put('meta', 'festivals', { data: festivals, ts: scanAborted ? 0 : Date.now(), cHash: countryHash(), ver: FEST_VER }).catch(() => {});
 
     buildFestPanel();
@@ -734,6 +734,7 @@ async function rescanFestsOnly() {
 
     // Save fresh data to IDB
     DB.put('meta', 'festivals', { data: festivals, ts: scanAborted ? 0 : Date.now(), cHash: countryHash(), ver: FEST_VER }).catch(() => {});
+    persistFestivalData();
 
     setProgress('', 100);
     buildCalChips(); renderCalendar();

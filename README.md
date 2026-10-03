@@ -96,10 +96,22 @@ Date filters use your local calendar day. Multi-day festivals stay visible until
 their final day and match any selected date range they overlap, including after
 restoring a saved session. Ticketmaster end dates are retained during import.
 
-The map uses OpenStreetMap tiles with visible attribution and browser caching;
-it loads the current viewport without background tile prefetching. Regression
+The map uses OpenStreetMap tiles with visible attribution. A service worker
+keeps viewed tiles in a persistent cache independent of app releases, honoring
+server freshness headers (seven days when no readable expiry is provided).
+The cache holds at most 512 tiles of up to 128 KiB each; expired tiles use normal
+HTTP revalidation, and unsupported/restricted browsers retain normal loading.
+It loads the current viewport without background tile prefetching. Regression
 tests run with isolated browser storage and offline API responses, so they do
 not consume live provider quota or use your API credentials.
+
+The workspace has an agenda beside the live atlas on desktop, with separate
+Agenda and Map views on phones. Filters expand from the agenda header. Concert
+rows and artist controls support keyboard activation. Festival-only refreshes
+survive reloads without changing the search scope of stored concert results.
+Late track-cache responses cannot overwrite a newer import or profile choice.
+Deterministic regressions also cover batched filter redraws and reuse of festival
+matching patterns; these verify work counts rather than machine timing.
 
 ## External-user readiness
 
