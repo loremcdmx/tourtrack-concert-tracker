@@ -295,12 +295,13 @@ test('simultaneous requests fetch a tile once, clone each response and release a
   assert.equal(attempts, 2);
 });
 
-test('CacheStorage open, match and put failures return the fetched tile without fetching it twice', async () => {
-  for (const failure of ['open', 'match', 'put']) {
+test('missing CacheStorage and open, match or put failures return the fetched tile without fetching it twice', async () => {
+  for (const failure of ['unsupported', 'open', 'match', 'put']) {
     const storage = memoryStorage();
     if (failure === 'open') storage.failure = failure;
-    else (await storage.open(CACHE_NAME)).failure = failure;
+    else if (failure !== 'unsupported') (await storage.open(CACHE_NAME)).failure = failure;
     const harness = workerHarness({ storage });
+    if (failure === 'unsupported') delete harness.context.caches;
     const response = await harness.serve();
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), PNG, failure);
     assert.equal(harness.fetchCalls.length, 1, failure);
