@@ -32,11 +32,18 @@ TICKETMASTER_API_KEYS=your_ticketmaster_key
 ```env
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SPOTIFY_REDIRECT_URI=http://localhost:3002/api/auth/spotify/callback
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:3002/api/auth/spotify/callback
 SESSION_SECRET=replace_with_a_long_random_secret
 ```
 
 Register the same redirect URI in the Spotify developer dashboard before testing login.
+
+Spotify no longer accepts `localhost` in redirect URIs. Register
+`http://127.0.0.1:3002/api/auth/spotify/callback` exactly. The tracker can stay
+open at `http://localhost:3002`: local login uses the loopback IP for OAuth and
+returns to the original browser origin, preserving its saved playlist data.
+The local server also normalizes a legacy `localhost` callback from the
+environment; the corresponding IP callback must still be registered with Spotify.
 
 4. Start the app:
 
@@ -67,7 +74,7 @@ If the repo is not linked yet, the script now attempts `vercel link --yes --proj
 4. Keep Spotify redirect canonical:
 
 ```text
-http://localhost:3002/api/auth/spotify/callback
+http://127.0.0.1:3002/api/auth/spotify/callback
 ```
 
 5. Run:

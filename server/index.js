@@ -16,6 +16,10 @@ const PORT = Number(process.env.PORT || 3000);
 const TICKETMASTER_PLACEHOLDER = '__SERVER__';
 const SPOTIFY_SESSION_COOKIE = 'tt_spotify_session';
 const SPOTIFY_STATE_COOKIE = 'tt_spotify_state';
+const SPOTIFY_STATE_TTL_MS = 10 * 60 * 1000;
+const SPOTIFY_LOCAL_HANDOFF_TTL_MS = 30 * 1000;
+const SPOTIFY_LOCAL_HANDOFF_LIMIT = 128;
+const spotifyLocalHandoffs = new Map();
 const SPOTIFY_OAUTH_SCOPES = [
   'playlist-read-private',
   'playlist-read-collaborative',
@@ -197,7 +201,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.31.0059',
+    appVersion: '2.31.0060',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -437,12 +441,10 @@ function getExternalBaseUrl(req) {
 }
 
 function normalizeHostname(value) {
-  return String(value || '')
-    .trim()
-    .replace(/^\[/, '')
-    .replace(/\]$/, '')
-    .split(':')[0]
-    .toLowerCase();
+  const host = String(value || '').trim().toLowerCase();
+  const ipv6 = host.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (ipv6) return ipv6[1];
+  return host === '::1' ? host : host.split(':')[0];
 }
 
 function isLoopbackHost(value) {
@@ -458,22 +460,9 @@ function isLocalRequest(req) {
   return isLoopbackHost(host) && (remote === '127.0.0.1' || remote === '::1');
 }
 
-function getLocalhostBaseUrl(req) {
-  const protocol = getRequestProtocol(req);
-  try {
-    const requestOrigin = new URL(`${protocol}://${getRequestHost(req)}`);
-    if (isLoopbackHost(requestOrigin.hostname)) {
-      const port = requestOrigin.port || String(PORT);
-      return `${protocol}://localhost${port ? `:${port}` : ''}`;
-    }
-  } catch (error) {
-    // Fall through to the request host when the header is malformed.
-  }
-  return getExternalBaseUrl(req);
-}
-
 function sanitizeReturnTo(rawValue) {
   if (!rawValue || typeof rawValue !== 'string') return '/';
+  if (rawValue.length > 2048 || /[\\\u0000-\u001f\u007f]/.test(rawValue)) return '/';
   if (!rawValue.startsWith('/')) return '/';
   if (rawValue.startsWith('//')) return '/';
   return rawValue;
@@ -481,8 +470,23 @@ function sanitizeReturnTo(rawValue) {
 
 function getSpotifyRedirectUri(req) {
   const configured = (process.env.SPOTIFY_REDIRECT_URI || '').trim();
-  if (configured) return configured;
-  return `${getLocalhostBaseUrl(req)}/api/auth/spotify/callback`;
+  if (configured) {
+    try {
+      const redirect = new URL(configured);
+      // Spotify requires a literal loopback IP. Keep old local .env files usable
+      // without changing the application's localhost origin or deployment config.
+      if (isLocalRequest(req) && redirect.hostname === 'localhost') {
+        redirect.hostname = '127.0.0.1';
+        return redirect.toString();
+      }
+    } catch (error) {
+      // An explicit non-local configuration remains the deployment's responsibility.
+    }
+    return configured;
+  }
+  const origin = new URL(getExternalBaseUrl(req));
+  if (isLocalRequest(req)) origin.hostname = '127.0.0.1';
+  return new URL('/api/auth/spotify/callback', origin).toString();
 }
 
 function getCanonicalSpotifyLoginUrl(req, requestUrl) {
@@ -494,9 +498,68 @@ function getCanonicalSpotifyLoginUrl(req, requestUrl) {
   } catch (error) {
     return '';
   }
-  if (!isLoopbackHost(redirectUrl.hostname) || !isLoopbackHost(requestOrigin.hostname)) return '';
+  if (!isLocalRequest(req) || !isLoopbackHost(redirectUrl.hostname) || !isLoopbackHost(requestOrigin.hostname)) return '';
   if (redirectUrl.origin === requestOrigin.origin) return '';
   return new URL(`${requestUrl.pathname}${requestUrl.search}`, redirectUrl.origin).toString();
+}
+
+function spotifyStateIsFresh(payload) {
+  const now = Date.now();
+  return !!payload && Number.isFinite(payload.ts) && payload.ts <= now && now - payload.ts <= SPOTIFY_STATE_TTL_MS;
+}
+
+function getSpotifyLocalBridgeOrigin(req, payload) {
+  if (!isLocalRequest(req) || !payload || typeof payload.bridgeOrigin !== 'string') return '';
+  try {
+    const current = new URL(getExternalBaseUrl(req));
+    const target = new URL(payload.bridgeOrigin);
+    const callback = new URL(getSpotifyRedirectUri(req));
+    if (current.hostname !== '127.0.0.1' || target.hostname !== 'localhost') return '';
+    if (target.origin !== payload.bridgeOrigin || target.username || target.password) return '';
+    if (target.protocol !== current.protocol || target.port !== current.port) return '';
+    if (callback.origin !== current.origin || callback.pathname !== '/api/auth/spotify/callback' || callback.search || callback.hash) return '';
+    return target.origin;
+  } catch (error) {
+    return '';
+  }
+}
+
+function pruneSpotifyLocalHandoffs() {
+  const now = Date.now();
+  for (const [state, record] of spotifyLocalHandoffs) {
+    if (record.expiresAt <= now) {
+      clearTimeout(record.timer);
+      spotifyLocalHandoffs.delete(state);
+    }
+  }
+}
+
+function saveSpotifyLocalHandoff(state, targetOrigin, session) {
+  pruneSpotifyLocalHandoffs();
+  if (spotifyLocalHandoffs.size >= SPOTIFY_LOCAL_HANDOFF_LIMIT || spotifyLocalHandoffs.has(state)) return false;
+  const sealedSession = sealJson(session);
+  if (!sealedSession) return false;
+  const timer = setTimeout(() => spotifyLocalHandoffs.delete(state), SPOTIFY_LOCAL_HANDOFF_TTL_MS);
+  timer.unref?.();
+  spotifyLocalHandoffs.set(state, { targetOrigin, sealedSession, expiresAt: Date.now() + SPOTIFY_LOCAL_HANDOFF_TTL_MS, timer });
+  return true;
+}
+
+function claimSpotifyLocalHandoff(req, res) {
+  pruneSpotifyLocalHandoffs();
+  if (!isLocalRequest(req)) return null;
+  const origin = new URL(getExternalBaseUrl(req));
+  if (origin.hostname !== 'localhost') return null;
+  const stateCookie = openJson(parseCookies(req)[SPOTIFY_STATE_COOKIE]);
+  if (!spotifyStateIsFresh(stateCookie) || stateCookie.bridgeOrigin !== origin.origin) return null;
+  const record = spotifyLocalHandoffs.get(stateCookie.state);
+  if (!record || record.targetOrigin !== origin.origin) return null;
+  const session = sanitizeSpotifySession(openJson(record.sealedSession));
+  clearTimeout(record.timer);
+  spotifyLocalHandoffs.delete(stateCookie.state);
+  clearCookie(res, req, SPOTIFY_STATE_COOKIE, '/api/auth/spotify');
+  if (!session || !writeSpotifySessionCookie(res, req, session)) return null;
+  return session;
 }
 
 function isSecureRequest(req) {
@@ -1199,30 +1262,65 @@ async function handleSpotifyLogin(req, res, requestUrl) {
     return;
   }
 
+  pruneSpotifyLocalHandoffs();
   const canonicalLoginUrl = getCanonicalSpotifyLoginUrl(req, requestUrl);
   if (canonicalLoginUrl) {
+    const origin = new URL(getExternalBaseUrl(req));
+    const loginUrl = new URL(canonicalLoginUrl);
+    if (origin.hostname === 'localhost' && loginUrl.hostname === '127.0.0.1') {
+      const callback = new URL(getSpotifyRedirectUri(req));
+      if (origin.protocol !== loginUrl.protocol || origin.port !== loginUrl.port ||
+          callback.pathname !== '/api/auth/spotify/callback' || callback.search || callback.hash) {
+        sendJson(res, 400, { error: 'The local Spotify callback must use the same port and protocol as this app.', code: 'SPOTIFY_REDIRECT_MISMATCH' });
+        return;
+      }
+      const relay = {
+        purpose: 'spotify-local-auth-relay',
+        state: crypto.randomBytes(18).toString('hex'),
+        returnTo: sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/'),
+        bridgeOrigin: origin.origin,
+        ts: Date.now(),
+      };
+      writeSpotifyStateCookie(res, req, relay);
+      loginUrl.search = '';
+      loginUrl.searchParams.set('bridge', sealJson(relay));
+      if (requestUrl.searchParams.get('show_dialog') === '1') loginUrl.searchParams.set('show_dialog', '1');
+      sendRedirect(res, 302, loginUrl.toString(), { 'Referrer-Policy': 'no-referrer' });
+      return;
+    }
     sendRedirect(res, 302, canonicalLoginUrl);
     return;
   }
 
   const { clientId } = getSpotifyCredentials();
-  const state = crypto.randomBytes(18).toString('hex');
-  const returnTo = sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/');
-  writeSpotifyStateCookie(res, req, {
-    state,
-    returnTo,
-    ts: Date.now(),
-  });
+  let statePayload;
+  const bridge = requestUrl.searchParams.get('bridge');
+  if (bridge !== null) {
+    statePayload = bridge.length <= 4096 ? openJson(bridge) : null;
+    if (!spotifyStateIsFresh(statePayload) || statePayload.purpose !== 'spotify-local-auth-relay' ||
+        !/^[a-f0-9]{36}$/.test(statePayload.state) || !getSpotifyLocalBridgeOrigin(req, statePayload)) {
+      sendJson(res, 400, { error: 'This local Spotify login link is invalid or expired. Start again from the app.', code: 'SPOTIFY_STATE_MISMATCH' });
+      return;
+    }
+    statePayload.returnTo = sanitizeReturnTo(statePayload.returnTo);
+  } else {
+    statePayload = {
+      state: crypto.randomBytes(18).toString('hex'),
+      returnTo: sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/'),
+      ts: Date.now(),
+    };
+  }
+  writeSpotifyStateCookie(res, req, statePayload);
 
   const authUrl = new URL('https://accounts.spotify.com/authorize');
   authUrl.searchParams.set('client_id', clientId);
   authUrl.searchParams.set('response_type', 'code');
   authUrl.searchParams.set('redirect_uri', getSpotifyRedirectUri(req));
   authUrl.searchParams.set('scope', SPOTIFY_OAUTH_SCOPES.join(' '));
-  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('state', statePayload.state);
   authUrl.searchParams.set('show_dialog', requestUrl.searchParams.get('show_dialog') === '1' ? 'true' : 'false');
 
-  sendRedirect(res, 302, authUrl.toString());
+  sendRedirect(res, 302, authUrl.toString(), { 'Referrer-Policy': 'no-referrer' });
 }
 
 async function handleSpotifyCallback(req, res, requestUrl) {
@@ -1230,18 +1328,25 @@ async function handleSpotifyCallback(req, res, requestUrl) {
   const stateCookie = openJson(cookies[SPOTIFY_STATE_COOKIE]);
   const returnTo = sanitizeReturnTo(stateCookie && stateCookie.returnTo ? stateCookie.returnTo : '/');
   clearCookie(res, req, SPOTIFY_STATE_COOKIE, '/api/auth/spotify');
-
-  const errorCode = requestUrl.searchParams.get('error');
-  if (errorCode) {
-    sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'error', code: errorCode }));
-    return;
-  }
-
   const code = requestUrl.searchParams.get('code');
   const state = requestUrl.searchParams.get('state');
-
-  if (!code || !stateCookie || stateCookie.state !== state) {
+  if (!spotifyStateIsFresh(stateCookie) || !state || stateCookie.state !== state) {
     sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'error', code: 'state_mismatch' }));
+    return;
+  }
+  const bridgeOrigin = getSpotifyLocalBridgeOrigin(req, stateCookie);
+  if (stateCookie.bridgeOrigin && !bridgeOrigin) {
+    sendRedirect(res, 302, buildReturnUrl('/', { spotify: 'error', code: 'state_mismatch' }));
+    return;
+  }
+  const finishUrl = params => `${bridgeOrigin}${buildReturnUrl(returnTo, params)}`;
+  const errorCode = requestUrl.searchParams.get('error');
+  if (errorCode) {
+    sendRedirect(res, 302, finishUrl({ spotify: 'error', code: errorCode }), { 'Referrer-Policy': 'no-referrer' });
+    return;
+  }
+  if (!code) {
+    sendRedirect(res, 302, finishUrl({ spotify: 'error', code: 'state_mismatch' }));
     return;
   }
 
@@ -1266,12 +1371,37 @@ async function handleSpotifyCallback(req, res, requestUrl) {
       session.user = null;
     }
 
-    writeSpotifySessionCookie(res, req, session);
-    sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'connected' }));
+    if (bridgeOrigin) {
+      if (!saveSpotifyLocalHandoff(stateCookie.state, bridgeOrigin, session)) {
+        sendRedirect(res, 302, finishUrl({ spotify: 'error', code: 'login_busy' }));
+        return;
+      }
+    } else {
+      writeSpotifySessionCookie(res, req, session);
+    }
+    sendRedirect(res, 302, bridgeOrigin ? `${bridgeOrigin}/api/auth/spotify/complete` : finishUrl({ spotify: 'connected' }), {
+      'Referrer-Policy': 'no-referrer',
+    });
   } catch (error) {
     console.warn('Spotify callback failed:', error.status || 502);
-    sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'error', code: 'token_exchange_failed' }));
+    sendRedirect(res, 302, finishUrl({ spotify: 'error', code: 'token_exchange_failed' }));
   }
+}
+
+async function handleSpotifyComplete(req, res) {
+  const origin = new URL(getExternalBaseUrl(req));
+  if (!isLocalRequest(req) || origin.hostname !== 'localhost') {
+    sendJson(res, 400, { error: 'This Spotify login must finish on its original local app.', code: 'SPOTIFY_STATE_MISMATCH' });
+    return;
+  }
+  const stateCookie = openJson(parseCookies(req)[SPOTIFY_STATE_COOKIE]);
+  const returnTo = stateCookie && stateCookie.bridgeOrigin === origin.origin
+    ? sanitizeReturnTo(stateCookie.returnTo) : '/';
+  const session = claimSpotifyLocalHandoff(req, res);
+  if (!session) clearCookie(res, req, SPOTIFY_STATE_COOKIE, '/api/auth/spotify');
+  sendRedirect(res, 302, buildReturnUrl(returnTo, session
+    ? { spotify: 'connected' }
+    : { spotify: 'error', code: 'state_mismatch' }), { 'Referrer-Policy': 'no-referrer' });
 }
 
 async function handleSpotifyLogout(req, res) {
@@ -1281,7 +1411,7 @@ async function handleSpotifyLogout(req, res) {
 
 async function handleSpotifySession(req, res) {
   try {
-    const session = await getSpotifyUserSession(req, res);
+    const session = claimSpotifyLocalHandoff(req, res) || await getSpotifyUserSession(req, res);
     if (!session) {
       sendJson(res, 200, {
         connected: false,
@@ -1596,6 +1726,15 @@ async function handleRequest(req, res) {
       return;
     }
     await handleSpotifyCallback(req, res, requestUrl);
+    return;
+  }
+
+  if (pathname === '/api/auth/spotify/complete') {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed.' }, { Allow: 'GET' });
+      return;
+    }
+    await handleSpotifyComplete(req, res);
     return;
   }
 

@@ -18,7 +18,7 @@ const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(b
 const track = index => ({ id: `track-${index}`, name: `Track ${index}`, type: 'track',
   artists: [{ id: 'artist-1', name: 'Artist' }], album: { name: 'Album', images: [] } });
 
-function harness(fetchImpl, { timeoutMs = null } = {}) {
+function harness(fetchImpl, { timeoutMs = null, env = {} } = {}) {
   const calls = [];
   const envReads = [];
   const fakeRequire = name => {
@@ -37,7 +37,7 @@ function harness(fetchImpl, { timeoutMs = null } = {}) {
   const context = vm.createContext({
     require: fakeRequire, module: { exports: {} }, __dirname: dirname(serverPath),
     process: { env: { PORT: '0', SPOTIFY_CLIENT_ID: 'fixture-client',
-      SPOTIFY_CLIENT_SECRET: 'fixture-secret', SESSION_SECRET: 'fixture-session' } },
+      SPOTIFY_CLIENT_SECRET: 'fixture-secret', SESSION_SECRET: 'fixture-session', ...env } },
     Buffer, URL, URLSearchParams, Headers, AbortController,
     setTimeout: timeoutMs === null ? setTimeout : (callback, duration) => setTimeout(callback, Math.min(duration, timeoutMs)),
     clearTimeout, console: { warn() {}, error() {} },
@@ -66,10 +66,11 @@ function responseRecorder() {
   });
 }
 
-function beginRequest(context, url, { cookie = '', method = 'GET', body = null } = {}) {
+function beginRequest(context, url, { cookie = '', method = 'GET', body = null,
+  host = 'localhost', remoteAddress = '127.0.0.1', headers = {} } = {}) {
   const req = new EventEmitter();
-  Object.assign(req, { url, method, headers: { host: 'localhost', cookie },
-    socket: { remoteAddress: '127.0.0.1' } });
+  Object.assign(req, { url, method, headers: { host, cookie, ...headers },
+    socket: { remoteAddress } });
   const res = responseRecorder();
   const pending = context.handleRequest(req, res);
   if (body !== null) queueMicrotask(() => { req.emit('data', Buffer.from(body)); req.emit('end'); });
@@ -489,6 +490,286 @@ test('malformed playlist-list objects return 502 without emitting an empty succe
   const res = await request(empty.context, '/api/spotify/me/playlists', { cookie: sessionCookie(empty.context) });
   assert.equal(res.status, 200);
   assert.deepEqual(res.json().items, []);
+});
+
+const localOAuthEnv = { PORT: '3002', SPOTIFY_REDIRECT_URI: 'http://localhost:3002/api/auth/spotify/callback' };
+const localhostOAuthOptions = { host: 'localhost:3002' };
+const loopbackOAuthOptions = { host: '127.0.0.1:3002' };
+const fixtureOAuthSession = { accessToken: 'fixture-login-access', refreshToken: 'fixture-login-refresh',
+  expiresAt: Date.now() + 3600_000, scope: ['playlist-read-private'], user: { id: 'fixture-login-user' } };
+
+function responseCookie(res, name) {
+  return (res.getHeader('set-cookie') || []).find(value => value.startsWith(`${name}=`))?.split(';')[0] || '';
+}
+
+async function beginLocalOAuth(context, returnTo = '/?fixture=return#map') {
+  const start = await request(context, `/api/auth/spotify/login?returnTo=${encodeURIComponent(returnTo)}&show_dialog=1`, localhostOAuthOptions);
+  assert.equal(start.status, 302);
+  const relayUrl = new URL(start.getHeader('location'));
+  assert.equal(relayUrl.origin, 'http://127.0.0.1:3002');
+  const originalCookie = responseCookie(start, 'tt_spotify_state');
+  assert.ok(originalCookie);
+  const login = await request(context, `${relayUrl.pathname}${relayUrl.search}`, loopbackOAuthOptions);
+  assert.equal(login.status, 302);
+  const authUrl = new URL(login.getHeader('location'));
+  assert.equal(authUrl.origin, 'https://accounts.spotify.com');
+  assert.equal(authUrl.searchParams.get('redirect_uri'), 'http://127.0.0.1:3002/api/auth/spotify/callback');
+  assert.equal(authUrl.searchParams.get('show_dialog'), 'true');
+  return { start, login, relayUrl, originalCookie, callbackCookie: responseCookie(login, 'tt_spotify_state'),
+    state: authUrl.searchParams.get('state') };
+}
+
+function oauthFixtureProvider(url, options) {
+  if (url === 'https://accounts.spotify.com/api/token') {
+    const form = new URLSearchParams(options.body);
+    assert.equal(form.get('grant_type'), 'authorization_code');
+    assert.equal(form.get('redirect_uri'), 'http://127.0.0.1:3002/api/auth/spotify/callback');
+    return json({ access_token: fixtureOAuthSession.accessToken, refresh_token: fixtureOAuthSession.refreshToken,
+      expires_in: 3600, scope: 'playlist-read-private' });
+  }
+  assert.equal(url, 'https://api.spotify.com/v1/me');
+  return json({ id: 'fixture-login-user', display_name: 'Fixture User' });
+}
+
+test('local Spotify callbacks use a literal loopback IP while production HTTPS configuration stays exact', async () => {
+  const local = harness(async () => { throw new Error('Unexpected provider call'); }, { env: localOAuthEnv });
+  for (const host of ['localhost:3002', '127.0.0.1:3002', '[::1]:3002']) {
+    const health = await request(local.context, '/api/health', { host });
+    assert.equal(health.json().spotifyRedirectUri, 'http://127.0.0.1:3002/api/auth/spotify/callback');
+  }
+  const inferred = harness(async () => {}, { env: { PORT: '3002' } });
+  const health = await request(inferred.context, '/api/health', localhostOAuthOptions);
+  assert.equal(health.json().spotifyRedirectUri, 'http://127.0.0.1:3002/api/auth/spotify/callback');
+  const production = harness(async () => {}, { env: { SPOTIFY_REDIRECT_URI: 'https://concert.example/api/auth/spotify/callback' } });
+  const prodHealth = await request(production.context, '/api/health', { host: 'concert.example',
+    remoteAddress: '203.0.113.1', headers: { 'x-forwarded-proto': 'https' } });
+  assert.equal(prodHealth.json().spotifyRedirectUri, 'https://concert.example/api/auth/spotify/callback');
+  const prodLogin = await request(production.context, '/api/auth/spotify/login?returnTo=%2Fagenda', {
+    host: 'concert.example', remoteAddress: '203.0.113.1', headers: { 'x-forwarded-proto': 'https' },
+  });
+  assert.equal(new URL(prodLogin.getHeader('location')).searchParams.get('redirect_uri'), 'https://concert.example/api/auth/spotify/callback');
+  assert.match(responseCookie(prodLogin, 'tt_spotify_state'), /^tt_spotify_state=/);
+  assert.match(prodLogin.getHeader('set-cookie').join(';'), /Secure/);
+});
+
+test('localhost OAuth returns to the original browser origin and claims the session once without tokens in URLs', async () => {
+  const { context, calls } = harness(oauthFixtureProvider, { env: localOAuthEnv });
+  const flow = await beginLocalOAuth(context);
+  for (const res of [flow.start, flow.login]) {
+    assert.equal(res.getHeader('cache-control'), 'no-store');
+    assert.equal(res.getHeader('referrer-policy'), 'no-referrer');
+    assert.match(res.getHeader('set-cookie').join(';'), /Path=\/api\/auth\/spotify; SameSite=Lax; HttpOnly; Max-Age=600/);
+    assert.equal(res.getHeader('set-cookie').join(';').includes('Domain='), false, 'Cookies stay scoped to their own host');
+    assert.equal(responseCookie(res, 'tt_spotify_session'), '');
+  }
+  const callback = await request(context, `/api/auth/spotify/callback?code=fixture-code&state=${flow.state}`, {
+    ...loopbackOAuthOptions, cookie: flow.callbackCookie,
+  });
+  assert.equal(callback.status, 302);
+  assert.equal(callback.getHeader('location'), 'http://localhost:3002/api/auth/spotify/complete');
+  assert.equal(callback.getHeader('referrer-policy'), 'no-referrer');
+  assert.equal(responseCookie(callback, 'tt_spotify_session'), '', 'The IP origin must not acquire a second account session');
+  for (const res of [flow.start, flow.login, callback]) {
+    assert.equal(res.getHeader('location').includes(fixtureOAuthSession.accessToken), false);
+    assert.equal(res.getHeader('location').includes(fixtureOAuthSession.refreshToken), false);
+  }
+  const withoutProof = await request(context, '/api/auth/spotify/session', localhostOAuthOptions);
+  assert.equal(withoutProof.json().connected, false);
+  const completeWithoutProof = await request(context, '/api/auth/spotify/complete', localhostOAuthOptions);
+  assert.equal(completeWithoutProof.getHeader('location'), '/?spotify=error&code=state_mismatch');
+  assert.equal(responseCookie(completeWithoutProof, 'tt_spotify_session'), '');
+  const otherBrowserCookie = `tt_spotify_state=${encodeURIComponent(context.sealJson({
+    state: 'a'.repeat(36), ts: Date.now(), bridgeOrigin: 'http://localhost:3002',
+  }))}`;
+  for (const options of [
+    { ...localhostOAuthOptions, cookie: otherBrowserCookie },
+    { host: 'localhost:3003', cookie: flow.originalCookie },
+    { ...loopbackOAuthOptions, cookie: flow.originalCookie },
+    { ...localhostOAuthOptions, remoteAddress: '203.0.113.1', cookie: flow.originalCookie },
+  ]) {
+    const refused = await request(context, '/api/auth/spotify/session', options);
+    assert.equal(refused.json().connected, false, 'Another browser, port, host or remote connection cannot claim the session');
+    assert.equal(responseCookie(refused, 'tt_spotify_session'), '');
+    const refusedComplete = await request(context, '/api/auth/spotify/complete', options);
+    assert.equal(refusedComplete.status, options.host === '127.0.0.1:3002' || options.remoteAddress ? 400 : 302);
+    if (refusedComplete.status === 302) assert.match(refusedComplete.getHeader('location'), /spotify=error&code=state_mismatch/);
+    assert.equal(responseCookie(refusedComplete, 'tt_spotify_session'), '');
+  }
+  const accepted = await request(context, '/api/auth/spotify/complete', { ...localhostOAuthOptions, cookie: flow.originalCookie });
+  assert.equal(accepted.status, 302);
+  assert.equal(accepted.getHeader('location'), '/?fixture=return&spotify=connected#map');
+  assert.equal(accepted.getHeader('cache-control'), 'no-store');
+  assert.equal(accepted.getHeader('referrer-policy'), 'no-referrer');
+  const session = responseCookie(accepted, 'tt_spotify_session');
+  assert.ok(session);
+  assert.match(accepted.getHeader('set-cookie').join(';'), /Path=\/; SameSite=Lax; HttpOnly/);
+  assert.match(accepted.getHeader('set-cookie').join(';'), /tt_spotify_state=.*Max-Age=0/);
+  assert.equal(accepted.body.includes(fixtureOAuthSession.accessToken), false);
+  assert.equal(accepted.body.includes(fixtureOAuthSession.refreshToken), false);
+  const replay = await request(context, '/api/auth/spotify/complete', { ...localhostOAuthOptions, cookie: flow.originalCookie });
+  assert.equal(replay.getHeader('location'), '/?fixture=return&spotify=error&code=state_mismatch#map');
+  assert.equal(responseCookie(replay, 'tt_spotify_session'), '');
+  const retained = await request(context, '/api/auth/spotify/session', { ...localhostOAuthOptions, cookie: session });
+  assert.equal(retained.json().connected, true, 'The final localhost HttpOnly cookie works on subsequent reloads');
+  assert.equal(retained.json().user.id, 'fixture-login-user');
+  assert.equal(calls.length, 2, 'Handoff and session claims make no extra provider requests');
+  const postComplete = await request(context, '/api/auth/spotify/complete', { ...localhostOAuthOptions, method: 'POST' });
+  assert.equal(postComplete.status, 405);
+  assert.equal(postComplete.getHeader('allow'), 'GET');
+});
+
+test('direct loopback OAuth keeps its own session and does not create a localhost handoff', async () => {
+  const { context } = harness(oauthFixtureProvider, { env: localOAuthEnv });
+  const login = await request(context, '/api/auth/spotify/login?returnTo=%2Fagenda', loopbackOAuthOptions);
+  const authUrl = new URL(login.getHeader('location'));
+  const callback = await request(context, `/api/auth/spotify/callback?code=fixture-code&state=${authUrl.searchParams.get('state')}`, {
+    ...loopbackOAuthOptions, cookie: responseCookie(login, 'tt_spotify_state'),
+  });
+  assert.equal(callback.getHeader('location'), '/agenda?spotify=connected');
+  const saved = responseCookie(callback, 'tt_spotify_session');
+  assert.ok(saved);
+  const session = await request(context, '/api/auth/spotify/session', { ...loopbackOAuthOptions, cookie: saved });
+  assert.equal(session.json().connected, true);
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', context), 0);
+});
+
+test('production HTTPS OAuth exchanges the configured callback and retains its own Secure session without the local bridge', async () => {
+  const callbackUri = 'https://concert.example/api/auth/spotify/callback';
+  const { context } = harness(async (url, options) => {
+    if (url === 'https://accounts.spotify.com/api/token') {
+      assert.equal(new URLSearchParams(options.body).get('redirect_uri'), callbackUri);
+      return json({ access_token: fixtureOAuthSession.accessToken, refresh_token: fixtureOAuthSession.refreshToken,
+        expires_in: 3600, scope: 'playlist-read-private' });
+    }
+    assert.equal(url, 'https://api.spotify.com/v1/me');
+    return json({ id: 'fixture-login-user' });
+  }, { env: { SPOTIFY_REDIRECT_URI: callbackUri } });
+  const options = { host: 'concert.example', remoteAddress: '203.0.113.1', headers: { 'x-forwarded-proto': 'https' } };
+  const login = await request(context, '/api/auth/spotify/login?returnTo=%2Fagenda', options);
+  const authUrl = new URL(login.getHeader('location'));
+  const callback = await request(context, `/api/auth/spotify/callback?code=fixture-code&state=${authUrl.searchParams.get('state')}`, {
+    ...options, cookie: responseCookie(login, 'tt_spotify_state'),
+  });
+  assert.equal(callback.getHeader('location'), '/agenda?spotify=connected');
+  const sessionCookieValue = responseCookie(callback, 'tt_spotify_session');
+  assert.ok(sessionCookieValue);
+  assert.match(callback.getHeader('set-cookie').find(value => value.startsWith('tt_spotify_session=')), /HttpOnly; Secure/);
+  const session = await request(context, '/api/auth/spotify/session', { ...options, cookie: sessionCookieValue });
+  assert.equal(session.json().connected, true);
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', context), 0);
+});
+
+test('local OAuth rejects forged, expired or cross-origin relay links before creating state or calling Spotify', async () => {
+  const { context, calls } = harness(async () => { throw new Error('Unexpected provider call'); }, { env: localOAuthEnv });
+  const valid = { purpose: 'spotify-local-auth-relay', state: 'a'.repeat(36), ts: Date.now(), returnTo: '/', bridgeOrigin: 'http://localhost:3002' };
+  const relayValues = ['', 'forged', 'x'.repeat(4097), ...[
+    { ...valid, purpose: 'other' }, { ...valid, state: '' },
+    { ...valid, ts: Date.now() - 600001 }, { ...valid, ts: Date.now() + 60000 },
+    { ...valid, bridgeOrigin: 'http://evil.example:3002' },
+    { ...valid, bridgeOrigin: 'http://localhost:3003' },
+    { ...valid, bridgeOrigin: 'https://localhost:3002' },
+    { ...valid, bridgeOrigin: 'http://localhost:3002/path' },
+    { ...valid, bridgeOrigin: 'http://user:pass@localhost:3002' },
+  ].map(value => context.sealJson(value))];
+  for (const bridge of relayValues) {
+    const res = await request(context, `/api/auth/spotify/login?bridge=${encodeURIComponent(bridge)}`, loopbackOAuthOptions);
+    assert.equal(res.status, 400);
+    assert.equal(res.json().code, 'SPOTIFY_STATE_MISMATCH');
+    assert.equal(res.getHeader('set-cookie'), undefined);
+  }
+  const remote = await request(context, `/api/auth/spotify/login?bridge=${encodeURIComponent(context.sealJson(valid))}`, {
+    ...loopbackOAuthOptions, remoteAddress: '203.0.113.1',
+  });
+  assert.equal(remote.status, 400);
+  assert.equal(calls.length, 0);
+});
+
+test('local OAuth refuses mismatched callback ports, paths and query strings rather than moving browser data to another origin', async () => {
+  for (const uri of ['http://localhost:3003/api/auth/spotify/callback', 'http://localhost:3002/wrong-callback',
+    'http://localhost:3002/api/auth/spotify/callback?extra=1', 'http://localhost:3002/api/auth/spotify/callback#fragment']) {
+    const { context, calls } = harness(async () => {}, { env: { ...localOAuthEnv, SPOTIFY_REDIRECT_URI: uri } });
+    const res = await request(context, '/api/auth/spotify/login', localhostOAuthOptions);
+    assert.equal(res.status, 400);
+    assert.equal(res.json().code, 'SPOTIFY_REDIRECT_MISMATCH');
+    assert.equal(res.getHeader('set-cookie'), undefined);
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('OAuth callbacks require a fresh matching cookie even for provider denial and never exchange invalid state', async () => {
+  const { context, calls } = harness(async () => { throw new Error('Unexpected provider call'); }, { env: localOAuthEnv });
+  for (const payload of [null, { state: 'fixture-state', ts: Date.now() - 600001 },
+    { state: 'fixture-state', ts: Date.now() + 60000 }, { state: 'different-state', ts: Date.now() },
+    { state: 'fixture-state' }]) {
+    const cookie = payload ? `tt_spotify_state=${encodeURIComponent(context.sealJson(payload))}` : '';
+    for (const query of ['code=fixture-code&state=fixture-state', 'error=access_denied&state=fixture-state']) {
+      const res = await request(context, `/api/auth/spotify/callback?${query}`, { ...loopbackOAuthOptions, cookie });
+      assert.equal(res.status, 302);
+      assert.match(res.getHeader('location'), /spotify=error&code=state_mismatch/);
+      assert.equal(responseCookie(res, 'tt_spotify_session'), '');
+    }
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('provider denial and token exchange failure return to localhost without claiming an account', async () => {
+  for (const denied of [true, false]) {
+    const { context, calls } = harness(async () => json({ error: 'invalid_grant' }, 400), { env: localOAuthEnv });
+    const flow = await beginLocalOAuth(context, '/agenda');
+    const callback = await request(context, `/api/auth/spotify/callback?${denied ? 'error=access_denied' : 'code=bad-code'}&state=${flow.state}`, {
+      ...loopbackOAuthOptions, cookie: flow.callbackCookie,
+    });
+    assert.equal(callback.getHeader('location'), `http://localhost:3002/agenda?spotify=error&code=${denied ? 'access_denied' : 'token_exchange_failed'}`);
+    assert.equal(responseCookie(callback, 'tt_spotify_session'), '');
+    const session = await request(context, '/api/auth/spotify/session', { ...localhostOAuthOptions, cookie: flow.originalCookie });
+    assert.equal(session.json().connected, false);
+    assert.equal(calls.length, denied ? 0 : 1);
+  }
+});
+
+test('unsafe or oversized OAuth return paths are sanitized and valid local paths retain query and fragment', async () => {
+  for (const returnTo of ['https://evil.example/', '//evil.example/', '/\\evil.example/', '/\nunsafe', `/${'x'.repeat(2048)}`]) {
+    const { context } = harness(oauthFixtureProvider, { env: localOAuthEnv });
+    const flow = await beginLocalOAuth(context, returnTo);
+    const callback = await request(context, `/api/auth/spotify/callback?code=fixture-code&state=${flow.state}`, {
+      ...loopbackOAuthOptions, cookie: flow.callbackCookie,
+    });
+    assert.equal(callback.getHeader('location'), 'http://localhost:3002/api/auth/spotify/complete');
+    const completed = await request(context, '/api/auth/spotify/complete', { ...localhostOAuthOptions, cookie: flow.originalCookie });
+    assert.equal(completed.getHeader('location'), '/?spotify=connected');
+  }
+});
+
+test('pending local sessions expire after thirty seconds and the handoff store is bounded without evicting active logins', async () => {
+  const { context } = harness(oauthFixtureProvider, { env: localOAuthEnv });
+  const flow = await beginLocalOAuth(context);
+  await request(context, `/api/auth/spotify/callback?code=fixture-code&state=${flow.state}`, {
+    ...loopbackOAuthOptions, cookie: flow.callbackCookie,
+  });
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', context), 1);
+  const future = Date.now() + 31000;
+  vm.runInContext(`Date.now = () => ${future}`, context);
+  const expired = await request(context, '/api/auth/spotify/complete', { ...localhostOAuthOptions, cookie: flow.originalCookie });
+  assert.equal(expired.getHeader('location'), '/?fixture=return&spotify=error&code=state_mismatch#map');
+  assert.equal(responseCookie(expired, 'tt_spotify_session'), '');
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', context), 0);
+
+  const bounded = harness(oauthFixtureProvider, { env: localOAuthEnv });
+  for (let index = 0; index < 128; index += 1) {
+    assert.equal(bounded.context.saveSpotifyLocalHandoff(`fixture-${index}`, 'http://localhost:3002', fixtureOAuthSession), true);
+  }
+  assert.equal(bounded.context.saveSpotifyLocalHandoff('overflow', 'http://localhost:3002', fixtureOAuthSession), false);
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', bounded.context), 128);
+  const overflowingFlow = await beginLocalOAuth(bounded.context);
+  const rejected = await request(bounded.context, `/api/auth/spotify/callback?code=fixture-code&state=${overflowingFlow.state}`, {
+    ...loopbackOAuthOptions, cookie: overflowingFlow.callbackCookie,
+  });
+  assert.equal(rejected.getHeader('location'), 'http://localhost:3002/?fixture=return&spotify=error&code=login_busy#map');
+  assert.equal(responseCookie(rejected, 'tt_spotify_session'), '');
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', bounded.context), 128);
+  vm.runInContext(`Date.now = () => ${Date.now() + 31000}`, bounded.context);
+  bounded.context.pruneSpotifyLocalHandoffs();
+  assert.equal(vm.runInContext('spotifyLocalHandoffs.size', bounded.context), 0);
 });
 
 test('share-link resolver follows only validated manual redirects and cancels preview bodies', async () => {

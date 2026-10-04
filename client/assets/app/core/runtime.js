@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '2.31.0059'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
+const APP_VERSION = '2.31.0060'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
 
 const PRODUCT_SCENARIO = Object.freeze({
   id: window.__SERVER_CONFIG__?.pinnedPlaylistOnly === true ? 'scenario-a' : 'playlist-links',
@@ -52,7 +52,11 @@ const SERVER_MANAGED_TICKETMASTER = !!SERVER_CONFIG.ticketmasterManaged;
 const SERVER_MANAGED_SPOTIFY = !!SERVER_CONFIG.spotifyManaged;
 const SERVER_MANAGED_SPOTIFY_LOGIN = !!SERVER_CONFIG.spotifyLoginManaged;
 const LOCAL_SETUP_ALLOWED = !!SERVER_CONFIG.localSetupAllowed;
-const SPOTIFY_REDIRECT_URI_HINT = SERVER_CONFIG.spotifyRedirectUri || `${window.location.origin}/api/auth/spotify/callback`;
+const SPOTIFY_REDIRECT_URI_HINT = SERVER_CONFIG.spotifyRedirectUri || (() => {
+  const callback = new URL('/api/auth/spotify/callback', window.location.origin);
+  if (callback.hostname === 'localhost') callback.hostname = '127.0.0.1';
+  return callback.href;
+})();
 const INTERNAL_PROXY_HOSTS = new Set([
   'app.ticketmaster.com',
   'ticketmaster.com',
