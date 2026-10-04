@@ -106,8 +106,18 @@ restoring a saved session. Ticketmaster end dates are retained during import.
 The map uses OpenStreetMap tiles with visible attribution. A service worker
 keeps viewed tiles in a persistent cache independent of app releases, honoring
 server freshness headers (seven days when no readable expiry is provided).
-The cache holds at most 512 tiles of up to 128 KiB each; expired tiles use normal
+The cache trims to 512 tiles of up to 128 KiB each; expired tiles use normal
 HTTP revalidation, and unsupported/restricted browsers retain normal loading.
+Storage reads, network/body reads and background writes have separate deadlines
+so a stalled cache cannot hold up a downloaded tile. A permitted stale PNG can
+bridge a transient outage without extending its freshness; rate limits retain
+the provider's Retry-After pause. Late native storage writes and pruning resume
+bounded reconciliation when they finish, restoring newer known tiles and the
+cache limit. Native storage calls cannot be canceled, so the limit is eventual
+after a stall; worker termination can interrupt repair until another tile is stored.
+Failed visible tiles retry twice at the same URL. **Retry map** and returning
+online recover failed tiles without reloading healthy tiles or event markers.
+Leaving the viewport cancels pending retries; hung image requests are stopped.
 It loads the current viewport without background tile prefetching. Regression
 tests run with isolated browser storage and offline API responses, so they do
 not consume live provider quota or use your API credentials.

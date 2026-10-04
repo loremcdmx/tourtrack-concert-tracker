@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { deflateSync } from 'node:zlib';
 
 const ROOT = process.cwd();
 const MEDIA_PIXEL =
@@ -16,6 +18,84 @@ let serverPort = 0;
 let baseUrl = '';
 let browser = null;
 let page = null;
+
+// Only the map tile recovery cases replace the blanket HTTPS block.
+// Every HTTPS request is paused before networking; only the exact OSM tile
+// origin/path receives bytes from this local fixture server.
+const MAP_TILE_TEST_PREFIX = 'map tile recovery ';
+const OSM_TILE_REQUEST = /^https:\/\/tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/;
+
+function mapTilePng() {
+  const crc32 = buffer => {
+    let crc = 0xffffffff;
+    for (const byte of buffer) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (name, payload) => {
+    const type = Buffer.from(name);
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(payload.length);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(Buffer.concat([type, payload])));
+    return Buffer.concat([size, type, payload, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(256, 0);
+  header.writeUInt32BE(256, 4);
+  header[8] = 8;
+  header[9] = 6; // 8-bit RGBA, with unfiltered rows below
+  const pixels = Buffer.alloc((256 * 4 + 1) * 256);
+  for (let row = 0; row < 256; row++) {
+    for (let col = 0; col < 256; col++) {
+      const offset = row * (256 * 4 + 1) + 1 + col * 4;
+      pixels[offset] = 90; pixels[offset + 1] = 150; pixels[offset + 2] = 190; pixels[offset + 3] = 255;
+    }
+  }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header), chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+async function createMapTileFixture() {
+  const attempts = new Map();
+  const png = mapTilePng();
+  const fixture = { mode: 'first-error', attempts, errors: [], blockedRequests: 0, server: null, url: '',
+    stallUrl: null, stallAttempt: 0, stalledRequest: null, heldReplies: [] };
+  const server = http.createServer((request, response) => {
+    const parsed = new URL(request.url, 'http://127.0.0.1');
+    const source = parsed.searchParams.get('source') || '';
+    if (parsed.pathname !== '/tile' || !OSM_TILE_REQUEST.test(source)) {
+      response.writeHead(404); response.end(); return;
+    }
+    const count = (attempts.get(source) || 0) + 1;
+    attempts.set(source, count);
+    const reply = () => {
+      const fail = fixture.mode === 'persistent-error' || (fixture.mode === 'first-error' && count === 1);
+      response.writeHead(fail ? 503 : 200, {
+        'Content-Type': fail ? 'text/plain' : 'image/png',
+        'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*',
+      });
+      response.end(fail ? 'Offline tile failure' : png);
+    };
+    if (source === fixture.stallUrl && count === fixture.stallAttempt) fixture.heldReplies.push(reply);
+    else reply();
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  fixture.server = server;
+  fixture.url = `http://127.0.0.1:${server.address().port}/tile`;
+  fixture.holdNext = source => { fixture.stallUrl = source; fixture.stallAttempt = (attempts.get(source) || 0) + 1; };
+  fixture.release = () => { for (const reply of fixture.heldReplies.splice(0)) reply(); };
+  fixture.close = () => {
+    fixture.release();
+    return new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  };
+  return fixture;
+}
 
 function resolveChromePath() {
   const candidates = [
@@ -99,12 +179,20 @@ class CdpBrowser {
     this.profileDir = profileDir;
     this.nextId = 0;
     this.pending = new Map();
+    this.eventListeners = new Set();
   }
 
   async _connect() {
     this.ws.onmessage = event => {
       const message = JSON.parse(event.data);
-      if (!message.id) return;
+      if (!message.id) {
+        for (const listener of this.eventListeners) {
+          if (listener.method === message.method && listener.sessionId === message.sessionId) {
+            listener.callback(message.params);
+          }
+        }
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -152,11 +240,17 @@ class CdpBrowser {
     });
   }
 
-  async newPage(url, { pinnedPlaylistOnly = false } = {}) {
+  on(method, sessionId, callback) {
+    const listener = { method, sessionId, callback };
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  async newPage(url, { pinnedPlaylistOnly = false, mapTileFixture = false } = {}) {
     const target = await this.send('Target.createTarget', { url: 'about:blank' });
     const attached = await this.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     const page = new CdpPage(this, target.targetId, attached.sessionId);
-    await page.enable();
+    await page.enable({ mapTileFixture });
     if (pinnedPlaylistOnly) {
       await this.send('Page.addScriptToEvaluateOnNewDocument', {
         source: `(() => {
@@ -198,12 +292,56 @@ class CdpPage {
     this.sessionId = sessionId;
   }
 
-  async enable() {
+  async enable({ mapTileFixture = false } = {}) {
     await this.browser.send('Runtime.enable', {}, this.sessionId);
     await this.browser.send('Page.enable', {}, this.sessionId);
     await this.browser.send('Network.enable', {}, this.sessionId);
     await this.browser.send('Network.setBypassServiceWorker', { bypass: true }, this.sessionId);
-    await this.browser.send('Network.setBlockedURLs', { urls: ['https://*'] }, this.sessionId);
+    if (!mapTileFixture) {
+      await this.browser.send('Network.setBlockedURLs', { urls: ['https://*'] }, this.sessionId);
+      return;
+    }
+    this.mapTileFixture = await createMapTileFixture();
+    this.removeTileListener = this.browser.on('Fetch.requestPaused', this.sessionId, params => {
+      this.fulfillMapTileRequest(params).catch(error => this.mapTileFixture.errors.push(error.message));
+    });
+    this.removeTileAbortListener = this.browser.on('Network.loadingFailed', this.sessionId, params => {
+      const stalled = this.mapTileFixture.stalledRequest;
+      if (stalled?.networkId === params.requestId) {
+        stalled.cancelled = params.canceled === true;
+        stalled.networkError = params.errorText;
+      }
+    });
+    await this.browser.send('Network.setCacheDisabled', { cacheDisabled: true }, this.sessionId);
+    await this.browser.send('Fetch.enable', { patterns: [{ urlPattern: 'https://*', requestStage: 'Request' }] }, this.sessionId);
+  }
+
+  async fulfillMapTileRequest({ requestId, networkId, request }) {
+    const fixture = this.mapTileFixture;
+    if (!OSM_TILE_REQUEST.test(request.url)) {
+      fixture.blockedRequests++;
+      await this.browser.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, this.sessionId);
+      return;
+    }
+    if (request.url === fixture.stallUrl && !fixture.stalledRequest) {
+      fixture.stalledRequest = { requestId, networkId, cancelled: false, replied: false, fulfillError: null };
+    }
+    const response = await fetch(`${fixture.url}?source=${encodeURIComponent(request.url)}`);
+    const body = Buffer.from(await response.arrayBuffer());
+    try {
+      await this.browser.send('Fetch.fulfillRequest', {
+        requestId, responseCode: response.status,
+        responseHeaders: [...response.headers].map(([name, value]) => ({ name, value })),
+        body: body.toString('base64'),
+      }, this.sessionId);
+    } catch (error) {
+      // The watchdog intentionally cancels this one paused image. Chrome may
+      // reject its later fixture reply because the interception no longer exists.
+      if (fixture.stalledRequest?.requestId !== requestId) throw error;
+      fixture.stalledRequest.fulfillError = error.message;
+    } finally {
+      if (fixture.stalledRequest?.requestId === requestId) fixture.stalledRequest.replied = true;
+    }
   }
 
   async navigate(url) {
@@ -252,6 +390,9 @@ class CdpPage {
 
   async close() {
     await this.browser.send('Target.closeTarget', { targetId: this.targetId });
+    this.removeTileListener?.();
+    this.removeTileAbortListener?.();
+    if (this.mapTileFixture) await this.mapTileFixture.close();
   }
 }
 
@@ -473,7 +614,10 @@ after(async () => {
 
 beforeEach(async context => {
   // Only the explicit legacy baseline gets the product-lock flag.
-  page = await browser.newPage(baseUrl, { pinnedPlaylistOnly: context.name.startsWith('scenario A ') });
+  page = await browser.newPage(baseUrl, {
+    pinnedPlaylistOnly: context.name.startsWith('scenario A '),
+    mapTileFixture: context.name.startsWith(MAP_TILE_TEST_PREFIX),
+  });
 });
 
 afterEach(async () => {
@@ -1494,6 +1638,348 @@ test('map drag skips closed visible-panel work and makes no tile prefetch', { co
   assert.deepEqual(result.endImmediate, { visible: 0, isPanning: false });
   assert.deepEqual(result.settled, { visible: 0, isPanning: false });
   assert.equal(result.hasPrefetch, false);
+});
+
+function mapTileViewportSnapshot() {
+  const viewport = document.getElementById('map').getBoundingClientRect();
+  const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+    const rect = tile.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.right > viewport.left && rect.left < viewport.right
+      && rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  return {
+    visible: visible.map(tile => ({ url: tile.src, loaded: tile.complete && tile.naturalWidth === 256 && tile.naturalHeight === 256 })),
+    concertIds: concerts.map(event => event.id).sort(), festivalIds: festivals.map(event => event.id).sort(),
+    markerCount: tourMarkers.length + festMarkers.length,
+    retryHidden: document.getElementById('map-tile-status')?.hidden,
+    retryText: document.getElementById('map-tile-retry')?.textContent.trim(),
+    tileUnloads: window.__testTileUnloads || 0,
+    redraws: window.__testTileRedraws || 0,
+  };
+}
+
+function visibleMapTilesRecovered() {
+  const viewport = document.getElementById('map').getBoundingClientRect();
+  const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+    const rect = tile.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.right > viewport.left && rect.left < viewport.right
+      && rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  return visible.length > 0 && visible.every(tile => tile.complete && tile.naturalWidth === 256 && tile.naturalHeight === 256)
+    && document.getElementById('map-tile-status').hidden;
+}
+
+async function prepareMapTileRecovery(pageRef, mode) {
+  pageRef.mapTileFixture.mode = mode;
+  await setViewport(pageRef, 1366, 900);
+  await pageRef.evaluate(installFixture, {
+    artists: ['Tile Artist'], artistPlays: { 'tile artist': 8 },
+    concerts: [makeConcert('Tile Artist', 5, 'Tile Forum', 'London', 'GB', 51.5074, -0.1278, { id: 'tile-show' })],
+    festivals: [makeFestival('Tile Festival', 7, 'London', 'GB', 51.52, -0.1, {
+      id: 'tile-fest', lineup: ['Tile Artist'], matched: [{ artist: 'Tile Artist', plays: 8 }],
+    })],
+  });
+  await pageRef.evaluate(() => {
+    hideOnboard(); setWorkspaceView('map');
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    _mapFirstFit = true;
+    lmap.setView([51.51, -0.12], 7, { animate: false });
+    window.__testTileUnloads = 0;
+    window.__testTileRedraws = 0;
+  });
+  await pageRef.waitFor(() => Object.values(lmap._layers).some(layer => layer instanceof L.TileLayer), { timeoutMs: 6000 });
+  await pageRef.evaluate(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    layer.on('tileunload', () => { window.__testTileUnloads++; });
+    const redraw = layer.redraw;
+    layer.redraw = function(...args) { window.__testTileRedraws++; return redraw.apply(this, args); };
+  });
+  await pageRef.waitFor(() => [...document.querySelectorAll('#map img.leaflet-tile')].some(tile => tile.complete));
+  const snapshot = await pageRef.evaluate(mapTileViewportSnapshot);
+  assert.ok(snapshot.visible.length > 0, 'The real map must request visible tile images');
+  assert.deepEqual(snapshot.concertIds, ['tile-show']);
+  assert.deepEqual(snapshot.festivalIds, ['tile-fest']);
+  return snapshot;
+}
+
+function assertMapTileRequestsBounded(fixture, limit) {
+  assert.deepEqual(fixture.errors, [], 'All intercepted requests must complete locally');
+  assert.ok(fixture.attempts.size > 0);
+  for (const [url, attempts] of fixture.attempts) {
+    assert.match(url, OSM_TILE_REQUEST, 'Tile retries must retain the exact OSM URL');
+    assert.ok(attempts <= limit, `${url}: ${attempts} requests exceeds the ${limit}-request budget`);
+  }
+  assert.ok([...fixture.attempts.values()].reduce((sum, count) => sum + count, 0) <= fixture.attempts.size * limit,
+    'Tile failures must not create an unbounded request storm');
+}
+
+test('map tile recovery retries an initial tile error at the same URL and loads a decodable local PNG', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'first-error');
+  await page.waitFor(() => {
+    const viewport = document.getElementById('map').getBoundingClientRect();
+    const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+      const rect = tile.getBoundingClientRect();
+      return rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    return visible.length > 0 && visible.every(tile => tile.complete && tile.naturalWidth === 256);
+  }, { timeoutMs: 7000 });
+  const loaded = await page.evaluate(async () => {
+    const tile = [...document.querySelectorAll('#map img.leaflet-tile')].find(image => image.naturalWidth === 256);
+    await tile.decode();
+    return { width: tile.naturalWidth, height: tile.naturalHeight };
+  });
+  assert.deepEqual(loaded, { width: 256, height: 256 });
+  const snapshot = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(snapshot.visible.every(tile => tile.loaded));
+  assert.ok(snapshot.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 2),
+    'A failed visible image must retry once at its original URL');
+  assert.equal(snapshot.redraws, 0, 'Recovery must not redraw the whole tile layer');
+  assert.ok(snapshot.markerCount > 0);
+  assert.deepEqual(snapshot.concertIds, ['tile-show']);
+  assert.deepEqual(snapshot.festivalIds, ['tile-fest']);
+  assertMapTileRequestsBounded(page.mapTileFixture, 2);
+});
+
+test('map tile recovery stops after two automatic retries and Retry map recovers only visible failures', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'persistent-error');
+  await page.waitFor(() => document.getElementById('map-tile-status')?.hidden === false
+    && document.getElementById('map-tile-retry')?.disabled === false, { timeoutMs: 7500 });
+  await delay(250);
+  const failed = await page.evaluate(mapTileViewportSnapshot);
+  assert.equal(failed.retryText, 'Retry map');
+  assert.ok(failed.visible.every(tile => !tile.loaded));
+  assert.ok(failed.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 3),
+    'Each visible failure has one initial request and two automatic retries');
+  for (const viewport of [{ width: 375, height: 812 }, { width: 1440, height: 900 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    await page.waitFor(() => document.getElementById('map-tile-status')?.hidden === false
+      && document.getElementById('map-tile-retry')?.disabled === false, { timeoutMs: 7500 });
+    await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, page.sessionId);
+    await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, page.sessionId);
+    const status = await page.evaluate(() => {
+      const panel = document.getElementById('map-tile-status');
+      const button = document.getElementById('map-tile-retry');
+      button.focus();
+      const rect = panel.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+        buttonLeft: buttonRect.left, buttonRight: buttonRect.right, enabled: !button.disabled,
+        tag: button.tagName, tabIndex: button.tabIndex, focused: document.activeElement === button,
+        outline: Number.parseFloat(getComputedStyle(button).outlineWidth),
+        width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth };
+    });
+    assert.ok(status.left >= 0 && status.right <= status.width && status.top >= 0 && status.bottom <= status.height,
+      `${viewport.width}px: tile error status must remain inside the viewport: ${JSON.stringify(status)}`);
+    assert.ok(status.buttonLeft >= status.left && status.buttonRight <= status.right,
+      `${viewport.width}px: the Retry map button must fit inside its status panel`);
+    assert.ok(status.scrollWidth <= status.width + 1, `${viewport.width}px: tile status must not cause page overflow`);
+    assert.deepEqual([status.tag, status.tabIndex, status.enabled, status.focused], ['BUTTON', 0, true, true]);
+    assert.ok(status.outline >= 2, `${viewport.width}px: Retry map needs a visible keyboard focus outline`);
+  }
+  const paused = new Map(page.mapTileFixture.attempts);
+  await delay(700);
+  assert.deepEqual(page.mapTileFixture.attempts, paused, 'Exhausted failures must stop making automatic requests');
+  page.mapTileFixture.mode = 'success';
+  await page.evaluate(() => document.getElementById('map-tile-retry').focus());
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
+  await page.waitFor(visibleMapTilesRecovered);
+  const recovered = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(recovered.visible.every(tile => tile.loaded));
+  assert.ok(recovered.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 4));
+  for (const [url, count] of paused) {
+    if (!recovered.visible.some(tile => tile.url === url)) assert.equal(page.mapTileFixture.attempts.get(url), count,
+      'Manual recovery must leave unloaded and nonvisible tiles alone');
+  }
+  const afterClick = new Map(page.mapTileFixture.attempts);
+  await page.evaluate(() => { document.getElementById('map-tile-retry').click(); document.getElementById('map-tile-retry').click(); });
+  await delay(250);
+  assert.deepEqual(page.mapTileFixture.attempts, afterClick, 'Repeated Retry map clicks must not reload healthy images');
+  assert.equal(recovered.redraws, 0);
+  assert.deepEqual(recovered.concertIds, ['tile-show']);
+  assert.deepEqual(recovered.festivalIds, ['tile-fest']);
+  assertMapTileRequestsBounded(page.mapTileFixture, 4);
+});
+
+test('map tile recovery cancels a stalled image at the terminal watchdog and ignores its late PNG reply', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'success');
+  await page.waitFor(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    const records = [...layer._ctRecords.values()].filter(record => layer._ctVisible(record));
+    return records.length > 0 && records.every(record => record.finished && !record.failed && record.tile.naturalWidth === 256);
+  });
+  const target = await page.evaluate(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    const center = lmap.getCenter();
+    const point = lmap.project(center, 8);
+    const coords = L.point(Math.floor(point.x / 256), Math.floor(point.y / 256));
+    coords.z = 8;
+    return { key: layer._tileCoordsToKey(coords), url: L.Util.template(CT_MAP_TILE_URL, { z: 8, x: coords.x, y: coords.y }),
+      center: { lat: center.lat, lng: center.lng }, zoom: 8 };
+  });
+  const initialAttempts = new Map(page.mapTileFixture.attempts);
+  assert.equal(initialAttempts.has(target.url), false, 'The stalled image must use a fresh tile coordinate, not Chrome decoded-image memory cache');
+  page.mapTileFixture.holdNext(target.url);
+  await page.evaluate(targetTile => {
+    const nativeSetTimeout = window.setTimeout;
+    const nativeClearTimeout = window.clearTimeout;
+    window.__testHungTimers = [];
+    window.setTimeout = function(callback, milliseconds, ...args) {
+      if (milliseconds !== 10000) return nativeSetTimeout.call(this, callback, milliseconds, ...args);
+      const timer = { milliseconds, started: performance.now(), fired: false, cancelled: false, id: null };
+      timer.id = nativeSetTimeout.call(this, (...values) => { timer.fired = true; callback(...values); }, milliseconds, ...args);
+      window.__testHungTimers.push(timer);
+      return timer.id;
+    };
+    window.clearTimeout = function(id) {
+      const timer = window.__testHungTimers.find(item => item.id === id);
+      if (timer && !timer.fired) timer.cancelled = true;
+      return nativeClearTimeout.call(this, id);
+    };
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    // A fresh zoom level creates a real pending center tile. Recreating an
+    // already decoded healthy IMG can bypass CDP via Chrome's image cache.
+    lmap.setView([targetTile.center.lat, targetTile.center.lng], targetTile.zoom, { animate: false });
+    const tile = layer._tiles[targetTile.key].el;
+    const record = layer._ctRecords.get(tile);
+    // Narrow fault injection reaches the terminal branch without waiting for
+    // three 10-second hangs. The real image request and 10-second timer remain.
+    record.retries = 2;
+    window.__testHungTile = tile;
+    window.__testHungRecord = record;
+    window.__testHungCompletions = { errors: 0, loads: 0 };
+    layer.on('tileerror', event => { if (event.tile === tile) window.__testHungCompletions.errors++; });
+    layer.on('tileload', event => { if (event.tile === tile) window.__testHungCompletions.loads++; });
+  }, target);
+  try {
+    await page.waitFor(() => window.__testHungRecord.finished && window.__testHungRecord.failed
+      && document.getElementById('map-tile-retry').disabled === false, { timeoutMs: 12500 });
+  } catch (error) {
+    const state = await page.evaluate(() => {
+      const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+      const record = window.__testHungRecord;
+      const rect = bounds => ({ left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom,
+        width: bounds.width, height: bounds.height });
+      return { record: { removed: record.removed, finished: record.finished, failed: record.failed, retries: record.retries,
+        coords: { x: record.coords.x, y: record.coords.y, z: record.coords.z }, watchdog: record.watchdog,
+        retryTimer: record.retryTimer, connected: record.tile.isConnected, src: record.tile.getAttribute('src'),
+        naturalWidth: record.tile.naturalWidth, visible: layer?._ctVisible(record), retained: layer?._ctRecords.has(record.tile),
+        bounds: rect(record.tile.getBoundingClientRect()) },
+        map: { zoom: lmap.getZoom(), center: { lat: lmap.getCenter().lat, lng: lmap.getCenter().lng },
+          layerOwnsRuntime: _mapTileLayer === layer, viewport: rect(document.getElementById('map').getBoundingClientRect()) },
+        timers: window.__testHungTimers.map(timer => ({ ...timer, elapsed: performance.now() - timer.started })),
+        completions: window.__testHungCompletions, status: { hidden: document.getElementById('map-tile-status').hidden,
+          disabled: document.getElementById('map-tile-retry').disabled,
+          message: document.getElementById('map-tile-message').textContent },
+        pending: [...(layer?._ctRecords.values() || [])].filter(item => !item.finished).map(item => ({
+          x: item.coords.x, y: item.coords.y, z: item.coords.z, removed: item.removed, failed: item.failed,
+          retries: item.retries, src: item.tile.getAttribute('src'), visible: layer._ctVisible(item) })) };
+    });
+    throw new Error(`Map tile watchdog failed: ${JSON.stringify({ state, fixture: { target,
+      heldReplies: page.mapTileFixture.heldReplies.length, stalledRequest: page.mapTileFixture.stalledRequest,
+      targetAttempts: page.mapTileFixture.attempts.get(target.url), errors: page.mapTileFixture.errors } })}`, { cause: error });
+  }
+  assert.equal(page.mapTileFixture.heldReplies.length, 1, 'Only the selected image must remain stalled at the local server');
+  const timedOut = await page.evaluate(() => ({
+    src: window.__testHungTile.getAttribute('src'), width: window.__testHungTile.naturalWidth,
+    retries: window.__testHungRecord.retries, errors: window.__testHungCompletions.errors,
+    loads: window.__testHungCompletions.loads, retryHidden: document.getElementById('map-tile-status').hidden,
+  }));
+  assert.deepEqual(timedOut, { src: null, width: 0, retries: 2, errors: 1, loads: 0, retryHidden: false },
+    'Terminal timeout must cancel the native image and complete the Leaflet entry exactly once');
+  page.mapTileFixture.release();
+  for (let attempt = 0; attempt < 30 && !page.mapTileFixture.stalledRequest?.replied; attempt++) await delay(50);
+  assert.equal(page.mapTileFixture.stalledRequest?.replied, true, 'The late local PNG reply must be exercised');
+  await delay(250);
+  const late = await page.evaluate(() => ({
+    src: window.__testHungTile.getAttribute('src'), width: window.__testHungTile.naturalWidth,
+    errors: window.__testHungCompletions.errors, loads: window.__testHungCompletions.loads,
+    loadedClass: window.__testHungTile.classList.contains('leaflet-tile-loaded'),
+  }));
+  assert.deepEqual(late, { src: null, width: 0, errors: 1, loads: 0, loadedClass: false },
+    'A late PNG must not turn the completed failed entry into a hidden, decoded tile');
+  assert.equal(page.mapTileFixture.attempts.get(target.url), 1,
+    'The exhausted watchdog must not restart automatic attempts');
+  const healthyAttempts = new Map(page.mapTileFixture.attempts);
+  await page.evaluate(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    window.__testHealthyTiles = [...layer._ctRecords.values()].filter(record => layer._ctVisible(record) && !record.failed)
+      .map(record => record.tile);
+  });
+  await page.evaluate(() => document.getElementById('map-tile-retry').click());
+  await page.waitFor(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    return document.getElementById('map-tile-status').hidden && !window.__testHungTile.isConnected
+      && [...layer._ctRecords.values()].filter(record => layer._ctVisible(record)).every(record => record.tile.naturalWidth === 256
+        && record.tile.classList.contains('leaflet-tile-loaded'));
+  });
+  const recovered = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(recovered.visible.every(tile => tile.loaded));
+  assert.equal(page.mapTileFixture.attempts.get(target.url), 2,
+    'Manual retry must create one successful replacement at the exact same URL');
+  for (const [url, count] of healthyAttempts) if (url !== target.url) assert.equal(page.mapTileFixture.attempts.get(url), count,
+    'The stalled tile must not trigger requests for healthy images');
+  assert.equal(await page.evaluate(() => window.__testHealthyTiles.length > 0
+    && window.__testHealthyTiles.every(tile => tile.isConnected && tile.naturalWidth === 256)), true,
+  'Manual recovery must retain the healthy image elements');
+  assert.equal(recovered.redraws, 0);
+  assert.deepEqual(recovered.concertIds, ['tile-show']);
+  assert.deepEqual(recovered.festivalIds, ['tile-fest']);
+  assert.ok(recovered.markerCount > 0);
+  assertMapTileRequestsBounded(page.mapTileFixture, 3);
+});
+
+test('map tile recovery cancels unloaded tile retries and an online event recovers the current viewport', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'persistent-error');
+  const original = await page.evaluate(mapTileViewportSnapshot);
+  const firstAttempts = new Map(original.visible.map(tile => [tile.url, page.mapTileFixture.attempts.get(tile.url)]));
+  await page.evaluate(() => { lmap.panBy([512, 0], { animate: false }); });
+  const retainedOffscreen = await page.evaluate(urls => {
+    const originalUrls = new Set(urls);
+    const viewport = document.getElementById('map').getBoundingClientRect();
+    return [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+      const rect = tile.getBoundingClientRect();
+      return originalUrls.has(tile.src) && tile.isConnected
+        && (rect.right <= viewport.left || rect.left >= viewport.right || rect.bottom <= viewport.top || rect.top >= viewport.bottom);
+    }).map(tile => tile.src);
+  }, [...firstAttempts.keys()]);
+  assert.ok(retainedOffscreen.length > 0, 'Panning keeps an offscreen strip in the small tile buffer');
+  await delay(1300);
+  for (const url of retainedOffscreen) assert.equal(page.mapTileFixture.attempts.get(url), firstAttempts.get(url),
+    'Attached tiles outside the viewport must not receive an automatic retry');
+  const originalAttempts = new Map(original.visible.map(tile => [tile.url, page.mapTileFixture.attempts.get(tile.url)]));
+  await page.evaluate(() => { lmap.setView([-33.86, 151.2], 7, { animate: false }); });
+  await page.waitFor(() => window.__testTileUnloads > 0);
+  await delay(1300);
+  for (const [url, count] of originalAttempts) assert.equal(page.mapTileFixture.attempts.get(url), count,
+    'Images removed by panning must never receive their pending retry');
+  await page.waitFor(() => document.getElementById('map-tile-status')?.hidden === false
+    && document.getElementById('map-tile-retry')?.disabled === false, { timeoutMs: 6000 });
+  const exhausted = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(exhausted.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 3));
+  page.mapTileFixture.mode = 'success';
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.waitFor(() => {
+    const viewport = document.getElementById('map').getBoundingClientRect();
+    const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+      const rect = tile.getBoundingClientRect();
+      return rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    return visible.length > 0 && visible.every(tile => tile.naturalWidth === 256);
+  }, { timeoutMs: 2000 });
+  const recovered = await page.evaluate(mapTileViewportSnapshot);
+  const currentAttempts = new Map(page.mapTileFixture.attempts);
+  await page.evaluate(() => { window.dispatchEvent(new Event('online')); window.dispatchEvent(new Event('online')); });
+  await delay(250);
+  assert.deepEqual(page.mapTileFixture.attempts, currentAttempts, 'Repeated online notifications must not redraw healthy tiles');
+  for (const [url, count] of originalAttempts) assert.equal(page.mapTileFixture.attempts.get(url), count);
+  assert.equal(recovered.redraws, 0);
+  assert.deepEqual(recovered.concertIds, original.concertIds);
+  assert.deepEqual(recovered.festivalIds, original.festivalIds);
+  assert.ok(recovered.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 4),
+    'Online recovery must reset the exhausted budget and recover immediately');
+  assertMapTileRequestsBounded(page.mapTileFixture, 4);
 });
 
 test('renderOverview skips visible-panel scan when the panel is collapsed', { concurrency: false }, async () => {

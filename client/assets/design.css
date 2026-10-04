@@ -119,6 +119,11 @@ header { min-height:88px; height:auto; padding:18px 28px; gap:26px; background:v
 .atlas-heading strong { font-family:'Syne',sans-serif; font-size:1.15rem; letter-spacing:-.035em; }
 .atlas-heading span { font-size:.75rem; color:var(--muted); }
 .map-panel:has(.map-sidebar:not(.collapsed)) .atlas-heading { display:none; }
+.map-tile-status { position:absolute; top:76px; right:24px; z-index:650; display:flex; align-items:center; gap:10px; max-width:calc(100% - 48px); padding:10px 12px; border:1px solid var(--border2); border-radius:10px; background:var(--s1); color:var(--text); font-size:.8rem; box-shadow:0 4px 20px #0003; }
+.map-tile-status[hidden] { display:none; }
+.map-tile-status button { flex-shrink:0; padding:7px 10px; border:1px solid var(--border2); border-radius:7px; color:var(--accent); background:var(--s2); font:inherit; cursor:pointer; }
+.map-tile-status button:disabled { opacity:.5; cursor:default; }
+.map-tile-status button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .map-panel .leaflet-tile-pane { filter:saturate(.75) brightness(.94); }
 #map-refresh-area-btn { top:22px !important; right:24px !important; min-height:38px; border-radius:8px !important; background:var(--s1) !important; color:var(--text) !important; border-color:var(--border2) !important; font-family:'Segoe UI',sans-serif !important; font-size:.8rem !important; }
 .msb-float-tab { font-family:inherit; font-size:.75rem; padding:12px 8px; background:var(--s1); color:var(--text); }
