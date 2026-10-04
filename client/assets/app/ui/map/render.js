@@ -539,7 +539,7 @@ function _buildConcertPopup(artist, ev, accent, isFav, plays, in7, in30) {
 function _renderFestLabels(opts = {}) {
   if (!lmap) return;
   clearFestMarkers();
-  if (!opts.items && (mapTypeFilter === 'tours' || !showMapFests)) return;
+  if (!showMapFests) return;
   const zoom = lmap.getZoom();
   const items = opts.items || festivals.filter(f => f.lat && f.lng && geoDisplayOk(f.country || '')
     && eventDateMatchesPreset(f) && mapScoreOkFest(f))
@@ -596,7 +596,7 @@ function renderOverview(opts = {}) {
   };
 
   // Fav filter applied to full entry set
-  let tourEntries = Object.entries(allTourData).filter(([a]) =>
+  let tourEntries = (showMapTours ? Object.entries(allTourData) : []).filter(([a]) =>
     !showFavOnly || favoriteArtists.has(a.toLowerCase())
   );
   let artistStates = tourEntries.map(([artist, evs]) => ({

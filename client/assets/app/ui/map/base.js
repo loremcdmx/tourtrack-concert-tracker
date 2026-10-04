@@ -63,6 +63,11 @@ function clearOverviewDynamicLayers() {
   clearFestMarkers();
 }
 
+function hasVisibleArtistFocus() {
+  return showMapTours && !!focusedArtist && Object.keys(allTourData)
+    .some(artist => artist.toLowerCase() === focusedArtist.toLowerCase());
+}
+
 function initMap() {
   if (lmap) return;
   // Show floating tab buttons since sidebar starts collapsed
@@ -99,12 +104,12 @@ function initMap() {
     // If we return early without clearing, a prior-queued timer would
     // fire 180ms later and destroy focus mode with renderOverview().
     clearTimeout(_zRenderTimer);
-    if (focusedArtist || focusedFest || sidebarTab === 'fests') {
+    if (hasVisibleArtistFocus() || (showMapFests && focusedFest) || sidebarTab === 'fests') {
       _setMapInteractionState(false);
       return;
     }
     _zRenderTimer = setTimeout(() => {
-      if (focusedArtist || focusedFest || sidebarTab === 'fests') return; // view may have changed during debounce
+      if (hasVisibleArtistFocus() || (showMapFests && focusedFest) || sidebarTab === 'fests') return; // view may have changed during debounce
       try {
         clearOverviewDynamicLayers();
         renderOverview({ preserveRoutes: true });
@@ -146,25 +151,8 @@ function clearMapLayers() {
 }
 
 function toggleLayer(type) {
-  // Update mapTypeFilter to match toggle state, then re-render
-  if (type === 't') {
-    showMapTours = !showMapTours;
-    if (!showMapTours && !showMapFests) { showMapFests = true; } // at least one must be on
-    document.getElementById('lt-t').classList.toggle('on-t', showMapTours);
-  } else {
-    showMapFests = !showMapFests;
-    if (!showMapTours && !showMapFests) { showMapTours = true; }
-    document.getElementById('lt-f').classList.toggle('on-f', showMapFests);
-  }
-  mapTypeFilter = (showMapTours && showMapFests) ? 'both' : showMapTours ? 'tours' : 'fests';
-  // Sync the filter bar chips
-  ['both','tours','fests'].forEach(v => {
-    const btn = document.getElementById('mft-' + v);
-    if (!btn) return;
-    btn.classList.remove('on', 'on-f');
-    if (v === mapTypeFilter) btn.classList.add(v === 'fests' ? 'on-f' : 'on');
-  });
-  clearMapLayers(); renderOverview();
+  if (type === 't') toggleType('shows');
+  else if (type === 'f') toggleType('fests');
 }
 
 // ── VISIBLE-NOW PANEL ───────────────────────────────────────────────────
@@ -198,13 +186,22 @@ function updateVisiblePanel() {
     return rankCache.get(artist);
   };
 
+  // Use represented events, including collision groups, so focused maps
+  // cannot list unrelated artists or festivals from the complete dataset.
+  const renderedArtists = new Set();
+  const renderedFests = new Set();
+  lmap.eachLayer(layer => {
+    for (const item of layer._ctLayout?.items || []) {
+      if (item.kind === 'tour') renderedArtists.add(item.artist);
+      else if (item.kind === 'fest') renderedFests.add(item.f);
+    }
+  });
+
   // Collect visible tours — apply ALL active map filters (geo, score, date, hidden)
   const visibleTours = [];
-  if (mapTypeFilter !== 'fests') {
+  if (showMapTours) {
     for (const [artist, evs] of Object.entries(allTourData)) {
-      if (typeof _mapRenderedTourArtists !== 'undefined'
-          && _mapRenderedTourArtists.size
-          && !_mapRenderedTourArtists.has(artist)) continue;
+      if (!renderedArtists.has(artist)) continue;
       if (isHidden(artist)) continue;
       if (!mapScoreOkArtist(artist)) continue;
       const next = evs.find(e =>
@@ -227,8 +224,9 @@ function updateVisiblePanel() {
 
   // Collect visible festivals
   const visibleFests = [];
-  if (mapTypeFilter !== 'tours') {
+  if (showMapFests) {
     for (const f of festivals) {
+      if (!renderedFests.has(f)) continue;
       if (f.lat && f.lng
           && geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f)
           && bounds.contains([f.lat, f.lng])) {
@@ -254,7 +252,7 @@ function updateVisiblePanel() {
   const frag = document.createDocumentFragment();
 
   // Tours (only when map shows tours)
-  if (mapTypeFilter !== 'fests') {
+  if (showMapTours) {
     visibleTours.forEach(({ artist, ev, urgency }) => {
     const row = document.createElement('div');
     row.className = 'msb-vis-row';
@@ -284,7 +282,7 @@ function updateVisiblePanel() {
     row.onclick = () => { focusArtist(artist); };
     frag.appendChild(row);
   });
-  } // end if (mapTypeFilter !== 'fests')
+  }
 
   // Festivals
   visibleFests.forEach(f => {
@@ -322,7 +320,7 @@ function renderMap(opts = {}) {
   const today = _isoDateOnly(new Date());
   allTourData = {};
   // Apply map-local filters: type, score, date window
-  const skipTours = mapTypeFilter === 'fests';
+  const skipTours = !showMapTours;
   for (const c of visibleConcerts()) {
     if (skipTours) continue; // tours excluded when fests-only mode
     if (c.date < today || isHidden(c.artist)) continue;
@@ -344,6 +342,7 @@ function renderMap(opts = {}) {
   // renderFocusMode handles the case where allTourData[focusedArtist] is missing
   // (case-insensitive fallback + rebuild guard are inside renderFocusMode itself).
   if (focusedArtist) renderFocusMode(focusedArtist);
+  else if (focusedFest && showMapFests) renderFestMap(focusedFest);
   else renderOverview(opts);
 }
 

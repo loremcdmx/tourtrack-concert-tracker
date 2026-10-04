@@ -7,8 +7,8 @@
 <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.min.css?v=1.9.4"/>
 <script defer src="/assets/vendor/leaflet/leaflet.min.js?v=1.9.4"></script>
 <link rel="stylesheet" href="/assets/vendor/fonts/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/styles.css?v=2.31.0060">
-<link rel="stylesheet" href="/assets/design.css?v=2.31.0060">
+<link rel="stylesheet" href="/assets/styles.css?v=2.31.0061">
+<link rel="stylesheet" href="/assets/design.css?v=2.31.0061">
 </head>
 <body>
 <header>
@@ -305,8 +305,8 @@
         </div>
       </div>
       <div class="type-row" id="cal-type-row">
-        <button class="chip on" data-t="shows" onclick="toggleType('shows')" title="Shows">🎸</button>
-        <button class="chip on" data-t="fests" onclick="toggleType('fests')" title="Festivals">🎪</button>
+        <button class="chip on" data-t="shows" aria-pressed="true" onclick="toggleType('shows')" title="Shows">🎸</button>
+        <button class="chip on" data-t="fests" aria-pressed="true" onclick="toggleType('fests')" title="Festivals">🎪</button>
       </div>
     </div>
     <div class="date-row secondary" id="cal-date-row-extra">
@@ -387,9 +387,9 @@
         <!-- Type -->
         <div class="mfilt-row">
           <span class="mfilt-label">Type</span>
-          <button class="mfilt-chip on" id="mft-both"  onclick="setMapType('both')">🎸+🎪 Both</button>
-          <button class="mfilt-chip"    id="mft-tours" onclick="setMapType('tours')">🎸 Tours</button>
-          <button class="mfilt-chip"    id="mft-fests" onclick="setMapType('fests')">🎪 Fests</button>
+          <button class="mfilt-chip on" id="mft-both" aria-pressed="true" onclick="setMapType('both')">🎸+🎪 Both</button>
+          <button class="mfilt-chip" id="mft-tours" aria-pressed="false" onclick="setMapType('tours')">🎸 Tours</button>
+          <button class="mfilt-chip" id="mft-fests" aria-pressed="false" onclick="setMapType('fests')">🎪 Fests</button>
         </div>
         <!-- Score — now driven by calendar score chips -->
         <div class="mfilt-row" id="mfilt-score-row" style="display:none">
@@ -929,45 +929,45 @@
   </div>
 </div>
 </div>
-<script defer src="/config.js?v=2.31.0060"></script>
-<script defer src="/assets/app/core/runtime.js?v=2.31.0060"></script>
-<script defer src="/assets/app/core/profiles.js?v=2.31.0060"></script>
-<script defer src="/assets/app/core/storage.js?v=2.31.0060"></script>
-<script defer src="/assets/app/core/filter-presets.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/actions.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/shared/network.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/shared/geo.js?v=2.31.0060"></script>
-    <script defer src="/assets/app/scan/shared/matching.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/shared/concert-records.js?v=2.31.0060"></script>
-<script defer src="/assets/app/core/artist-knowledge.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/shared/preflight.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/settings/panel.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/settings/scope.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/feedback.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/errors.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/runtime.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/pipeline.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/providers.js?v=2.31.0060"></script>
-    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.31.0060"></script>
-    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/festivals/scoring.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/festivals.js?v=2.31.0060"></script>
-<script defer src="/assets/app/scan/concerts.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/calendar.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/tile-cache.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/base.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/drawer.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/match.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/sidebar.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/focus.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/label-layout.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/labels.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/map/render.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/overlays.js?v=2.31.0060"></script>
-<script defer src="/assets/app/integrations/spotify.js?v=2.31.0060"></script>
-<script defer src="/assets/app/integrations/playlist-import.js?v=2.31.0060"></script>
-<script defer src="/assets/app/ui/workspace.js?v=2.31.0060"></script>
-<script defer src="/assets/app/bootstrap.js?v=2.31.0060"></script>
+<script defer src="/config.js?v=2.31.0061"></script>
+<script defer src="/assets/app/core/runtime.js?v=2.31.0061"></script>
+<script defer src="/assets/app/core/profiles.js?v=2.31.0061"></script>
+<script defer src="/assets/app/core/storage.js?v=2.31.0061"></script>
+<script defer src="/assets/app/core/filter-presets.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/actions.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/shared/network.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/shared/geo.js?v=2.31.0061"></script>
+    <script defer src="/assets/app/scan/shared/matching.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/shared/concert-records.js?v=2.31.0061"></script>
+<script defer src="/assets/app/core/artist-knowledge.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/shared/preflight.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/settings/panel.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/settings/scope.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/feedback.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/errors.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/runtime.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/pipeline.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/providers.js?v=2.31.0061"></script>
+    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.31.0061"></script>
+    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/festivals/scoring.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/festivals.js?v=2.31.0061"></script>
+<script defer src="/assets/app/scan/concerts.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/calendar.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/tile-cache.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/base.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/drawer.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/match.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/sidebar.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/focus.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/label-layout.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/labels.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/map/render.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/overlays.js?v=2.31.0061"></script>
+<script defer src="/assets/app/integrations/spotify.js?v=2.31.0061"></script>
+<script defer src="/assets/app/integrations/playlist-import.js?v=2.31.0061"></script>
+<script defer src="/assets/app/ui/workspace.js?v=2.31.0061"></script>
+<script defer src="/assets/app/bootstrap.js?v=2.31.0061"></script>
 </body>
 </html>

@@ -251,30 +251,15 @@ function setTab(tab, opts = {}) {
     { const _mr2 = document.getElementById('map-reset'); if (_mr2) _mr2.style.display = 'none'; }
     const leg = document.getElementById('map-legend');
     if (leg) leg.style.opacity = '0';
-    // Sync map type to Fests if it was Tours-only
-    if (mapTypeFilter === 'tours') {
-      mapTypeFilter = 'both'; showMapTours = true; showMapFests = true;
-      ['both','tours','fests'].forEach(v => {
-        const b = document.getElementById('mft-'+v);
-        if (b) { b.classList.remove('on','on-f'); if (v==='both') b.classList.add('on'); }
-      });
-    }
     if (deferRender) return;
     clearMapLayers();
     renderFestMap(null);
     buildFestPanel();
   } else {
     _festPanelBuildToken++;
+    focusedFest = null;
     const leg = document.getElementById('map-legend');
     if (leg) leg.style.opacity = '1';
-    // Sync map type to Tours if it was Fests-only
-    if (mapTypeFilter === 'fests') {
-      mapTypeFilter = 'both'; showMapTours = true; showMapFests = true;
-      ['both','tours','fests'].forEach(v => {
-        const b = document.getElementById('mft-'+v);
-        if (b) { b.classList.remove('on','on-f'); if (v==='both') b.classList.add('on'); }
-      });
-    }
     if (deferRender) return;
     clearMapLayers();
     _rebuildMapData();
@@ -389,15 +374,15 @@ function buildStats() {
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
   const in90s = _isoDateOnly(in90);
 
-  const artistsOnTour = Object.keys(allTourData).length;
-  if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }
-  // Show map filter bar when we have data
+  // Keep controls reachable even when the selected types have no results.
   const filtersEl = document.getElementById('msb-filters');
   if (filtersEl) {
     filtersEl.style.display = '';
     const maxVal = document.getElementById('mfilt-max-val');
     if (maxVal) maxVal.textContent = MAP_MAX_ARTISTS;
   }
+  const artistsOnTour = Object.keys(allTourData).length;
+  if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }
 
   // Tours ending soon: last show is within 90 days, tour has ≥5 shows
   const endingSoon = Object.entries(allTourData).filter(([, evs]) => {
@@ -556,7 +541,7 @@ function buildSidebar() {
 }
 
 function buildFestPanel() {
-  const upFests = festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f));
+  const upFests = showMapFests ? festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f)) : [];
   const withM = upFests.filter(f => f.score > 0).length;
   document.getElementById('tab-fests').textContent = upFests.length ? `🎪 Festivals · ${withM}★` : '🎪 Festivals';
 
@@ -747,7 +732,7 @@ function renderFestCardChunks(container, festivalsList) {
 }
 
 buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
-  const upFests = festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f));
+  const upFests = showMapFests ? festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f)) : [];
   const withMatches = upFests.filter(f => f.score > 0).length;
   const tab = document.getElementById('tab-fests');
   if (tab) tab.textContent = upFests.length ? ('Festivals - ' + withMatches + ' matches') : 'Festivals';
@@ -758,7 +743,7 @@ buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
   if (cb) cb.checked = showUnrankedFests;
 
   if (!upFests.length) {
-    setFestPanelMessage(container, 'No festivals match current date / location filters');
+    setFestPanelMessage(container, showMapFests ? 'No festivals match current filters' : 'Festivals are hidden — enable Fests to show them');
     return;
   }
 

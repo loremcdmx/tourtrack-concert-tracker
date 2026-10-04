@@ -571,8 +571,8 @@ function renderMxCalendar() {
   const today = _isoDateOnly(new Date());
 
   // All future MX concerts — use unified score filter
-  let mxCons = dateFilter_(visibleConcerts())
-    .filter(c => c.country === 'MX' && !isHidden(c.artist) && scoreOkArtist(c.artist));
+  let mxCons = showShows ? dateFilter_(visibleConcerts())
+    .filter(c => c.country === 'MX' && !isHidden(c.artist) && scoreOkArtist(c.artist)) : [];
 
   // MX festivals — use score filter for fests
   const mxFests = showFests
@@ -996,9 +996,34 @@ function resetFavorites() {
   refreshFilteredMap();
 }
 
+function applyEventTypeFilter(shows, fests) {
+  showShows = showMapTours = !!shows;
+  showFests = showMapFests = !!fests;
+  mapTypeFilter = showShows ? (showFests ? 'both' : 'tours') : (showFests ? 'fests' : 'none');
+  document.querySelectorAll('[data-t]').forEach(btn => {
+    const on = btn.dataset.t === 'shows' ? showShows : showFests;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  ['both', 'tours', 'fests'].forEach(type => {
+    const btn = document.getElementById('mft-' + type);
+    if (!btn) return;
+    const on = mapTypeFilter === type;
+    btn.classList.toggle('on', on && type !== 'fests');
+    btn.classList.toggle('on-f', on && type === 'fests');
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  [['lt-t', 'on-t', showShows], ['lt-f', 'on-f', showFests]].forEach(([id, cls, on]) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.classList.toggle(cls, on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
 function toggleType(t) {
-  if (t === 'shows') { showShows = !showShows; document.querySelector('[data-t=shows]').classList.toggle('on', showShows); }
-  else               { showFests  = !showFests;  document.querySelector('[data-t=fests]').classList.toggle('on', showFests); }
+  if (t !== 'shows' && t !== 'fests') return;
+  applyEventTypeFilter(t === 'shows' ? !showShows : showShows, t === 'fests' ? !showFests : showFests);
   scheduleFilterRefresh();
 }
 
@@ -1061,7 +1086,7 @@ function mapDateOk(dateStr) {
 function _rebuildMapData() {
   const today = _isoDateOnly(new Date());
   allTourData = {};
-  const skipTours = mapTypeFilter === 'fests';
+  const skipTours = !showMapTours;
   if (!skipTours) {
     for (const c of visibleConcerts()) {
       if (c.date < today || isHidden(c.artist)) continue;
@@ -1226,17 +1251,8 @@ function scheduleUiRefresh() {
 
 // Filter control handlers
 function setMapType(t) {
-  mapTypeFilter = t;
-  // Update button styles: tours/fests use their respective colors
-  ['both','tours','fests'].forEach(v => {
-    const btn = document.getElementById('mft-' + v);
-    if (!btn) return;
-    btn.classList.remove('on', 'on-f');
-    if (v === t) btn.classList.add(v === 'fests' ? 'on-f' : 'on');
-  });
-  // Sync the old layer-toggle state variables
-  showMapTours = t !== 'fests';
-  showMapFests = t !== 'tours';
+  if (!['both', 'tours', 'fests', 'none'].includes(t)) return;
+  applyEventTypeFilter(t === 'both' || t === 'tours', t === 'both' || t === 'fests');
   // Keep score controls available in every mode: tours use ARTIST_PLAYS,
   // festivals use festival.score.
   const scoreRow = document.getElementById('mfilt-score-row');
@@ -1363,8 +1379,8 @@ function _updateTally() {
   const el = document.getElementById('ev-tally');
   if (!el) return;
   const today = _isoDateOnly(new Date());
-  const con = visibleConcerts().filter(c => c.date >= today && geoDisplayOk(c.country||'') && scoreOkArtist(c.artist) && !isHidden(c.artist) && dateMatchesPreset(c.date));
-  const fst = festivals.filter(f => (f.score||0) > 0 && geoDisplayOk(f.country||'') && scoreOkFest(f) && eventDateMatchesPreset(f));
+  const con = showShows ? visibleConcerts().filter(c => c.date >= today && geoDisplayOk(c.country||'') && scoreOkArtist(c.artist) && !isHidden(c.artist) && dateMatchesPreset(c.date)) : [];
+  const fst = showFests ? festivals.filter(f => (f.score||0) > 0 && geoDisplayOk(f.country||'') && scoreOkFest(f) && eventDateMatchesPreset(f)) : [];
   const total = con.length + fst.length;
   el.textContent = total ? `${total} events` : '';
 }

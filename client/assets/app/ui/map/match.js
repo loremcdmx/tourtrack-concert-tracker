@@ -314,6 +314,7 @@ function matchScoreFestivals() {
 function renderMatchMap() {
   if (!lmap) { initMap(); }
   clearMapLayers();
+  _rebuildMapData();
   const today = _isoDateOnly(new Date());
   const sharedNames = new Set(matchShared.map(s => s.name));
 

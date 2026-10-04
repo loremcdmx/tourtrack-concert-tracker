@@ -510,13 +510,25 @@ function _adKeyHandler(e) {
 
 function renderFestMap(hlId) {
   clearFestMarkers();
+  if (!showMapFests) {
+    focusedFest = null;
+    document.querySelectorAll('.fcard').forEach(c => c.classList.remove('hl'));
+    _refreshVisiblePanelAfterRender();
+    scheduleMapLabelLayout();
+    return;
+  }
   focusedFest = hlId;
   document.querySelectorAll('.fcard').forEach(c => c.classList.toggle('hl', c.dataset.id === hlId));
 
-  const up = festivals.filter(f => eventDateMatchesPreset(f) && f.lat && f.lng && geoDisplayOk(f.country || ''));
-  if (!up.length) return;
+  const up = festivals.filter(f => eventDateMatchesPreset(f) && f.lat && f.lng && geoDisplayOk(f.country || '') && mapScoreOkFest(f));
+  if (!up.length) {
+    _refreshVisiblePanelAfterRender();
+    scheduleMapLabelLayout();
+    return;
+  }
 
   _renderFestLabels({ items: up, cluster: false, highlightedId: hlId });
+  _refreshVisiblePanelAfterRender();
   scheduleMapLabelLayout();
 
   if (hlId) {

@@ -2817,3 +2817,253 @@ test('Spotify response reader aborts an unfinished JSON body and preserves non-J
   const malformedSuccess = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'invalid-json', status: 200 });
   assert.equal(malformedSuccess.readerError.status, 502, 'A malformed successful response must reject with an invalid-response error');
 });
+
+function sharedEventTypeFixture() {
+  return {
+    artists: ['Filter Alpha', 'Filter Beta'], artistPlays: { 'filter alpha': 12, 'filter beta': 9 },
+    concerts: [
+      makeConcert('Filter Alpha', 3, 'Filter Alpha First', 'Berlin', 'DE', 52.52, 13.405, { id: 'type-alpha-first' }),
+      makeConcert('Filter Alpha', 9, 'Filter Alpha Second', 'Amsterdam', 'NL', 52.362, 4.883, { id: 'type-alpha-second' }),
+      makeConcert('Filter Beta', 5, 'Filter Beta First', 'London', 'GB', 51.5074, -0.1278, { id: 'type-beta-first' }),
+    ],
+    festivals: [
+      makeFestival('Filter Weekend', 6, 'Berlin', 'DE', 52.521, 13.406, {
+        id: 'type-weekend-fest', score: 88, matched: [{ artist: 'Filter Alpha', plays: 12 }],
+      }),
+      makeFestival('Filter Nights', 12, 'Amsterdam', 'NL', 52.361, 4.882, {
+        id: 'type-nights-fest', score: 75, matched: [{ artist: 'Filter Beta', plays: 9 }],
+      }),
+    ],
+  };
+}
+
+async function prepareSharedEventTypeTest(pageRef, fixture = sharedEventTypeFixture()) {
+  await setViewport(pageRef, 1440, 900);
+  await pageRef.evaluate(installFixture, fixture);
+  await pageRef.evaluate(() => {
+    hideOnboard(); setWorkspaceView('map');
+    if (document.getElementById('map-sidebar').classList.contains('collapsed')) {
+      document.querySelector('#sidebar-open-tabs button').click();
+    } else document.getElementById('tab-tours').click();
+  });
+  await settleUi(pageRef, 180);
+}
+
+function sharedEventTypeSnapshot() {
+  const tourIds = new Set();
+  const festIds = new Set();
+  let markerLayers = 0;
+  let pathLayers = 0;
+  lmap.eachLayer(layer => {
+    if (layer instanceof L.Marker) markerLayers++;
+    if (layer instanceof L.Path) pathLayers++;
+    for (const item of layer._ctLayout?.items || []) {
+      if (item.kind === 'tour') tourIds.add(item.ev.id);
+      else if (item.kind === 'fest') festIds.add(item.f.id);
+    }
+  });
+  const name = element => (element?.firstChild?.textContent || element?.textContent || '').trim();
+  const calendarArtists = [...document.querySelectorAll('#cal-body .ev-headline .ev-name')].map(name).sort();
+  const calendarFests = [...document.querySelectorAll('#cal-body .ev-main > .ev-name')].map(name).sort();
+  const typeChips = Object.fromEntries([...document.querySelectorAll('#cal-type-row [data-t]')]
+    .map(button => [button.dataset.t, button.classList.contains('on')]));
+  return {
+    showShows, showFests, showMapTours, showMapFests, focusedArtist, sidebarTab,
+    typeChips, calendarArtists, calendarFests,
+    tourIds: [...tourIds].sort(), festIds: [...festIds].sort(), markerLayers, pathLayers,
+    selectedMapTypes: ['both', 'tours', 'fests'].filter(type => {
+      const button = document.getElementById('mft-' + type);
+      return button.classList.contains('on') || button.classList.contains('on-f');
+    }),
+    tourLayerOn: document.getElementById('lt-t').classList.contains('on-t'),
+    festLayerOn: document.getElementById('lt-f').classList.contains('on-f'),
+    focusRows: document.querySelectorAll('#focus-list .fshow').length,
+    visiblePanelCount: Number(document.getElementById('msb-visible-count').textContent),
+    tourMarkerCount: tourMarkers.length,
+    visiblePanelNames: [...document.querySelectorAll('#msb-visible-list .msb-vis-name')].map(name).sort(),
+    visibleArtistFocus: hasVisibleArtistFocus(),
+  };
+}
+
+function assertSharedEventTypeState(state, shows, fests, label) {
+  assert.deepEqual([state.showShows, state.showFests], [shows, fests], `${label}: calendar type selection`);
+  assert.deepEqual([state.showMapTours, state.showMapFests], [shows, fests], `${label}: the map must use the calendar type selection`);
+  assert.deepEqual(state.typeChips, { shows, fests }, `${label}: calendar chips reflect the shared selection`);
+  assert.deepEqual([state.tourLayerOn, state.festLayerOn], [shows, fests], `${label}: map layer toggles reflect the shared selection`);
+  assert.deepEqual(state.selectedMapTypes, shows && fests ? ['both'] : shows ? ['tours'] : fests ? ['fests'] : [], `${label}: map type chips reflect the shared selection`);
+  assert.deepEqual(state.calendarArtists, shows ? ['Filter Alpha', 'Filter Alpha', 'Filter Beta'] : [], `${label}: filtered calendar concerts`);
+  assert.deepEqual(state.calendarFests, fests ? ['Filter Nights', 'Filter Weekend'] : [], `${label}: filtered calendar festivals`);
+  if (!shows) assert.deepEqual(state.tourIds, [], `${label}: disabled shows must have no attached marker descriptors`);
+  if (!fests) assert.deepEqual(state.festIds, [], `${label}: disabled festivals must have no attached marker descriptors`);
+  if (!shows && !fests) {
+    assert.equal(state.markerLayers, 0, `${label}: both types disabled must remove all marker layers`);
+    assert.equal(state.pathLayers, 0, `${label}: both types disabled must remove route lines and dots`);
+    assert.equal(state.visiblePanelCount, 0, `${label}: the visible-map count must clear with the map`);
+  }
+}
+
+function assertOverviewTourRepresentatives(state) {
+  // Overview selects the artist's first show inside the current viewport.
+  // Smart fitting after a filter click may legitimately change that show.
+  assert.equal(state.tourIds.length, 2, 'Overview must retain exactly one marker for each included artist');
+  assert.ok(state.tourIds.includes('type-beta-first'));
+  const alphaIds = state.tourIds.filter(id => ['type-alpha-first', 'type-alpha-second'].includes(id));
+  assert.equal(alphaIds.length, 1, 'Overview must retain a known Filter Alpha event');
+}
+
+async function clickEventTypeControl(pageRef, selector) {
+  await pageRef.evaluate(value => {
+    const button = document.querySelector(value);
+    if (!button || button.tagName !== 'BUTTON') throw new Error(`Missing event-type button ${value}`);
+    button.click();
+  }, selector);
+  await settleUi(pageRef, 180);
+  return pageRef.evaluate(sharedEventTypeSnapshot);
+}
+
+test('calendar Shows and Fests buttons filter overview markers and allow both event types to be disabled', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  const initial = await page.evaluate(sharedEventTypeSnapshot);
+  assertSharedEventTypeState(initial, true, true, 'initial overview');
+  assertOverviewTourRepresentatives(initial);
+  assert.deepEqual(initial.festIds, ['type-nights-fest', 'type-weekend-fest']);
+
+  const showsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(showsOnly, true, false, 'Shows only');
+  assertOverviewTourRepresentatives(showsOnly);
+  const empty = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(empty, false, false, 'Both disabled');
+  const festsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(festsOnly, false, true, 'Fests only');
+  assert.deepEqual(festsOnly.festIds, ['type-nights-fest', 'type-weekend-fest']);
+  const restored = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(restored, true, true, 'Both restored');
+  assertOverviewTourRepresentatives(restored);
+  assert.deepEqual(restored.festIds, initial.festIds);
+
+  const bridged = sharedEventTypeFixture();
+  bridged.artists = ['Filter Alpha'];
+  bridged.concerts = [{ ...bridged.concerts[0], isFest: true }];
+  bridged.festivals = [{
+    ...bridged.festivals[0], date: bridged.concerts[0].date,
+    venue: bridged.concerts[0].venue, lat: bridged.concerts[0].lat, lng: bridged.concerts[0].lng,
+  }];
+  await prepareSharedEventTypeTest(page, bridged);
+  const festivalAppearanceAsShow = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assert.deepEqual(festivalAppearanceAsShow.calendarArtists, ['Filter Alpha'], 'Shows-only keeps an imported concert flagged as a festival appearance');
+  assert.deepEqual(festivalAppearanceAsShow.calendarFests, []);
+  assert.deepEqual(festivalAppearanceAsShow.tourIds, ['type-alpha-first'], 'The festival-appearance concert must have a show marker when the festival layer is disabled');
+  assert.deepEqual(festivalAppearanceAsShow.festIds, []);
+  await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  const festivalAppearanceAsFest = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assert.deepEqual(festivalAppearanceAsFest.calendarArtists, []);
+  assert.deepEqual(festivalAppearanceAsFest.tourIds, [], 'Fests-only cannot rebuild any concert ID, including isFest concerts');
+  assert.deepEqual(festivalAppearanceAsFest.festIds, ['type-weekend-fest']);
+});
+
+test('focused artist maps honor shared event types without rebuilding excluded shows from raw concerts', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  await page.evaluate(() => document.querySelector('.msb-artist[data-artist="Filter Alpha"] .msb-focus').click());
+  await settleUi(page, 180);
+  const initial = await page.evaluate(sharedEventTypeSnapshot);
+  assert.equal(initial.focusedArtist, 'Filter Alpha');
+  assert.deepEqual(initial.tourIds, ['type-alpha-first', 'type-alpha-second']);
+  assert.equal(initial.visiblePanelCount, initial.tourMarkerCount, 'Entering artist focus must update the visible marker count');
+
+  await page.evaluate(() => {
+    lmap.stop();
+    // Keep the unrelated artist and both festival locations in bounds. They
+    // must still be excluded because the map represents only Filter Alpha.
+    lmap.setView([52, 6], 4, { animate: false });
+    document.querySelector('#msb-visible .msb-visible-hd').click();
+  });
+  await settleUi(page, 220);
+  assert.equal(await page.evaluate(() => [...concerts, ...festivals].every(event => lmap.getBounds().contains([event.lat, event.lng]))), true,
+    'The unrelated artist and festivals must be in bounds so the panel test exercises represented-event filtering');
+  const openFocus = await page.evaluate(sharedEventTypeSnapshot);
+  assert.deepEqual(openFocus.visiblePanelNames, ['Filter Alpha'], 'The open On screen panel must exclude unrelated artists and unrendered festivals in focus mode');
+  assert.equal(openFocus.visiblePanelCount, 1, 'The open panel counts the single represented artist rather than their two show markers');
+
+  const showsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(showsOnly, true, false, 'Focused Shows only');
+  assert.deepEqual(showsOnly.tourIds, initial.tourIds);
+  assert.deepEqual(showsOnly.visiblePanelNames, ['Filter Alpha'], 'Shows-only keeps the open panel scoped to the focused artist');
+  assert.equal(showsOnly.visiblePanelCount, 1);
+  const empty = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(empty, false, false, 'Focused both disabled');
+  assert.equal(empty.focusRows, 0, 'The focus list must not retain disabled concert rows');
+  assert.deepEqual(empty.visiblePanelNames, [], 'An empty map must not retain old On screen rows');
+  const festsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(festsOnly, false, true, 'Focused Fests only');
+  assert.equal(festsOnly.focusedArtist, 'Filter Alpha', 'The artist selection is retained for restoring Shows');
+  assert.equal(festsOnly.visibleArtistFocus, false, 'Fests-only is overview mode even with a remembered artist selection');
+  await page.evaluate(() => {
+    window.__testFestivalRootsBeforeZoom = [...festMarkers];
+    lmap.setZoom(lmap.getZoom() === 8 ? 6 : 8, { animate: false });
+  });
+  await page.waitFor(() => festMarkers.length > 0 && festMarkers.every(marker => !window.__testFestivalRootsBeforeZoom.includes(marker)));
+  await settleUi(page, 180);
+  const zoomedFests = await page.evaluate(sharedEventTypeSnapshot);
+  assertSharedEventTypeState(zoomedFests, false, true, 'Fests-only after real zoom');
+  assert.equal(zoomedFests.visibleArtistFocus, false);
+  assert.deepEqual(zoomedFests.festIds, ['type-nights-fest', 'type-weekend-fest'], 'Zoom must rebuild the overview festival markers without losing events');
+  const restored = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(restored, true, true, 'Focused Shows restored');
+  assert.equal(restored.focusedArtist, 'Filter Alpha');
+  assert.deepEqual(restored.tourIds, initial.tourIds, 'Restoring Shows must retain the selected artist instead of showing other artists');
+  assert.deepEqual(restored.visiblePanelNames, ['Filter Alpha'], 'Restoring Both must remove festival and unrelated-artist rows from the focused On screen panel');
+  assert.equal(restored.visiblePanelCount, 1, 'The restored open focus panel counts only the represented artist');
+});
+
+test('map type chips and layer buttons synchronize calendar types including an empty map selection', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  const tours = await clickEventTypeControl(page, '#mft-tours');
+  assertSharedEventTypeState(tours, true, false, 'Map Tours');
+  assertOverviewTourRepresentatives(tours);
+  const fests = await clickEventTypeControl(page, '#mft-fests');
+  assertSharedEventTypeState(fests, false, true, 'Map Fests');
+  assert.deepEqual(fests.festIds, ['type-nights-fest', 'type-weekend-fest']);
+  const both = await clickEventTypeControl(page, '#mft-both');
+  assertSharedEventTypeState(both, true, true, 'Map Both');
+  await clickEventTypeControl(page, '#tab-tours');
+  const onlyFests = await clickEventTypeControl(page, '#lt-t');
+  assertSharedEventTypeState(onlyFests, false, true, 'Tour layer disabled');
+  const empty = await clickEventTypeControl(page, '#lt-f');
+  assertSharedEventTypeState(empty, false, false, 'Both map layers disabled');
+  const restored = await clickEventTypeControl(page, '#lt-t');
+  assertSharedEventTypeState(restored, true, false, 'Tour layer restored');
+  assertOverviewTourRepresentatives(restored);
+});
+
+test('map sidebar tab changes do not reenable excluded event types or leave disabled festival markers', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  await clickEventTypeControl(page, '#mft-tours');
+  const excludedFests = await clickEventTypeControl(page, '#tab-fests');
+  assertSharedEventTypeState(excludedFests, true, false, 'Festival tab with festivals disabled');
+  const tours = await clickEventTypeControl(page, '#tab-tours');
+  assertSharedEventTypeState(tours, true, false, 'Tour tab keeps Shows only');
+  assertOverviewTourRepresentatives(tours);
+
+  await clickEventTypeControl(page, '#mft-fests');
+  const excludedTours = await clickEventTypeControl(page, '#tab-tours');
+  assertSharedEventTypeState(excludedTours, false, true, 'Tour tab with shows disabled');
+  await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  for (const tab of ['fests', 'tours']) {
+    const empty = await clickEventTypeControl(page, '#tab-' + tab);
+    assertSharedEventTypeState(empty, false, false, `${tab} tab with both types disabled`);
+  }
+
+  await page.navigate(baseUrl);
+  await prepareSharedEventTypeTest(page, { ...sharedEventTypeFixture(), concerts: [] });
+  const festivalOnlyControls = await page.evaluate(() => ({
+    typesVisible: ['both', 'tours', 'fests'].every(type => {
+      const button = document.getElementById('mft-' + type);
+      return getComputedStyle(button).display !== 'none' && button.getBoundingClientRect().height > 0;
+    }),
+    filterBarVisible: getComputedStyle(document.getElementById('msb-filters')).display !== 'none',
+  }));
+  assert.deepEqual(festivalOnlyControls, { typesVisible: true, filterBarVisible: true }, 'A fresh festival-only dataset must expose map type controls without requiring any concert data first');
+  const festivalOnly = await clickEventTypeControl(page, '#mft-fests');
+  assert.deepEqual(festivalOnly.festIds, ['type-nights-fest', 'type-weekend-fest']);
+  assert.deepEqual(festivalOnly.typeChips, { shows: false, fests: true });
+});

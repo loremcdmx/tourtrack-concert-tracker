@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '2.31.0060'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
+const APP_VERSION = '2.31.0061'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
 
 const PRODUCT_SCENARIO = Object.freeze({
   id: window.__SERVER_CONFIG__?.pinnedPlaylistOnly === true ? 'scenario-a' : 'playlist-links',
@@ -230,8 +230,8 @@ let scanAborted = false, cacheTimestamp = 0;
 let lmap = null;
 let tourMarkers = [], festMarkers = [], routeLines = [];
 let showMapTours = true, showMapFests = true;
-// Map-specific filters (independent of calendar filters)
-let mapTypeFilter  = 'both'; // 'both' | 'tours' | 'fests'
+// Type and score controls share calendar state; map layer fields are synced aliases.
+let mapTypeFilter  = 'both'; // 'both' | 'tours' | 'fests' | 'none'
 let mapScoreFilter = 0;      // 0–4, same scale as calScoreFilter / SCORE_ARTIST_MIN
 let mapDateMode    = 'all';  // 'all' | 'week' | 'month' | 'range'
 let mapDateFrom    = '';     // ISO date, range start
