@@ -1,10 +1,10 @@
 'use strict';
-const APP_VERSION = '2.23.0001'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
+const APP_VERSION = '2.31.0064'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
 
 const PRODUCT_SCENARIO = Object.freeze({
-  id: 'scenario-a',
+  id: window.__SERVER_CONFIG__?.pinnedPlaylistOnly === true ? 'scenario-a' : 'playlist-links',
   singleUser: true,
-  pinnedPlaylistOnly: true,
+  pinnedPlaylistOnly: window.__SERVER_CONFIG__?.pinnedPlaylistOnly === true,
   externalUserFeatures: false,
   fixedMinTracks: 4,
   filteredArtistCount: 384,
@@ -52,7 +52,11 @@ const SERVER_MANAGED_TICKETMASTER = !!SERVER_CONFIG.ticketmasterManaged;
 const SERVER_MANAGED_SPOTIFY = !!SERVER_CONFIG.spotifyManaged;
 const SERVER_MANAGED_SPOTIFY_LOGIN = !!SERVER_CONFIG.spotifyLoginManaged;
 const LOCAL_SETUP_ALLOWED = !!SERVER_CONFIG.localSetupAllowed;
-const SPOTIFY_REDIRECT_URI_HINT = SERVER_CONFIG.spotifyRedirectUri || `${window.location.origin}/api/auth/spotify/callback`;
+const SPOTIFY_REDIRECT_URI_HINT = SERVER_CONFIG.spotifyRedirectUri || (() => {
+  const callback = new URL('/api/auth/spotify/callback', window.location.origin);
+  if (callback.hostname === 'localhost') callback.hostname = '127.0.0.1';
+  return callback.href;
+})();
 const INTERNAL_PROXY_HOSTS = new Set([
   'app.ticketmaster.com',
   'ticketmaster.com',
@@ -226,8 +230,8 @@ let scanAborted = false, cacheTimestamp = 0;
 let lmap = null;
 let tourMarkers = [], festMarkers = [], routeLines = [];
 let showMapTours = true, showMapFests = true;
-// Map-specific filters (independent of calendar filters)
-let mapTypeFilter  = 'both'; // 'both' | 'tours' | 'fests'
+// Type and score controls share calendar state; map layer fields are synced aliases.
+let mapTypeFilter  = 'both'; // 'both' | 'tours' | 'fests' | 'none'
 let mapScoreFilter = 0;      // 0–4, same scale as calScoreFilter / SCORE_ARTIST_MIN
 let mapDateMode    = 'all';  // 'all' | 'week' | 'month' | 'range'
 let mapDateFrom    = '';     // ISO date, range start

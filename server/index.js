@@ -16,6 +16,10 @@ const PORT = Number(process.env.PORT || 3000);
 const TICKETMASTER_PLACEHOLDER = '__SERVER__';
 const SPOTIFY_SESSION_COOKIE = 'tt_spotify_session';
 const SPOTIFY_STATE_COOKIE = 'tt_spotify_state';
+const SPOTIFY_STATE_TTL_MS = 10 * 60 * 1000;
+const SPOTIFY_LOCAL_HANDOFF_TTL_MS = 30 * 1000;
+const SPOTIFY_LOCAL_HANDOFF_LIMIT = 128;
+const spotifyLocalHandoffs = new Map();
 const SPOTIFY_OAUTH_SCOPES = [
   'playlist-read-private',
   'playlist-read-collaborative',
@@ -51,6 +55,33 @@ let cachedSessionSecret = '';
 let cachedSessionKey = null;
 let spotifyAppTokenCache = null;
 const SPOTIFY_UPSTREAM_TIMEOUT_MS = 15000;
+
+function spotifyRequestError(message, status = 502, code = '') {
+  const error = new Error(message);
+  error.status = status;
+  if (code) error.code = code;
+  return error;
+}
+
+function spotifyRetryAfter(headers) {
+  const value = String(headers.get('retry-after') || '').trim();
+  return /^\d+$/.test(value) || (value && Number.isFinite(Date.parse(value))) ? value : '';
+}
+
+function sendSpotifyError(res, error, fallbackMessage, code = '') {
+  const status = error.status || 502;
+  const codes = {
+    401: 'SPOTIFY_LOGIN_REQUIRED',
+    403: 'PLAYLIST_ACCESS_DENIED',
+    404: 'PLAYLIST_NOT_FOUND',
+    429: 'RATE_LIMITED',
+  };
+  sendJson(res, status, {
+    error: error.message || fallbackMessage,
+    code: error.code || codes[status] || code || 'INCOMPLETE_IMPORT',
+    ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}),
+  }, error.retryAfter ? { 'Retry-After': error.retryAfter } : {});
+}
 
 function loadDotEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -170,7 +201,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.28.0048',
+    appVersion: '2.31.0064',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -347,10 +378,22 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
-function readRequestBody(req) {
+function readRequestBody(req, maxBytes = Infinity) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
+    let bytes = 0;
+    let exceeded = false;
+    req.on('data', chunk => {
+      if (exceeded) return;
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        exceeded = true;
+        chunks.length = 0;
+        reject(spotifyRequestError('Request body is too large.', 413, 'UNSUPPORTED_SPOTIFY_LINK'));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
@@ -398,12 +441,10 @@ function getExternalBaseUrl(req) {
 }
 
 function normalizeHostname(value) {
-  return String(value || '')
-    .trim()
-    .replace(/^\[/, '')
-    .replace(/\]$/, '')
-    .split(':')[0]
-    .toLowerCase();
+  const host = String(value || '').trim().toLowerCase();
+  const ipv6 = host.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (ipv6) return ipv6[1];
+  return host === '::1' ? host : host.split(':')[0];
 }
 
 function isLoopbackHost(value) {
@@ -419,22 +460,9 @@ function isLocalRequest(req) {
   return isLoopbackHost(host) && (remote === '127.0.0.1' || remote === '::1');
 }
 
-function getLocalhostBaseUrl(req) {
-  const protocol = getRequestProtocol(req);
-  try {
-    const requestOrigin = new URL(`${protocol}://${getRequestHost(req)}`);
-    if (isLoopbackHost(requestOrigin.hostname)) {
-      const port = requestOrigin.port || String(PORT);
-      return `${protocol}://localhost${port ? `:${port}` : ''}`;
-    }
-  } catch (error) {
-    // Fall through to the request host when the header is malformed.
-  }
-  return getExternalBaseUrl(req);
-}
-
 function sanitizeReturnTo(rawValue) {
   if (!rawValue || typeof rawValue !== 'string') return '/';
+  if (rawValue.length > 2048 || /[\\\u0000-\u001f\u007f]/.test(rawValue)) return '/';
   if (!rawValue.startsWith('/')) return '/';
   if (rawValue.startsWith('//')) return '/';
   return rawValue;
@@ -442,8 +470,23 @@ function sanitizeReturnTo(rawValue) {
 
 function getSpotifyRedirectUri(req) {
   const configured = (process.env.SPOTIFY_REDIRECT_URI || '').trim();
-  if (configured) return configured;
-  return `${getLocalhostBaseUrl(req)}/api/auth/spotify/callback`;
+  if (configured) {
+    try {
+      const redirect = new URL(configured);
+      // Spotify requires a literal loopback IP. Keep old local .env files usable
+      // without changing the application's localhost origin or deployment config.
+      if (isLocalRequest(req) && redirect.hostname === 'localhost') {
+        redirect.hostname = '127.0.0.1';
+        return redirect.toString();
+      }
+    } catch (error) {
+      // An explicit non-local configuration remains the deployment's responsibility.
+    }
+    return configured;
+  }
+  const origin = new URL(getExternalBaseUrl(req));
+  if (isLocalRequest(req)) origin.hostname = '127.0.0.1';
+  return new URL('/api/auth/spotify/callback', origin).toString();
 }
 
 function getCanonicalSpotifyLoginUrl(req, requestUrl) {
@@ -455,9 +498,68 @@ function getCanonicalSpotifyLoginUrl(req, requestUrl) {
   } catch (error) {
     return '';
   }
-  if (!isLoopbackHost(redirectUrl.hostname) || !isLoopbackHost(requestOrigin.hostname)) return '';
+  if (!isLocalRequest(req) || !isLoopbackHost(redirectUrl.hostname) || !isLoopbackHost(requestOrigin.hostname)) return '';
   if (redirectUrl.origin === requestOrigin.origin) return '';
   return new URL(`${requestUrl.pathname}${requestUrl.search}`, redirectUrl.origin).toString();
+}
+
+function spotifyStateIsFresh(payload) {
+  const now = Date.now();
+  return !!payload && Number.isFinite(payload.ts) && payload.ts <= now && now - payload.ts <= SPOTIFY_STATE_TTL_MS;
+}
+
+function getSpotifyLocalBridgeOrigin(req, payload) {
+  if (!isLocalRequest(req) || !payload || typeof payload.bridgeOrigin !== 'string') return '';
+  try {
+    const current = new URL(getExternalBaseUrl(req));
+    const target = new URL(payload.bridgeOrigin);
+    const callback = new URL(getSpotifyRedirectUri(req));
+    if (current.hostname !== '127.0.0.1' || target.hostname !== 'localhost') return '';
+    if (target.origin !== payload.bridgeOrigin || target.username || target.password) return '';
+    if (target.protocol !== current.protocol || target.port !== current.port) return '';
+    if (callback.origin !== current.origin || callback.pathname !== '/api/auth/spotify/callback' || callback.search || callback.hash) return '';
+    return target.origin;
+  } catch (error) {
+    return '';
+  }
+}
+
+function pruneSpotifyLocalHandoffs() {
+  const now = Date.now();
+  for (const [state, record] of spotifyLocalHandoffs) {
+    if (record.expiresAt <= now) {
+      clearTimeout(record.timer);
+      spotifyLocalHandoffs.delete(state);
+    }
+  }
+}
+
+function saveSpotifyLocalHandoff(state, targetOrigin, session) {
+  pruneSpotifyLocalHandoffs();
+  if (spotifyLocalHandoffs.size >= SPOTIFY_LOCAL_HANDOFF_LIMIT || spotifyLocalHandoffs.has(state)) return false;
+  const sealedSession = sealJson(session);
+  if (!sealedSession) return false;
+  const timer = setTimeout(() => spotifyLocalHandoffs.delete(state), SPOTIFY_LOCAL_HANDOFF_TTL_MS);
+  timer.unref?.();
+  spotifyLocalHandoffs.set(state, { targetOrigin, sealedSession, expiresAt: Date.now() + SPOTIFY_LOCAL_HANDOFF_TTL_MS, timer });
+  return true;
+}
+
+function claimSpotifyLocalHandoff(req, res) {
+  pruneSpotifyLocalHandoffs();
+  if (!isLocalRequest(req)) return null;
+  const origin = new URL(getExternalBaseUrl(req));
+  if (origin.hostname !== 'localhost') return null;
+  const stateCookie = openJson(parseCookies(req)[SPOTIFY_STATE_COOKIE]);
+  if (!spotifyStateIsFresh(stateCookie) || stateCookie.bridgeOrigin !== origin.origin) return null;
+  const record = spotifyLocalHandoffs.get(stateCookie.state);
+  if (!record || record.targetOrigin !== origin.origin) return null;
+  const session = sanitizeSpotifySession(openJson(record.sealedSession));
+  clearTimeout(record.timer);
+  spotifyLocalHandoffs.delete(stateCookie.state);
+  clearCookie(res, req, SPOTIFY_STATE_COOKIE, '/api/auth/spotify');
+  if (!session || !writeSpotifySessionCookie(res, req, session)) return null;
+  return session;
 }
 
 function isSecureRequest(req) {
@@ -641,6 +743,7 @@ async function requestSpotifyToken(formParams) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), SPOTIFY_UPSTREAM_TIMEOUT_MS);
   let upstream;
+  let rawBody;
   try {
     upstream = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST',
@@ -651,6 +754,7 @@ async function requestSpotifyToken(formParams) {
       body: new URLSearchParams(formParams),
       signal: controller.signal,
     });
+    rawBody = await upstream.text();
   } catch (error) {
     if (error && error.name === 'AbortError') {
       const timeoutError = new Error(`Spotify token request timed out after ${Math.round(SPOTIFY_UPSTREAM_TIMEOUT_MS / 1000)}s.`);
@@ -661,8 +765,6 @@ async function requestSpotifyToken(formParams) {
   } finally {
     clearTimeout(timeoutId);
   }
-
-  const rawBody = await upstream.text();
 
   let payload = {};
   try {
@@ -680,6 +782,7 @@ async function requestSpotifyToken(formParams) {
     );
     error.status = upstream.status;
     error.payload = payload;
+    error.retryAfter = spotifyRetryAfter(upstream.headers);
     throw error;
   }
 
@@ -716,9 +819,13 @@ async function spotifyApiFetch(url, options = {}) {
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : SPOTIFY_UPSTREAM_TIMEOUT_MS;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
+  const abortFromCaller = () => controller.abort(options.signal.reason);
+  if (options.signal) {
+    if (options.signal.aborted) abortFromCaller();
+    else options.signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: options.method || 'GET',
       headers: {
         Authorization: `Bearer ${options.accessToken}`,
@@ -727,7 +834,30 @@ async function spotifyApiFetch(url, options = {}) {
       body: options.body,
       signal: controller.signal,
     });
+    if (!response.ok) {
+      const rawBody = await response.text();
+      let payload = {};
+      try {
+        payload = JSON.parse(rawBody);
+      } catch (_) {}
+      const details = payload.error && typeof payload.error === 'object'
+        ? payload.error.message
+        : payload.error_description || payload.error;
+      const error = spotifyRequestError(details || `Spotify API request failed (${response.status}).`, response.status);
+      error.retryAfter = spotifyRetryAfter(response.headers);
+      throw error;
+    }
+    if (options.json) {
+      try {
+        return await response.json();
+      } catch (error) {
+        if (error.name === 'AbortError') throw error;
+        throw spotifyRequestError('Spotify returned an invalid JSON response.', 502, 'INCOMPLETE_IMPORT');
+      }
+    }
+    return response;
   } catch (error) {
+    if (options.signal?.aborted) throw options.signal.reason || error;
     if (error && error.name === 'AbortError') {
       const timeoutError = new Error(`Spotify request timed out after ${Math.round(timeoutMs / 1000)}s.`);
       timeoutError.status = 504;
@@ -736,27 +866,8 @@ async function spotifyApiFetch(url, options = {}) {
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    options.signal?.removeEventListener('abort', abortFromCaller);
   }
-
-  if (!response.ok) {
-    const rawBody = await response.text();
-    let payload = {};
-    try {
-      payload = JSON.parse(rawBody);
-    } catch (error) {
-      payload = {};
-    }
-    const details = payload.error && typeof payload.error === 'object'
-      ? payload.error.message
-      : payload.error_description || payload.error;
-    const error = new Error(details || `Spotify API request failed (${response.status}).`);
-    error.status = response.status;
-    error.payload = payload;
-    error.rawBody = rawBody;
-    throw error;
-  }
-
-  return response;
 }
 
 function simplifySpotifyImages(images) {
@@ -772,10 +883,12 @@ function simplifySpotifyImages(images) {
 }
 
 async function fetchSpotifyProfile(accessToken) {
-  const response = await spotifyApiFetch('https://api.spotify.com/v1/me', {
-    accessToken,
+  const data = await spotifyApiFetch('https://api.spotify.com/v1/me', {
+    accessToken, json: true,
   });
-  const data = await response.json();
+  if (typeof data?.id !== 'string' || !data.id.trim()) {
+    throw spotifyRequestError('Spotify returned invalid account metadata.', 502, 'INCOMPLETE_IMPORT');
+  }
   return {
     id: data.id || '',
     displayName: data.display_name || data.id || 'Spotify',
@@ -812,8 +925,14 @@ async function refreshSpotifyUserSession(req, res, session) {
     writeSpotifySessionCookie(res, req, nextSession);
     return nextSession;
   } catch (error) {
-    clearCookie(res, req, SPOTIFY_SESSION_COOKIE);
-    return null;
+    if (error.payload?.error === 'invalid_grant') {
+      clearCookie(res, req, SPOTIFY_SESSION_COOKIE);
+      return null;
+    }
+    // A rate limit or provider outage does not revoke the user's consent.
+    // Preserve the session and let the caller retry, rather than falling back
+    // to an app token with different playlist access.
+    throw error;
   }
 }
 
@@ -831,11 +950,17 @@ async function fetchSpotifyUserPlaylists(accessToken) {
 
   while (nextUrl && pageCount < 6) {
     pageCount += 1;
-    const response = await spotifyApiFetch(nextUrl, { accessToken });
-    const data = await response.json();
+    const data = await spotifyApiFetch(nextUrl, { accessToken, json: true });
+    if (!Array.isArray(data?.items)) {
+      throw spotifyRequestError('Spotify returned an invalid playlist list.', 502, 'INCOMPLETE_IMPORT');
+    }
 
-    for (const item of data.items || []) {
+    for (const item of data.items) {
       if (!item || !item.id) continue;
+      const trackCount = item.items?.total ?? item.tracks?.total;
+      if (!Number.isSafeInteger(trackCount) || trackCount < 0) {
+        throw spotifyRequestError('Spotify returned an invalid playlist item count.', 502, 'INCOMPLETE_IMPORT');
+      }
       items.push({
         id: item.id,
         name: item.name || 'Untitled playlist',
@@ -847,7 +972,7 @@ async function fetchSpotifyUserPlaylists(accessToken) {
           : '',
         imageUrl: item.images && item.images[0] ? item.images[0].url : '',
         images: simplifySpotifyImages(item.images),
-        trackCount: item.tracks && typeof item.tracks.total === 'number' ? item.tracks.total : 0,
+        trackCount,
         collaborative: Boolean(item.collaborative),
         public: item.public,
       });
@@ -883,40 +1008,80 @@ function normalizeSpotifyImportTrack(track) {
   };
 }
 
-const PLAYLIST_IMPORT_PAGE_SIZE = 100;
-const PLAYLIST_IMPORT_CONCURRENCY = 6;
-const PLAYLIST_TRACK_FIELDS =
-  'items(track(id,name,uri,is_local,duration_ms,preview_url,external_urls,album(name,images),artists(name,id))),next,total';
+const PLAYLIST_IMPORT_PAGE_SIZE = 50;
+const PLAYLIST_IMPORT_CONCURRENCY = 3;
 
-async function fetchSpotifyPlaylistImport(accessToken, playlistId) {
-  const baseFields = [
-    'id',
-    'name',
-    'images',
-    'external_urls',
-    'owner(display_name,id)',
-    'tracks(total)',
-  ].join(',');
+async function fetchSpotifyPlaylistImport(accessToken, playlistId, { signal } = {}) {
+  if (!/^[A-Za-z0-9]{22}$/.test(playlistId)) {
+    throw spotifyRequestError('Enter a valid Spotify playlist ID.', 400, 'INVALID_PLAYLIST_ID');
+  }
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal) {
+    if (signal.aborted) abortFromCaller();
+    else signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  try {
+    controller.signal.throwIfAborted();
+    return await fetchSpotifyPlaylistImportSnapshot(accessToken, playlistId, controller);
+  } finally {
+    signal?.removeEventListener('abort', abortFromCaller);
+  }
+}
 
-  const tracksPageUrl = offset =>
-    `https://api.spotify.com/v1/playlists/${playlistId}/tracks` +
-    `?limit=${PLAYLIST_IMPORT_PAGE_SIZE}&offset=${offset}` +
-    `&fields=${encodeURIComponent(PLAYLIST_TRACK_FIELDS)}`;
-
+async function fetchSpotifyPlaylistImportSnapshot(accessToken, playlistId, controller) {
+  const playlistUrl = `https://api.spotify.com/v1/playlists/${playlistId}`;
   const fetchJson = async url => {
-    const response = await spotifyApiFetch(url, { accessToken });
-    return response.json();
+    controller.signal.throwIfAborted();
+    const payload = await spotifyApiFetch(url, { accessToken, signal: controller.signal, json: true });
+    controller.signal.throwIfAborted();
+    return payload;
   };
-
-  const [playlist, firstPage] = await Promise.all([
-    fetchJson(`https://api.spotify.com/v1/playlists/${playlistId}?fields=${encodeURIComponent(baseFields)}`),
-    fetchJson(tracksPageUrl(0)),
-  ]);
-
-  const total = Number(firstPage.total) || 0;
+  // February 2026 Development apps expose items/item; Extended apps retain
+  // tracks/track. Avoid a fields filter containing fields removed in either API.
+  const playlist = await fetchJson(playlistUrl);
+  if (!playlist || playlist.id !== playlistId) {
+    throw spotifyRequestError('Spotify returned invalid playlist metadata.', 502, 'INCOMPLETE_IMPORT');
+  }
+  const endpoint = playlist.items && typeof playlist.items === 'object' ? 'items'
+    : playlist.tracks && typeof playlist.tracks === 'object' ? 'tracks' : '';
+  if (!endpoint) {
+    throw spotifyRequestError('Spotify did not expose this playlist to the current app or account.', 403, 'PLAYLIST_ACCESS_DENIED');
+  }
+  const total = playlist[endpoint].total;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw spotifyRequestError('Spotify returned an invalid playlist item count.', 502, 'INCOMPLETE_IMPORT');
+  }
+  const itemKey = endpoint === 'items' ? 'item' : 'track';
+  const unwrapItem = item => {
+    if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, itemKey)) {
+      throw spotifyRequestError('Spotify returned an invalid playlist item.', 502, 'INCOMPLETE_IMPORT');
+    }
+    const media = item[itemKey];
+    if (media != null && (typeof media !== 'object' || Array.isArray(media)
+        || (media.type && !['track', 'episode'].includes(media.type))
+        || (media.type !== 'episode' && !item.is_local && !media.is_local && !Array.isArray(media.artists)))) {
+      throw spotifyRequestError('Spotify returned an unsupported playlist item.', 502, 'INCOMPLETE_IMPORT');
+    }
+    return media;
+  };
+  const pageUrl = offset => `${playlistUrl}/${endpoint}?limit=${PLAYLIST_IMPORT_PAGE_SIZE}&offset=${offset}`;
+  const fetchPage = async offset => {
+    const page = await fetchJson(pageUrl(offset));
+    const expected = Math.min(PLAYLIST_IMPORT_PAGE_SIZE, total - offset);
+    if (!page || !Array.isArray(page.items) || page.total !== total || page.items.length !== expected
+        || (page.offset !== undefined && page.offset !== offset)
+        || (page.limit !== undefined && page.limit !== PLAYLIST_IMPORT_PAGE_SIZE)
+        || (offset + expected < total ? typeof page.next !== 'string' || !page.next : page.next !== null)) {
+      throw spotifyRequestError('Spotify playlist pages were incomplete or changed during import. Try again.', 502, 'INCOMPLETE_IMPORT');
+    }
+    page.items.forEach(unwrapItem);
+    return page.items;
+  };
+  const firstPage = await fetchPage(0);
   const pageCount = Math.max(1, Math.ceil(total / PLAYLIST_IMPORT_PAGE_SIZE));
   const pages = new Array(pageCount);
-  pages[0] = firstPage.items || [];
+  pages[0] = firstPage;
 
   const remainingOffsets = [];
   for (let offset = PLAYLIST_IMPORT_PAGE_SIZE; offset < total; offset += PLAYLIST_IMPORT_PAGE_SIZE) {
@@ -925,23 +1090,44 @@ async function fetchSpotifyPlaylistImport(accessToken, playlistId) {
 
   if (remainingOffsets.length) {
     let cursor = 0;
+    let failure = null;
     const worker = async () => {
-      while (cursor < remainingOffsets.length) {
+      while (!failure && !controller.signal.aborted && cursor < remainingOffsets.length) {
         const myIndex = cursor++;
         const offset = remainingOffsets[myIndex];
-        const data = await fetchJson(tracksPageUrl(offset));
-        pages[offset / PLAYLIST_IMPORT_PAGE_SIZE] = data.items || [];
+        try {
+          pages[offset / PLAYLIST_IMPORT_PAGE_SIZE] = await fetchPage(offset);
+        } catch (error) {
+          if (!failure) {
+            failure = error;
+            controller.abort(error);
+          }
+        }
       }
     };
     const workerCount = Math.min(PLAYLIST_IMPORT_CONCURRENCY, remainingOffsets.length);
     await Promise.all(Array.from({ length: workerCount }, worker));
+    if (failure) throw failure;
+  }
+  controller.signal.throwIfAborted();
+  if (playlist.snapshot_id) {
+    const current = await fetchJson(playlistUrl);
+    if (current?.id !== playlist.id || current.snapshot_id !== playlist.snapshot_id) {
+      throw spotifyRequestError('This playlist changed during import. Try again to load a consistent copy.', 502, 'INCOMPLETE_IMPORT');
+    }
   }
 
   const tracks = [];
+  const skippedItems = { unavailable: 0, episodes: 0, local: 0 };
   for (const page of pages) {
-    for (const item of page || []) {
-      const normalized = normalizeSpotifyImportTrack(item && item.track);
-      if (normalized) tracks.push(normalized);
+    for (const item of page) {
+      const track = unwrapItem(item);
+      if (!track) { skippedItems.unavailable += 1; continue; }
+      if (track.type === 'episode') { skippedItems.episodes += 1; continue; }
+      if (item.is_local || track.is_local) { skippedItems.local += 1; continue; }
+      const normalized = normalizeSpotifyImportTrack(track);
+      if (!normalized.artists.length) { skippedItems.unavailable += 1; continue; }
+      tracks.push(normalized);
     }
   }
 
@@ -952,9 +1138,12 @@ async function fetchSpotifyPlaylistImport(accessToken, playlistId) {
       external_urls: playlist.external_urls || {},
       images: simplifySpotifyImages(playlist.images),
       owner: playlist.owner || {},
-      tracks: { total: total || (playlist.tracks && playlist.tracks.total) || tracks.length },
+      tracks: { total },
+      items: { total },
+      ...(playlist.snapshot_id ? { snapshot_id: playlist.snapshot_id } : {}),
     },
     tracks,
+    importSummary: { totalItems: total, importedTracks: tracks.length, skippedItems },
   };
 }
 
@@ -1063,10 +1252,7 @@ async function handleSpotifyToken(req, res) {
       source: 'app',
     });
   } catch (error) {
-    sendJson(res, error.status || 502, {
-      error: error.message || 'Failed to get Spotify token from upstream.',
-      detail: error.payload || undefined,
-    });
+    sendSpotifyError(res, error, 'Failed to get Spotify token from upstream.');
   }
 }
 
@@ -1076,30 +1262,65 @@ async function handleSpotifyLogin(req, res, requestUrl) {
     return;
   }
 
+  pruneSpotifyLocalHandoffs();
   const canonicalLoginUrl = getCanonicalSpotifyLoginUrl(req, requestUrl);
   if (canonicalLoginUrl) {
+    const origin = new URL(getExternalBaseUrl(req));
+    const loginUrl = new URL(canonicalLoginUrl);
+    if (origin.hostname === 'localhost' && loginUrl.hostname === '127.0.0.1') {
+      const callback = new URL(getSpotifyRedirectUri(req));
+      if (origin.protocol !== loginUrl.protocol || origin.port !== loginUrl.port ||
+          callback.pathname !== '/api/auth/spotify/callback' || callback.search || callback.hash) {
+        sendJson(res, 400, { error: 'The local Spotify callback must use the same port and protocol as this app.', code: 'SPOTIFY_REDIRECT_MISMATCH' });
+        return;
+      }
+      const relay = {
+        purpose: 'spotify-local-auth-relay',
+        state: crypto.randomBytes(18).toString('hex'),
+        returnTo: sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/'),
+        bridgeOrigin: origin.origin,
+        ts: Date.now(),
+      };
+      writeSpotifyStateCookie(res, req, relay);
+      loginUrl.search = '';
+      loginUrl.searchParams.set('bridge', sealJson(relay));
+      if (requestUrl.searchParams.get('show_dialog') === '1') loginUrl.searchParams.set('show_dialog', '1');
+      sendRedirect(res, 302, loginUrl.toString(), { 'Referrer-Policy': 'no-referrer' });
+      return;
+    }
     sendRedirect(res, 302, canonicalLoginUrl);
     return;
   }
 
   const { clientId } = getSpotifyCredentials();
-  const state = crypto.randomBytes(18).toString('hex');
-  const returnTo = sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/');
-  writeSpotifyStateCookie(res, req, {
-    state,
-    returnTo,
-    ts: Date.now(),
-  });
+  let statePayload;
+  const bridge = requestUrl.searchParams.get('bridge');
+  if (bridge !== null) {
+    statePayload = bridge.length <= 4096 ? openJson(bridge) : null;
+    if (!spotifyStateIsFresh(statePayload) || statePayload.purpose !== 'spotify-local-auth-relay' ||
+        !/^[a-f0-9]{36}$/.test(statePayload.state) || !getSpotifyLocalBridgeOrigin(req, statePayload)) {
+      sendJson(res, 400, { error: 'This local Spotify login link is invalid or expired. Start again from the app.', code: 'SPOTIFY_STATE_MISMATCH' });
+      return;
+    }
+    statePayload.returnTo = sanitizeReturnTo(statePayload.returnTo);
+  } else {
+    statePayload = {
+      state: crypto.randomBytes(18).toString('hex'),
+      returnTo: sanitizeReturnTo(requestUrl.searchParams.get('returnTo') || '/'),
+      ts: Date.now(),
+    };
+  }
+  writeSpotifyStateCookie(res, req, statePayload);
 
   const authUrl = new URL('https://accounts.spotify.com/authorize');
   authUrl.searchParams.set('client_id', clientId);
   authUrl.searchParams.set('response_type', 'code');
   authUrl.searchParams.set('redirect_uri', getSpotifyRedirectUri(req));
   authUrl.searchParams.set('scope', SPOTIFY_OAUTH_SCOPES.join(' '));
-  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('state', statePayload.state);
   authUrl.searchParams.set('show_dialog', requestUrl.searchParams.get('show_dialog') === '1' ? 'true' : 'false');
 
-  sendRedirect(res, 302, authUrl.toString());
+  sendRedirect(res, 302, authUrl.toString(), { 'Referrer-Policy': 'no-referrer' });
 }
 
 async function handleSpotifyCallback(req, res, requestUrl) {
@@ -1107,18 +1328,25 @@ async function handleSpotifyCallback(req, res, requestUrl) {
   const stateCookie = openJson(cookies[SPOTIFY_STATE_COOKIE]);
   const returnTo = sanitizeReturnTo(stateCookie && stateCookie.returnTo ? stateCookie.returnTo : '/');
   clearCookie(res, req, SPOTIFY_STATE_COOKIE, '/api/auth/spotify');
-
-  const errorCode = requestUrl.searchParams.get('error');
-  if (errorCode) {
-    sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'error', code: errorCode }));
-    return;
-  }
-
   const code = requestUrl.searchParams.get('code');
   const state = requestUrl.searchParams.get('state');
-
-  if (!code || !stateCookie || stateCookie.state !== state) {
+  if (!spotifyStateIsFresh(stateCookie) || !state || stateCookie.state !== state) {
     sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'error', code: 'state_mismatch' }));
+    return;
+  }
+  const bridgeOrigin = getSpotifyLocalBridgeOrigin(req, stateCookie);
+  if (stateCookie.bridgeOrigin && !bridgeOrigin) {
+    sendRedirect(res, 302, buildReturnUrl('/', { spotify: 'error', code: 'state_mismatch' }));
+    return;
+  }
+  const finishUrl = params => `${bridgeOrigin}${buildReturnUrl(returnTo, params)}`;
+  const errorCode = requestUrl.searchParams.get('error');
+  if (errorCode) {
+    sendRedirect(res, 302, finishUrl({ spotify: 'error', code: errorCode }), { 'Referrer-Policy': 'no-referrer' });
+    return;
+  }
+  if (!code) {
+    sendRedirect(res, 302, finishUrl({ spotify: 'error', code: 'state_mismatch' }));
     return;
   }
 
@@ -1143,12 +1371,37 @@ async function handleSpotifyCallback(req, res, requestUrl) {
       session.user = null;
     }
 
-    writeSpotifySessionCookie(res, req, session);
-    sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'connected' }));
+    if (bridgeOrigin) {
+      if (!saveSpotifyLocalHandoff(stateCookie.state, bridgeOrigin, session)) {
+        sendRedirect(res, 302, finishUrl({ spotify: 'error', code: 'login_busy' }));
+        return;
+      }
+    } else {
+      writeSpotifySessionCookie(res, req, session);
+    }
+    sendRedirect(res, 302, bridgeOrigin ? `${bridgeOrigin}/api/auth/spotify/complete` : finishUrl({ spotify: 'connected' }), {
+      'Referrer-Policy': 'no-referrer',
+    });
   } catch (error) {
-    console.error('Spotify callback error:', error);
-    sendRedirect(res, 302, buildReturnUrl(returnTo, { spotify: 'error', code: 'token_exchange_failed' }));
+    console.warn('Spotify callback failed:', error.status || 502);
+    sendRedirect(res, 302, finishUrl({ spotify: 'error', code: 'token_exchange_failed' }));
   }
+}
+
+async function handleSpotifyComplete(req, res) {
+  const origin = new URL(getExternalBaseUrl(req));
+  if (!isLocalRequest(req) || origin.hostname !== 'localhost') {
+    sendJson(res, 400, { error: 'This Spotify login must finish on its original local app.', code: 'SPOTIFY_STATE_MISMATCH' });
+    return;
+  }
+  const stateCookie = openJson(parseCookies(req)[SPOTIFY_STATE_COOKIE]);
+  const returnTo = stateCookie && stateCookie.bridgeOrigin === origin.origin
+    ? sanitizeReturnTo(stateCookie.returnTo) : '/';
+  const session = claimSpotifyLocalHandoff(req, res);
+  if (!session) clearCookie(res, req, SPOTIFY_STATE_COOKIE, '/api/auth/spotify');
+  sendRedirect(res, 302, buildReturnUrl(returnTo, session
+    ? { spotify: 'connected' }
+    : { spotify: 'error', code: 'state_mismatch' }), { 'Referrer-Policy': 'no-referrer' });
 }
 
 async function handleSpotifyLogout(req, res) {
@@ -1157,55 +1410,72 @@ async function handleSpotifyLogout(req, res) {
 }
 
 async function handleSpotifySession(req, res) {
-  const session = await getSpotifyUserSession(req, res);
-  if (!session) {
-    sendJson(res, 200, {
-      connected: false,
-      spotifyManaged: spotifyConfigured(),
-    });
-    return;
-  }
-
-  if (!session.user) {
-    try {
-      session.user = await fetchSpotifyProfile(session.accessToken);
-      writeSpotifySessionCookie(res, req, session);
-    } catch (error) {
-      session.user = null;
+  try {
+    const session = claimSpotifyLocalHandoff(req, res) || await getSpotifyUserSession(req, res);
+    if (!session) {
+      sendJson(res, 200, {
+        connected: false,
+        spotifyManaged: spotifyConfigured(),
+      });
+      return;
     }
-  }
 
-  sendJson(res, 200, {
-    connected: true,
-    user: session.user,
-    scope: session.scope,
-    expiresAt: session.expiresAt,
-  });
+    if (!session.user) {
+      try {
+        session.user = await fetchSpotifyProfile(session.accessToken);
+        writeSpotifySessionCookie(res, req, session);
+      } catch (error) {
+        session.user = null;
+      }
+    }
+
+    sendJson(res, 200, {
+      connected: true,
+      user: session.user,
+      scope: session.scope,
+      expiresAt: session.expiresAt,
+    });
+  } catch (error) {
+    sendSpotifyError(res, error, 'Spotify session is temporarily unavailable.');
+  }
 }
 
 async function handleSpotifyUserPlaylists(req, res) {
-  const session = await getSpotifyUserSession(req, res);
-  if (!session) {
-    sendJson(res, 401, {
-      error: 'Sign in with Spotify first to browse your playlists.',
-    });
-    return;
-  }
-
   try {
+    const session = await getSpotifyUserSession(req, res);
+    if (!session) {
+      sendJson(res, 401, {
+        error: 'Sign in with Spotify first to browse your playlists.',
+        code: 'SPOTIFY_LOGIN_REQUIRED',
+      });
+      return;
+    }
     const items = await fetchSpotifyUserPlaylists(session.accessToken);
     sendJson(res, 200, { items });
   } catch (error) {
-    console.error('Spotify playlists error:', error);
-    sendJson(res, error.status || 502, {
-      error: error.message || 'Failed to load Spotify playlists.',
-    });
+    sendSpotifyError(res, error, 'Failed to load Spotify playlists.');
   }
 }
 
 async function handleSpotifyPlaylistImport(req, res, playlistId) {
+  if (!/^[A-Za-z0-9]{22}$/.test(playlistId)) {
+    sendSpotifyError(res, spotifyRequestError('Enter a valid Spotify playlist ID.', 400, 'INVALID_PLAYLIST_ID'));
+    return;
+  }
+  const controller = new AbortController();
+  const abortOnDisconnect = () => controller.abort();
+  const onResponseClose = () => {
+    if (!res.writableEnded) abortOnDisconnect();
+  };
+  // IncomingMessage.close also fires after a normal, fully received request.
+  // Response.close identifies a client that disappeared while we were paging.
+  req.once('aborted', abortOnDisconnect);
+  res.once('close', onResponseClose);
+  if (req.aborted || res.destroyed) abortOnDisconnect();
   try {
+    controller.signal.throwIfAborted();
     const session = await getSpotifyUserSession(req, res);
+    controller.signal.throwIfAborted();
     let accessToken = '';
     let source = 'app';
 
@@ -1217,23 +1487,111 @@ async function handleSpotifyPlaylistImport(req, res, playlistId) {
       accessToken = payload.access_token;
     }
 
-    const payload = await fetchSpotifyPlaylistImport(accessToken, playlistId);
-    const cacheHeaders = source === 'app'
-      ? { 'Cache-Control': 'public, s-maxage=600, stale-while-revalidate=3600' }
-      : {};
-    sendJson(res, 200, { source, ...payload }, cacheHeaders);
+    controller.signal.throwIfAborted();
+    const payload = await fetchSpotifyPlaylistImport(accessToken, playlistId, { signal: controller.signal });
+    // The same route can return private content selected by a user cookie.
+    // Keep imports out of shared/CDN caches, including app-token responses.
+    sendJson(res, 200, { source, ...payload });
   } catch (error) {
-    console.error('Spotify playlist import error:', error);
-    const needsLogin =
-      (error.status === 401 || error.status === 403 || error.status === 404) &&
-      spotifyConfigured();
+    if (!controller.signal.aborted) sendSpotifyError(res, error, 'Failed to load Spotify playlist.');
+  } finally {
+    req.removeListener('aborted', abortOnDisconnect);
+    res.removeListener('close', onResponseClose);
+  }
+}
 
-    sendJson(res, needsLogin ? 401 : (error.status || 502), {
-      error: needsLogin
-        ? 'Sign in with Spotify to open private or collaborative playlists.'
-        : (error.message || 'Failed to load Spotify playlist.'),
-      detail: error.payload || undefined,
-    });
+const SPOTIFY_SHORTLINK_TIMEOUT_MS = 8000;
+const SPOTIFY_SHORTLINK_MAX_REDIRECTS = 4;
+const SPOTIFY_SHORTLINK_BODY_CAP = 64 * 1024;
+
+function validateSpotifyShareTarget(raw, base = undefined) {
+  let url;
+  try { url = new URL(raw, base); } catch (_) {}
+  if (!url || url.protocol !== 'https:' || url.username || url.password || url.port
+      || !['spotify.link', 'open.spotify.com'].includes(url.hostname)) {
+    throw spotifyRequestError('This share link cannot be opened safely. Paste the full open.spotify.com playlist link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+  }
+  // URL removes an explicit default :443. Reject that spelling as well.
+  if (/^(?:https:)?\/{2,}[^/?#]*:/i.test(String(raw).replace(/\\/g, '/'))) {
+    throw spotifyRequestError('Use a Spotify share link without a port or credentials.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+  }
+  url.hash = '';
+  if (url.hostname === 'open.spotify.com') {
+    const match = url.pathname.match(/^\/(?:intl-[a-z]{2}\/)?playlist\/([A-Za-z0-9]{22})\/?$/);
+    if (!match) {
+      throw spotifyRequestError('This Spotify link is not a playlist. Paste the full playlist link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+    }
+    return { url, id: match[1] };
+  }
+  if (!url.pathname.slice(1)) {
+    throw spotifyRequestError('Paste a complete Spotify share link or the full playlist link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+  }
+  return { url, id: '' };
+}
+
+async function resolveSpotifyShareLink(raw) {
+  let target = validateSpotifyShareTarget(raw);
+  if (target.url.hostname !== 'spotify.link') {
+    throw spotifyRequestError('The share-link resolver accepts spotify.link links only.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SPOTIFY_SHORTLINK_TIMEOUT_MS);
+  const visited = new Set();
+  try {
+    for (let hop = 0; hop < SPOTIFY_SHORTLINK_MAX_REDIRECTS; hop++) {
+      if (visited.has(target.url.href)) {
+        throw spotifyRequestError('This Spotify share link redirects in a loop. Paste the full playlist link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+      }
+      visited.add(target.url.href);
+      const response = await fetch(target.url.href, { redirect: 'manual', signal: controller.signal });
+      const location = response.headers.get('location');
+      const length = Number(response.headers.get('content-length') || 0);
+      // A short link is resolved only from Location, never from HTML or preview
+      // data. Cancel every body without reading it; reject oversized previews.
+      if (response.body) await response.body.cancel();
+      if (length > SPOTIFY_SHORTLINK_BODY_CAP) {
+        throw spotifyRequestError('Spotify returned an oversized share-link response. Paste the full playlist link.', 502, 'UNSUPPORTED_SPOTIFY_LINK');
+      }
+      if (response.status === 429) {
+        const error = spotifyRequestError('Spotify share links are rate limited. Try again later or paste the full playlist link.', 429, 'RATE_LIMITED');
+        error.retryAfter = spotifyRetryAfter(response.headers);
+        throw error;
+      }
+      if (response.status >= 500) {
+        throw spotifyRequestError('Spotify share links are temporarily unavailable. Paste the full playlist link or try again later.', response.status, 'UNSUPPORTED_SPOTIFY_LINK');
+      }
+      if (![301, 302, 303, 307, 308].includes(response.status) || !location) {
+        throw spotifyRequestError('Spotify did not redirect to a playlist. Paste the full open.spotify.com playlist link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+      }
+      target = validateSpotifyShareTarget(location, target.url);
+      if (target.id) return { id: target.id, url: `https://open.spotify.com/playlist/${target.id}` };
+    }
+    throw spotifyRequestError('This Spotify share link has too many redirects. Paste the full playlist link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw spotifyRequestError('Spotify share-link resolution timed out. Paste the full playlist link.', 504, 'UNSUPPORTED_SPOTIFY_LINK');
+    }
+    throw error;
+  } finally {
+    controller.abort();
+    clearTimeout(timeout);
+  }
+}
+
+async function handleSpotifyResolveLink(req, res) {
+  try {
+    let payload;
+    try { payload = JSON.parse((await readRequestBody(req, 4096)).toString('utf8')); }
+    catch (error) {
+      if (error.status) throw error;
+      throw spotifyRequestError('Send a Spotify share link as JSON.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+    }
+    if (!payload || typeof payload.url !== 'string') {
+      throw spotifyRequestError('Paste a complete Spotify share link.', 400, 'UNSUPPORTED_SPOTIFY_LINK');
+    }
+    sendJson(res, 200, await resolveSpotifyShareLink(payload.url));
+  } catch (error) {
+    sendSpotifyError(res, error, 'Could not resolve the Spotify share link. Paste the full playlist link.', 'UNSUPPORTED_SPOTIFY_LINK');
   }
 }
 
@@ -1371,6 +1729,15 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (pathname === '/api/auth/spotify/complete') {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed.' }, { Allow: 'GET' });
+      return;
+    }
+    await handleSpotifyComplete(req, res);
+    return;
+  }
+
   if (pathname === '/api/auth/spotify/session') {
     if (req.method !== 'GET') {
       sendJson(res, 405, { error: 'Method not allowed.' }, { Allow: 'GET' });
@@ -1404,6 +1771,15 @@ async function handleRequest(req, res) {
       return;
     }
     await handleSpotifyUserPlaylists(req, res);
+    return;
+  }
+
+  if (pathname === '/api/spotify/resolve-link') {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { error: 'Method not allowed.' }, { Allow: 'POST' });
+      return;
+    }
+    await handleSpotifyResolveLink(req, res);
     return;
   }
 

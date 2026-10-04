@@ -71,6 +71,8 @@ function _mapShouldSmartFit(points) {
 
 function _mapMaybeFitFilteredView(opts = {}) {
   if (!lmap) return;
+  const size = lmap.getSize();
+  if (size.x <= 0 || size.y <= 0) return;
   const markerPoints = _mapMarkerLatLngPoints();
   const routePoints = markerPoints.length ? [] : _mapRouteLatLngPoints();
   const fitPoints = markerPoints.length ? markerPoints : routePoints;
@@ -84,7 +86,6 @@ function _mapMaybeFitFilteredView(opts = {}) {
   if (!bounds.isValid()) return;
   lmap.fitBounds(bounds, { padding: [48, 48], maxZoom: 7, animate: false });
   _mapFirstFit = true;
-  if (typeof scheduleMapTileWarmup === 'function') scheduleMapTileWarmup(20);
 }
 
 function _refreshVisiblePanelAfterRender() {
@@ -307,7 +308,7 @@ function _buildFestClusterPopup(items, center) {
   if (places.length) body.appendChild(_mapCreateEl('div', 'map-popup__meta', places.slice(0, 4).join(' / ')));
 
   const list = _mapCreateEl('div', 'map-popup__chips map-popup__chips--stacked');
-  ranked.slice(0, 9).forEach(f => {
+  ranked.forEach(f => {
     const btn = _mapCreateEl('button', 'map-popup-chip map-popup-chip--fest-cluster', _mapFestShortName(f, 26));
     btn.type = 'button';
     const fTone = _mapFestTone(f);
@@ -321,7 +322,6 @@ function _buildFestClusterPopup(items, center) {
     });
     list.appendChild(btn);
   });
-  if (ranked.length > 9) list.appendChild(_mapCreateEl('span', 'map-popup-chip map-popup-chip--muted', `+${ranked.length - 9} more`));
   body.appendChild(list);
 
   const actions = _mapCreateEl('div', 'map-popup__actions');
@@ -367,6 +367,8 @@ function _renderFestCluster(items) {
       maxWidth: 460,
       className: 'map-popup-shell map-popup-shell--festival'
     });
+  _mapRegisterLabel(mk, 'fests:' + ranked.map(f => f.id || f.name + f.date).sort().join('|'), zIndex,
+    ranked.map(f => ({ kind: 'fest', f })));
   festMarkers.push(mk);
 }
 
@@ -537,191 +539,49 @@ function _buildConcertPopup(artist, ev, accent, isFav, plays, in7, in30) {
 function _renderFestLabels(opts = {}) {
   if (!lmap) return;
   clearFestMarkers();
-
-  const today = new Date().toISOString().split('T')[0];
-  const skipFests = mapTypeFilter === 'tours';
-  if (skipFests) return;
-
-  const festsToRender = festivals.filter(f => f.date >= today && f.lat && f.lng
-    && geoDisplayOk(f.country || '') && mapDateOk(f.date) && mapScoreOkFest(f));
-
-  festsToRender.sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
-
+  if (!showMapFests) return;
   const zoom = lmap.getZoom();
-  const mapSize = lmap.getSize();
-  const labelBudget = _mapFestLabelBudget(zoom, mapSize, festsToRender.length);
-  const clusterCell = _mapFestClusterCellSize(zoom);
-  const clusterThreshold = _mapFestClusterThreshold(zoom);
-  // No viewport cull here. Previously we dropped any festival whose lat/lng
-  // fell outside the current bounds + 28% pad, which meant the initial
-  // auto-fit (which tends to frame Europe because most tracked artists tour
-  // there) baked non-EU regions out of the festival layer until the user
-  // forced a re-render. The data set is small — ~500 festivals worst case —
-  // so adding all of them costs Leaflet essentially nothing and panning to
-  // Mexico/LatAm/APAC now reveals the pins that are actually there.
-  const festItems = festsToRender.map(f => ({
-    f,
-    pt: lmap.latLngToContainerPoint([f.lat, f.lng]),
-    tone: _mapFestTone(f),
-    priority: _mapFestPriority(f)
-  }));
-
-  // Per-bucket density & time cap: at low zoom small map cells collect many
-  // festivals on top of each other. Inside each spatial bucket, keep tracked
-  // ones (matched.length > 0), keep the highest-priority chunk, and fill the
-  // remaining slots with the nearest-in-time festivals. Far-future fests from
-  // crowded regions drop first; sparse regions (e.g. Mexico, South America)
-  // keep every pin because the cap never fires there.
-  const perBucketCap = zoom <= 4.5 ? 10 : zoom <= 5.6 ? 8 : zoom <= 6.8 ? 7 : 999;
-  const labelItems = [];
-  const clusterGroups = [];
-  if (zoom <= 7.25) {
+  const items = opts.items || festivals.filter(f => f.lat && f.lng && geoDisplayOk(f.country || '')
+    && eventDateMatchesPreset(f) && mapScoreOkFest(f))
+    .sort((a, b) => _mapFestPriority(b) - _mapFestPriority(a));
+  // Preserve every filtered festival inside each cluster. Screen-space layout
+  // below handles density across tours, festivals and neighboring clusters.
+  const singles = [];
+  if (opts.cluster !== false && zoom <= 7.25) {
     const buckets = new Map();
-    festItems.forEach(item => {
-      const key = `${Math.floor(item.pt.x / clusterCell)}|${Math.floor(item.pt.y / clusterCell)}`;
+    const cell = _mapFestClusterCellSize(zoom);
+    items.forEach(f => {
+      const point = lmap.project([f.lat, f.lng], zoom);
+      const key = Math.floor(point.x / cell) + '|' + Math.floor(point.y / cell);
       if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key).push(item);
+      buckets.get(key).push(f);
     });
-    buckets.forEach(bucket => {
-      if (bucket.length > perBucketCap) {
-        const tracked = bucket.filter(item => (item.f.matched || []).length > 0);
-        const untracked = bucket.filter(item => !(item.f.matched || []).length);
-        const byDate = [...untracked].sort((a, b) => (a.f.date || '9999').localeCompare(b.f.date || '9999'));
-        const slots = Math.max(0, perBucketCap - tracked.length);
-        const kept = [...tracked, ...byDate.slice(0, slots)];
-        bucket.length = 0;
-        bucket.push(...kept);
-      }
-      bucket.sort((a, b) => b.priority - a.priority);
-      if (bucket.length >= clusterThreshold) clusterGroups.push(bucket.map(item => item.f));
-      else labelItems.push(...bucket);
+    buckets.forEach(group => {
+      if (group.length >= _mapFestClusterThreshold(zoom)) _renderFestCluster(group);
+      else singles.push(...group);
     });
-  } else {
-    labelItems.push(...festItems);
-  }
-
-  labelItems.sort((a, b) => b.priority - a.priority);
-  clusterGroups.sort((a, b) => _mapFestPriority(b[0]) - _mapFestPriority(a[0]));
-  clusterGroups.forEach(group => _renderFestCluster(group));
-
-  const PX_PAD = zoom <= 5.6 ? 12 : zoom <= 6.8 ? 9 : 6;
-  const rectOverlap = (a, b) =>
-    a[0] < b[0] + b[2] + PX_PAD && a[0] + a[2] + PX_PAD > b[0] &&
-    a[1] < b[1] + b[3] + PX_PAD && a[1] + a[3] + PX_PAD > b[1];
-
-  // Spatial hash grid keyed by 256px cells. Max label width + pad is ~232, so a
-  // rect touches at most a 2x2 cell window — each insert/query is O(1) rather
-  // than O(n) over every placed label.
-  const GRID_CELL = 256;
-  const grid = new Map();
-  const cellKey = (cx, cy) => (cx * 100003) ^ cy;
-  const rectCellRange = r => ({
-    x0: Math.floor((r[0] - PX_PAD) / GRID_CELL),
-    x1: Math.floor((r[0] + r[2] + PX_PAD) / GRID_CELL),
-    y0: Math.floor((r[1] - PX_PAD) / GRID_CELL),
-    y1: Math.floor((r[1] + r[3] + PX_PAD) / GRID_CELL),
-  });
-  const placeRect = rect => {
-    const { x0, x1, y0, y1 } = rectCellRange(rect);
-    for (let cx = x0; cx <= x1; cx++) {
-      for (let cy = y0; cy <= y1; cy++) {
-        const k = cellKey(cx, cy);
-        let bucket = grid.get(k);
-        if (!bucket) { bucket = []; grid.set(k, bucket); }
-        bucket.push(rect);
-      }
-    }
-  };
-  const rectCollides = rect => {
-    const { x0, x1, y0, y1 } = rectCellRange(rect);
-    for (let cx = x0; cx <= x1; cx++) {
-      for (let cy = y0; cy <= y1; cy++) {
-        const bucket = grid.get(cellKey(cx, cy));
-        if (!bucket) continue;
-        for (const other of bucket) {
-          if (rectOverlap(rect, other)) return true;
-        }
-      }
-    }
-    return false;
-  };
-
-  let renderedLabels = 0;
-  labelItems.forEach(item => {
-    const f = item.f;
-    const score = f.score || 0;
-    const pct = score / 100;
-    const col = item.tone.fg;
-    const colBg = item.tone.bg;
-    const opacity = score === 0 ? 0.55 : 0.78 + pct * 0.22;
-    const sz = Math.round(8 + pct * 6);
-    const shortName = _mapFestShortName(f, zoom <= 5.6 ? 17 : zoom <= 6.8 ? 21 : 24);
-    const trackedCount = (f.matched || []).length;
-
-    const labelMaxW = zoom <= 5.6 ? 170 : zoom <= 6.8 ? 192 : 220;
-    const labelW = Math.max(78, Math.min(labelMaxW, Math.round(shortName.length * 7.2) + (trackedCount ? 34 : 44)));
-    const labelH = zoom <= 5.6 ? 22 : 24;
-    const totalH = labelH + 10;
-    const totalW = labelW;
-
-    const pt = item.pt;
-    const offsets = [
-      [0, 0],
-      [0, totalH + sz + 4],
-      [totalW + 12, -totalH / 2],
-      [-(totalW + 12), -totalH / 2],
-      [Math.round(totalW * .55), totalH + 4],
-      [-Math.round(totalW * .55), totalH + 4],
-      [Math.round(totalW * .58), -totalH - 6],
-      [-Math.round(totalW * .58), -totalH - 6],
-    ];
-
-    const baseRect = [pt.x - totalW / 2, pt.y - totalH, totalW, totalH];
-    let chosenOffset = null;
-    if (renderedLabels < labelBudget) {
-      for (const [dx, dy] of offsets) {
-        const rect = [baseRect[0] + dx, baseRect[1] + dy, totalW, totalH];
-        if (!rectCollides(rect)) {
-          chosenOffset = [dx, dy];
-          placeRect(rect);
-          break;
-        }
-      }
-    }
-
-    const renderLabel = chosenOffset !== null;
-    if (renderLabel) renderedLabels++;
-    const [dx, dy] = chosenOffset || [0, 0];
-    const html = renderLabel
-      ? `<div class="map-fest-marker-wrap" style="opacity:${opacity};--map-fest-color:${col};--map-fest-bg:${colBg}">
-          <div class="map-fest-marker">
-            <span class="map-fest-marker__count">${trackedCount || 'Fest'}</span>
-            <span class="map-fest-marker__name">${esc2(shortName)}</span>
-          </div>
-          <div class="map-fest-marker__pin"></div>
-        </div>`
-      : `<div class="map-fest-dot" style="width:${sz}px;height:${sz}px;opacity:${Math.max(opacity - 0.1, 0.35)};--map-fest-color:${col};--map-fest-bg:${colBg}"></div>`;
-
-    const dotOnlyW = sz + 4;
-    const dotOnlyH = sz + 4;
-    const w = renderLabel ? totalW : dotOnlyW;
-    const h = renderLabel ? totalH : dotOnlyH;
-    const anchorX = renderLabel ? (totalW / 2 - dx) : dotOnlyW / 2;
-    const anchorY = renderLabel ? (totalH - dy) : dotOnlyH / 2;
-
-    const icon = L.divIcon({ className: '', iconSize: [w, h], iconAnchor: [anchorX, anchorY], html });
-    const mk = L.marker([f.lat, f.lng], { icon, zIndexOffset: Math.round(item.priority + score * 5) })
-      .addTo(lmap)
+  } else singles.push(...items);
+  singles.forEach(f => {
+    const tone = _mapFestTone(f);
+    const name = _mapFestShortName(f, zoom <= 5.6 ? 17 : zoom <= 6.8 ? 21 : 24);
+    const width = Math.max(94, Math.min(220, Math.round(name.length * 7.2) + 44));
+    const count = (f.matched || []).length;
+    const isSelected = f.id === opts.highlightedId;
+    const html = '<div class="map-fest-marker-wrap' + (isSelected ? ' is-selected' : '') + '" style="--map-fest-color:' + tone.fg + ';--map-fest-bg:' + tone.bg + '">' +
+      '<div class="map-fest-marker"><span class="map-fest-marker__count">' + (count || 'Fest') + '</span>' +
+      '<span class="map-fest-marker__name">' + esc2(name) + '</span></div><div class="map-fest-marker__pin"></div></div>';
+    const icon = L.divIcon({ className: '', iconSize: [width, 40], iconAnchor: [width / 2, 40], html });
+    const priority = _mapFestPriority(f) + (f.score || 0) * 5 + (isSelected ? 5000 : 0);
+    const marker = L.marker([f.lat, f.lng], { icon, zIndexOffset: Math.round(priority) }).addTo(lmap)
       .bindPopup(() => _buildFestPopup(f), { maxWidth: 460, className: 'map-popup-shell map-popup-shell--festival' });
-    festMarkers.push(mk);
+    _mapRegisterLabel(marker, 'fest:' + (f.id || f.name + f.date), priority, [{ kind: 'fest', f }]);
+    festMarkers.push(marker);
   });
-
-  if (!showMapFests) clearFestMarkers();
 }
 function renderOverview(opts = {}) {
   const preserveRoutes = !!opts.preserveRoutes;
   const smartFit = !!opts.smartFit;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in7   = dateOffset(7);
   const in30  = dateOffset(30);
   const in90  = dateOffset(90);
@@ -736,7 +596,7 @@ function renderOverview(opts = {}) {
   };
 
   // Fav filter applied to full entry set
-  let tourEntries = Object.entries(allTourData).filter(([a]) =>
+  let tourEntries = (showMapTours ? Object.entries(allTourData) : []).filter(([a]) =>
     !showFavOnly || favoriteArtists.has(a.toLowerCase())
   );
   let artistStates = tourEntries.map(([artist, evs]) => ({
@@ -877,7 +737,7 @@ function renderOverview(opts = {}) {
   const festLocSet = new Set();
   if (showMapFests) {
     festivals.forEach(f => {
-      if (!f || !f.date || f.date < today) return;
+      if (!eventDateMatchesPreset(f)) return;
       const city = (f.city || '').toLowerCase().trim();
       const country = (f.country || '').toUpperCase();
       if (!city && !country) return;
@@ -932,13 +792,13 @@ function renderOverview(opts = {}) {
       // City bubble: shows count + top artist color
       _renderCityBubble(lat, lng, city, country, entries, accentCol, urgency, isFav, topArtist);
     } else if (entries.length === 1 || zoom > 6) {
-      // Individual pill for each artist, with jitter to de-overlap same-location markers
-      entries.forEach(({ artist, ev, rank }, ji) => {
-        _renderArtistPill(artist, ev, rank, today, in7, in30, entries.length > 1 ? ji : 0);
+      // Individual markers retain exact event coordinates; shared layout separates their labels.
+      entries.forEach(({ artist, ev, rank }) => {
+        _renderArtistPill(artist, ev, rank, today, in7, in30);
       });
     } else {
       // zoom ≤ 6 but only 1 artist → single pill
-      _renderArtistPill(topArtist, topEv, topRank, today, in7, in30, 0);
+      _renderArtistPill(topArtist, topEv, topRank, today, in7, in30);
     }
   });
 
@@ -950,12 +810,13 @@ function renderOverview(opts = {}) {
 
   _mapMaybeFitFilteredView(opts);
   _refreshVisiblePanelAfterRender();
+  scheduleMapLabelLayout();
 
   // ── Auto-fit: on the very first render with data, fly to the bounding box
   // of all visible markers so the map opens at a sensible zoom level.
   // We only do this once (_mapFirstFit flag) so that filter changes don't
   // re-center the map while the user is panning/zooming.
-  if (!_mapFirstFit && lmap) {
+  if (!_mapFirstFit && lmap && lmap.getSize().x > 0 && lmap.getSize().y > 0) {
     const allPts = [];
     tourMarkers.forEach(m => { const ll = m.getLatLng(); allPts.push([ll.lat, ll.lng]); });
     festMarkers.forEach(m => { const ll = m.getLatLng(); allPts.push([ll.lat, ll.lng]); });
@@ -990,12 +851,12 @@ function _renderCityBubble(lat, lng, city, country, entries, col, urgency, isFav
 
   const icon = L.divIcon({ className: '', iconSize: [width, height], iconAnchor: [width / 2, height / 2], html });
   const mk = L.marker([lat, lng], { icon, zIndexOffset: count * 20 }).addTo(lmap);
-  mk.on('click', () => {
-    lmap.flyTo([lat, lng], Math.max(lmap.getZoom() + 3, 8), { duration: .65 });
-  });
+  const items = entries.map(({ artist, ev }) => ({ kind: 'tour', artist, ev }));
+  mk.bindPopup(() => _mapBuildGroupPopup(items), { maxWidth: 380, className: 'map-popup-shell' });
+  _mapRegisterLabel(mk, 'city:' + city + '|' + country, Math.max(...entries.map(e => e.rank)) + (isFav ? 5000 : 0), items);
   tourMarkers.push(mk);
 }
-function _renderArtistPill(artist, ev, rank, today, in7, in30, jitterIdx) {
+function _renderArtistPill(artist, ev, rank, today, in7, in30) {
   const col    = getColor(artist);
   const plays  = typeof artistPlayCount === 'function' ? artistPlayCount(artist) : (ARTIST_PLAYS[(artist || '').toLowerCase()] || 0);
   const isFav  = favoriteArtists.has((artist || '').toLowerCase());
@@ -1047,25 +908,17 @@ function _renderArtistPill(artist, ev, rank, today, in7, in30, jitterIdx) {
     anchorY = iconH / 2;
   }
 
-  let jLat = ev.lat, jLng = ev.lng;
-  if (jitterIdx && jitterIdx > 0) {
-    const zoom  = lmap ? lmap.getZoom() : 5;
-    const r     = (70 * 360 / (256 * Math.pow(2, zoom))) * Math.ceil(jitterIdx / 5);
-    const angle = (jitterIdx * 137.5) * (Math.PI / 180);
-    jLat = ev.lat + Math.cos(angle) * r;
-    jLng = ev.lng + Math.sin(angle) * r;
-  }
-
   const icon = L.divIcon({ className: '', iconSize: [iconW, iconH], iconAnchor: [anchorX, anchorY], html });
   const zIdx = Math.round(rank) + (isFav ? 5000 : 0) +
                (urgency === 'urgent' ? 2000 : urgency === 'soon' ? 800 : 0);
 
-  const mk = L.marker([jLat, jLng], { icon, zIndexOffset: zIdx })
+  const mk = L.marker([ev.lat, ev.lng], { icon, zIndexOffset: zIdx })
     .addTo(lmap)
     .bindPopup(() => _buildConcertPopup(artist, ev, acc, isFav, plays, in7, in30), {
       maxWidth: 360,
       className: 'map-popup-shell map-popup-shell--concert'
     });
+  _mapRegisterLabel(mk, 'tour:' + artist + '|' + ev.id, zIdx, [{ kind: 'tour', artist, ev }]);
   mk.on('popupopen', () => {
     if (typeof primeArtistMediaKnowledge === 'function') primeArtistMediaKnowledge([artist], 1);
   });

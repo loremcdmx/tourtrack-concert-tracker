@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { deflateSync } from 'node:zlib';
 
 const ROOT = process.cwd();
 const MEDIA_PIXEL =
@@ -16,6 +18,84 @@ let serverPort = 0;
 let baseUrl = '';
 let browser = null;
 let page = null;
+
+// Only the map tile recovery cases replace the blanket HTTPS block.
+// Every HTTPS request is paused before networking; only the exact OSM tile
+// origin/path receives bytes from this local fixture server.
+const MAP_TILE_TEST_PREFIX = 'map tile recovery ';
+const OSM_TILE_REQUEST = /^https:\/\/tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/;
+
+function mapTilePng() {
+  const crc32 = buffer => {
+    let crc = 0xffffffff;
+    for (const byte of buffer) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (name, payload) => {
+    const type = Buffer.from(name);
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(payload.length);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(Buffer.concat([type, payload])));
+    return Buffer.concat([size, type, payload, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(256, 0);
+  header.writeUInt32BE(256, 4);
+  header[8] = 8;
+  header[9] = 6; // 8-bit RGBA, with unfiltered rows below
+  const pixels = Buffer.alloc((256 * 4 + 1) * 256);
+  for (let row = 0; row < 256; row++) {
+    for (let col = 0; col < 256; col++) {
+      const offset = row * (256 * 4 + 1) + 1 + col * 4;
+      pixels[offset] = 90; pixels[offset + 1] = 150; pixels[offset + 2] = 190; pixels[offset + 3] = 255;
+    }
+  }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header), chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+async function createMapTileFixture() {
+  const attempts = new Map();
+  const png = mapTilePng();
+  const fixture = { mode: 'first-error', attempts, errors: [], blockedRequests: 0, server: null, url: '',
+    stallUrl: null, stallAttempt: 0, stalledRequest: null, heldReplies: [] };
+  const server = http.createServer((request, response) => {
+    const parsed = new URL(request.url, 'http://127.0.0.1');
+    const source = parsed.searchParams.get('source') || '';
+    if (parsed.pathname !== '/tile' || !OSM_TILE_REQUEST.test(source)) {
+      response.writeHead(404); response.end(); return;
+    }
+    const count = (attempts.get(source) || 0) + 1;
+    attempts.set(source, count);
+    const reply = () => {
+      const fail = fixture.mode === 'persistent-error' || (fixture.mode === 'first-error' && count === 1);
+      response.writeHead(fail ? 503 : 200, {
+        'Content-Type': fail ? 'text/plain' : 'image/png',
+        'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*',
+      });
+      response.end(fail ? 'Offline tile failure' : png);
+    };
+    if (source === fixture.stallUrl && count === fixture.stallAttempt) fixture.heldReplies.push(reply);
+    else reply();
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  fixture.server = server;
+  fixture.url = `http://127.0.0.1:${server.address().port}/tile`;
+  fixture.holdNext = source => { fixture.stallUrl = source; fixture.stallAttempt = (attempts.get(source) || 0) + 1; };
+  fixture.release = () => { for (const reply of fixture.heldReplies.splice(0)) reply(); };
+  fixture.close = () => {
+    fixture.release();
+    return new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  };
+  return fixture;
+}
 
 function resolveChromePath() {
   const candidates = [
@@ -99,12 +179,20 @@ class CdpBrowser {
     this.profileDir = profileDir;
     this.nextId = 0;
     this.pending = new Map();
+    this.eventListeners = new Set();
   }
 
   async _connect() {
     this.ws.onmessage = event => {
       const message = JSON.parse(event.data);
-      if (!message.id) return;
+      if (!message.id) {
+        for (const listener of this.eventListeners) {
+          if (listener.method === message.method && listener.sessionId === message.sessionId) {
+            listener.callback(message.params);
+          }
+        }
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -152,11 +240,29 @@ class CdpBrowser {
     });
   }
 
-  async newPage(url) {
+  on(method, sessionId, callback) {
+    const listener = { method, sessionId, callback };
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  async newPage(url, { pinnedPlaylistOnly = false, mapTileFixture = false } = {}) {
     const target = await this.send('Target.createTarget', { url: 'about:blank' });
     const attached = await this.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     const page = new CdpPage(this, target.targetId, attached.sessionId);
-    await page.enable();
+    await page.enable({ mapTileFixture });
+    if (pinnedPlaylistOnly) {
+      await this.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `(() => {
+          let config;
+          Object.defineProperty(window, '__SERVER_CONFIG__', {
+            configurable: true,
+            get: () => config,
+            set: value => { config = { ...value, pinnedPlaylistOnly: true }; },
+          });
+        })();`,
+      }, page.sessionId);
+    }
     await page.navigate(url);
     return page;
   }
@@ -186,9 +292,56 @@ class CdpPage {
     this.sessionId = sessionId;
   }
 
-  async enable() {
+  async enable({ mapTileFixture = false } = {}) {
     await this.browser.send('Runtime.enable', {}, this.sessionId);
     await this.browser.send('Page.enable', {}, this.sessionId);
+    await this.browser.send('Network.enable', {}, this.sessionId);
+    await this.browser.send('Network.setBypassServiceWorker', { bypass: true }, this.sessionId);
+    if (!mapTileFixture) {
+      await this.browser.send('Network.setBlockedURLs', { urls: ['https://*'] }, this.sessionId);
+      return;
+    }
+    this.mapTileFixture = await createMapTileFixture();
+    this.removeTileListener = this.browser.on('Fetch.requestPaused', this.sessionId, params => {
+      this.fulfillMapTileRequest(params).catch(error => this.mapTileFixture.errors.push(error.message));
+    });
+    this.removeTileAbortListener = this.browser.on('Network.loadingFailed', this.sessionId, params => {
+      const stalled = this.mapTileFixture.stalledRequest;
+      if (stalled?.networkId === params.requestId) {
+        stalled.cancelled = params.canceled === true;
+        stalled.networkError = params.errorText;
+      }
+    });
+    await this.browser.send('Network.setCacheDisabled', { cacheDisabled: true }, this.sessionId);
+    await this.browser.send('Fetch.enable', { patterns: [{ urlPattern: 'https://*', requestStage: 'Request' }] }, this.sessionId);
+  }
+
+  async fulfillMapTileRequest({ requestId, networkId, request }) {
+    const fixture = this.mapTileFixture;
+    if (!OSM_TILE_REQUEST.test(request.url)) {
+      fixture.blockedRequests++;
+      await this.browser.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, this.sessionId);
+      return;
+    }
+    if (request.url === fixture.stallUrl && !fixture.stalledRequest) {
+      fixture.stalledRequest = { requestId, networkId, cancelled: false, replied: false, fulfillError: null };
+    }
+    const response = await fetch(`${fixture.url}?source=${encodeURIComponent(request.url)}`);
+    const body = Buffer.from(await response.arrayBuffer());
+    try {
+      await this.browser.send('Fetch.fulfillRequest', {
+        requestId, responseCode: response.status,
+        responseHeaders: [...response.headers].map(([name, value]) => ({ name, value })),
+        body: body.toString('base64'),
+      }, this.sessionId);
+    } catch (error) {
+      // The watchdog intentionally cancels this one paused image. Chrome may
+      // reject its later fixture reply because the interception no longer exists.
+      if (fixture.stalledRequest?.requestId !== requestId) throw error;
+      fixture.stalledRequest.fulfillError = error.message;
+    } finally {
+      if (fixture.stalledRequest?.requestId === requestId) fixture.stalledRequest.replied = true;
+    }
   }
 
   async navigate(url) {
@@ -237,13 +390,16 @@ class CdpPage {
 
   async close() {
     await this.browser.send('Target.closeTarget', { targetId: this.targetId });
+    this.removeTileListener?.();
+    this.removeTileAbortListener?.();
+    if (this.mapTileFixture) await this.mapTileFixture.close();
   }
 }
 
 function isoOffset(days) {
   const date = new Date();
   date.setDate(date.getDate() + days);
-  return date.toISOString().split('T')[0];
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function makeConcert(artist, daysFromNow, venue, city, country, lat, lng, extra = {}) {
@@ -396,10 +552,42 @@ async function settleUi(pageRef, extraMs = 120) {
   );
 }
 
+async function setViewport(pageRef, width, height) {
+  await pageRef.browser.send('Emulation.setDeviceMetricsOverride', {
+    width, height, deviceScaleFactor: 1, mobile: false,
+  }, pageRef.sessionId);
+  await settleUi(pageRef);
+}
+
+function workspaceLayoutSnapshot() {
+  const panel = selector => {
+    const element = document.querySelector(selector);
+    const bounds = element.getBoundingClientRect();
+    return {
+      visible: getComputedStyle(element).display !== 'none' && bounds.width > 0 && bounds.height > 0,
+      left: bounds.left, right: bounds.right, bottom: bounds.bottom,
+      width: bounds.width, height: bounds.height,
+    };
+  };
+  return {
+    view: document.body.dataset.workspaceView,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    agenda: panel('.cal-panel'),
+    map: panel('.map-panel'),
+    controls: [...document.querySelectorAll('button[data-workspace-view]')].map(button => ({
+      view: button.dataset.workspaceView,
+      tag: button.tagName,
+      pressed: button.getAttribute('aria-pressed'),
+    })),
+  };
+}
+
 before(async () => {
   serverPort = await getFreePort();
   baseUrl = `http://127.0.0.1:${serverPort}`;
-  serverProc = spawn(process.execPath, ['server/index.js'], {
+  serverProc = spawn(process.execPath, ['tests/offline-server.cjs'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(serverPort) },
     stdio: 'ignore',
@@ -424,8 +612,12 @@ after(async () => {
   }
 });
 
-beforeEach(async () => {
-  page = await browser.newPage(baseUrl);
+beforeEach(async context => {
+  // Only the explicit legacy baseline gets the product-lock flag.
+  page = await browser.newPage(baseUrl, {
+    pinnedPlaylistOnly: context.name.startsWith('scenario A '),
+    mapTileFixture: context.name.startsWith(MAP_TILE_TEST_PREFIX),
+  });
 });
 
 afterEach(async () => {
@@ -465,6 +657,175 @@ test('scenario A locks onboarding to the pinned playlist and hides multi-user ch
   assert.match(state.title, /pinned playlist/i);
   assert.equal(state.hint, '384 of 2477 artists shown (>=4 repeats)');
   assert.equal(state.button, 'Open playlist');
+});
+
+test('mobile agenda occupies the workspace without a second map pane or horizontal overflow', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas'], artistPlays: { atlas: 12 },
+    concerts: [makeConcert('Atlas', 4, 'A venue with a deliberately long name', 'Berlin', 'DE', 52.52, 13.405)],
+  });
+  await page.evaluate(() => {
+    hideOnboard();
+    document.querySelector('[data-workspace-view="agenda"]').click();
+  });
+  await settleUi(page);
+  const result = await page.evaluate(workspaceLayoutSnapshot);
+  assert.equal(result.view, 'agenda');
+  assert.equal(result.agenda.visible, true);
+  assert.equal(result.map.visible, false);
+  assert.ok(result.agenda.width >= result.width - 32);
+  assert.ok(result.agenda.height > result.height / 2);
+  assert.ok(result.agenda.left >= -1 && result.agenda.right <= result.width + 1);
+  assert.ok(result.agenda.bottom <= result.height + 1);
+  assert.ok(result.scrollWidth <= result.width + 1);
+  assert.deepEqual(result.controls, [
+    { view: 'agenda', tag: 'BUTTON', pressed: 'true' },
+    { view: 'map', tag: 'BUTTON', pressed: 'false' },
+  ]);
+});
+
+test('mobile workspace buttons support keyboard activation and resize Leaflet to the visible map', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas'], artistPlays: { atlas: 12 },
+    concerts: [makeConcert('Atlas', 4, 'Forum', 'Berlin', 'DE', 52.52, 13.405)],
+  });
+  await page.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('agenda');
+    document.querySelector('[data-workspace-view="map"]').focus();
+  });
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await settleUi(page, 180);
+  const result = await page.evaluate(workspaceLayoutSnapshot);
+  const mapSize = await page.evaluate(() => {
+    const element = document.getElementById('map');
+    const size = lmap.getSize();
+    return { width: size.x, height: size.y, clientWidth: element.clientWidth, clientHeight: element.clientHeight };
+  });
+  assert.equal(result.view, 'map');
+  assert.equal(result.agenda.visible, false);
+  assert.equal(result.map.visible, true);
+  assert.ok(result.map.width >= result.width - 32);
+  assert.ok(result.map.height > result.height / 2);
+  assert.ok(result.map.left >= -1 && result.map.right <= result.width + 1);
+  assert.ok(result.map.bottom <= result.height + 1);
+  assert.ok(result.scrollWidth <= result.width + 1);
+  assert.deepEqual(result.controls, [
+    { view: 'agenda', tag: 'BUTTON', pressed: 'false' },
+    { view: 'map', tag: 'BUTTON', pressed: 'true' },
+  ]);
+  assert.equal(mapSize.width, mapSize.clientWidth);
+  assert.equal(mapSize.height, mapSize.clientHeight);
+  assert.ok(mapSize.width > 0 && mapSize.height > 0);
+});
+
+test('first opening a mobile map fits the events after its hidden viewport becomes visible', { concurrency: false }, async () => {
+  await setViewport(page, 390, 844);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon'], artistPlays: { atlas: 12, beacon: 9 },
+    concerts: [
+      makeConcert('Atlas', 3, 'Forum', 'Berlin', 'DE', 52.52, 13.405),
+      makeConcert('Beacon', 18, 'Auditorio', 'Mexico City', 'MX', 19.4326, -99.1332),
+    ],
+  });
+  const before = await page.evaluate(() => {
+    setWorkspaceView('agenda');
+    _mapFirstFit = false;
+    lmap.invalidateSize({pan:false});
+    renderMap();
+    return _mapFirstFit;
+  });
+  assert.equal(before, false);
+  await page.evaluate(() => setWorkspaceView('map'));
+  await settleUi(page, 180);
+  const after = await page.evaluate(() => ({
+    fitted: _mapFirstFit,
+    berlin: lmap.getBounds().contains([52.52, 13.405]),
+    mexico: lmap.getBounds().contains([19.4326, -99.1332]),
+  }));
+  assert.deepEqual(after, { fitted:true, berlin:true, mexico:true });
+});
+
+test('mobile filters collapse accessibly and retain the selected date filter when switching views', { concurrency: false }, async () => {
+  await setViewport(page, 390, 844);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas', 'Beacon'], artistPlays: { atlas: 12, beacon: 9 },
+    concerts: [
+      makeConcert('Atlas', 3, 'Forum', 'Berlin', 'DE', 52.52, 13.405),
+      makeConcert('Beacon', 18, 'Paradiso', 'Amsterdam', 'NL', 52.362, 4.883),
+    ],
+  });
+  await page.evaluate(() => { hideOnboard(); setWorkspaceView('agenda'); });
+  const collapsed = await page.evaluate(() => {
+    const toggle = document.getElementById('calendar-filters-toggle');
+    const toolbar = document.querySelector('.cal-toolbar');
+    return {
+      tag: toggle.tagName,
+      expanded: toggle.getAttribute('aria-expanded'),
+      controlsToolbar: document.getElementById(toggle.getAttribute('aria-controls')) === toolbar,
+      toolbarVisible: toolbar.getClientRects().length > 0,
+      chipVisible: toolbar.querySelector('[data-d="7"]').getClientRects().length > 0,
+    };
+  });
+  assert.deepEqual(collapsed, { tag: 'BUTTON', expanded: 'false', controlsToolbar: true, toolbarVisible: false, chipVisible: false });
+
+  await page.evaluate(() => document.getElementById('calendar-filters-toggle').click());
+  const expanded = await page.evaluate(() => ({
+    expanded: document.getElementById('calendar-filters-toggle').getAttribute('aria-expanded'),
+    toolbarVisible: document.querySelector('.cal-toolbar').getClientRects().length > 0,
+  }));
+  assert.deepEqual(expanded, { expanded: 'true', toolbarVisible: true });
+  await page.evaluate(() => {
+    document.querySelector('.cal-toolbar [data-d="7"]').click();
+    document.getElementById('calendar-filters-toggle').click();
+    document.querySelector('[data-workspace-view="map"]').click();
+  });
+  await settleUi(page);
+  const filtered = await page.evaluate(() => ({
+    view: document.body.dataset.workspaceView,
+    filter: dateFilter,
+    expanded: document.getElementById('calendar-filters-toggle').getAttribute('aria-expanded'),
+    calendarArtists: [...document.querySelectorAll('#cal-body .ev-headline .ev-name')]
+      .map(element => (element.firstChild?.textContent || element.textContent || '').trim()),
+    mapArtists: Object.keys(allTourData).sort(),
+  }));
+  assert.deepEqual(filtered, { view: 'map', filter: '7', expanded: 'false', calendarArtists: ['Atlas'], mapArtists: ['Atlas'] });
+});
+
+test('resizing from the mobile map to desktop restores both panels without losing results', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Atlas'], artistPlays: { atlas: 12 },
+    concerts: [makeConcert('Atlas', 4, 'Forum', 'Berlin', 'DE', 52.52, 13.405)],
+  });
+  await page.evaluate(() => { hideOnboard(); setWorkspaceView('map'); });
+  await settleUi(page);
+  await setViewport(page, 1366, 900);
+  const desktop = await page.evaluate(workspaceLayoutSnapshot);
+  assert.equal(desktop.agenda.visible, true);
+  assert.equal(desktop.map.visible, true);
+  assert.ok(desktop.agenda.right <= desktop.map.left + 16);
+  assert.ok(desktop.agenda.width >= 280 && desktop.map.width >= 500);
+  assert.ok(desktop.scrollWidth <= desktop.width + 1);
+  const retained = await page.evaluate(() => ({
+    rows: document.querySelectorAll('#cal-body .ev-row').length,
+    mapArtists: Object.keys(allTourData),
+    filter: dateFilter,
+  }));
+  assert.deepEqual(retained, { rows: 1, mapArtists: ['Atlas'], filter: 'all' });
+  await setViewport(page, 375, 812);
+  const mobile = await page.evaluate(workspaceLayoutSnapshot);
+  assert.equal(mobile.view, 'map');
+  assert.equal(mobile.agenda.visible, false);
+  assert.equal(mobile.map.visible, true);
+  assert.ok(mobile.scrollWidth <= mobile.width + 1);
 });
 
 test('scenario A keeps low-frequency cached artists out of calendar and map', { concurrency: false }, async () => {
@@ -572,6 +933,85 @@ test('date filter applies to both calendar and map', { concurrency: false }, asy
   assert.deepEqual(thirtyDay.mapArtists, ['Atlas', 'Beacon']);
 });
 
+test('an ongoing festival stays visible in the calendar, map and festival sidebar', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'],
+    artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('ExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'expired-fest', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('LaterFest', 12, 'Paris', 'FR', 48.8566, 2.3522, {
+        id: 'later-fest', score: 71, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+    ],
+  });
+  await page.evaluate(() => {
+    setTab('fests');
+    setDateFilter('7');
+  });
+  await settleUi(page);
+
+  const result = await page.evaluate(() => ({
+    calendarFestivals: [...document.querySelectorAll('#cal-body .ev-row .ev-name')]
+      .map(el => (el.firstChild?.textContent || el.textContent || '').trim()),
+    mapLocations: festMarkers.map(marker => {
+      const point = marker.getLatLng();
+      return [point.lat, point.lng];
+    }),
+    sidebarIds: [...document.querySelectorAll('#fest-cards .fcard')].map(card => card.dataset.id),
+  }));
+  assert.deepEqual(result.calendarFestivals, ['OngoingFest']);
+  assert.deepEqual(result.mapLocations, [[52.52, 13.405]]);
+  assert.deepEqual(result.sidebarIds, ['ongoing-fest']);
+});
+
+test('custom ranges keep overlapping festivals aligned across calendar, map and sidebar, including the past', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'],
+    artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('FutureOverlapFest', 2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'future-overlap', endDate: isoOffset(6), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('PastOverlapFest', -12, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'past-overlap', endDate: isoOffset(-6), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('NonOverlappingFest', 11, 'Paris', 'FR', 48.8566, 2.3522, {
+        id: 'non-overlapping', score: 71, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('OlderFest', -20, 'Barcelona', 'ES', 41.387, 2.17, {
+        id: 'older-fest', endDate: isoOffset(-11), score: 65, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+    ],
+  });
+  for (const scenario of [
+    { from: isoOffset(4), to: isoOffset(8), name: 'FutureOverlapFest', id: 'future-overlap', location: [52.52, 13.405] },
+    { from: isoOffset(-10), to: isoOffset(-4), name: 'PastOverlapFest', id: 'past-overlap', location: [51.5074, -0.1278] },
+  ]) {
+    await page.evaluate((from, to) => {
+      setTab('fests');
+      setDateFilter('range', from, to);
+    }, scenario.from, scenario.to);
+    await settleUi(page);
+    const result = await page.evaluate(() => ({
+      calendarFestivals: [...document.querySelectorAll('#cal-body .ev-row .ev-name')]
+        .map(el => (el.firstChild?.textContent || el.textContent || '').trim()),
+      mapLocations: festMarkers.map(marker => {
+        const point = marker.getLatLng();
+        return [point.lat, point.lng];
+      }),
+      sidebarIds: [...document.querySelectorAll('#fest-cards .fcard')].map(card => card.dataset.id),
+    }));
+    assert.deepEqual(result.calendarFestivals, [scenario.name]);
+    assert.deepEqual(result.mapLocations, [scenario.location]);
+    assert.deepEqual(result.sidebarIds, [scenario.id]);
+  }
+});
+
 test('world geo scope keeps non-UK concerts visible in calendar and map', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
     artists: ['Atlas', 'Beacon', 'Comet', 'Delta', 'Echo'],
@@ -658,7 +1098,7 @@ test('scenario A migrates legacy UK-only scope back to worldwide', { concurrency
   assert.equal(state.cacheTimestamp, 0);
   assert.equal(state.storedMode, 'world');
   assert.equal(state.storedGeoPreset, 'all');
-  assert.equal(state.storedConcerts, null);
+  assert.equal(state.storedConcerts, '[]');
 });
 
 test('scenario A clears legacy UK-only snapshot without a stored scope hash', { concurrency: false }, async () => {
@@ -696,7 +1136,7 @@ test('scenario A clears legacy UK-only snapshot without a stored scope hash', { 
   assert.equal(state.geoPreset, 'all');
   assert.equal(state.concerts, 0);
   assert.equal(state.cacheTimestamp, 0);
-  assert.equal(state.storedConcerts, null);
+  assert.equal(state.storedConcerts, '[]');
 });
 
 test('instant resume ignores artist cache from a different search scope', { concurrency: false }, async () => {
@@ -751,6 +1191,146 @@ test('instant resume ignores artist cache from a different search scope', { conc
   assert.equal(state.info, null);
   assert.equal(state.summary, null);
 });
+
+test('cached festival count and instant resume retain ongoing festivals and drop expired ones', { concurrency: false }, async () => {
+  const cachedFestivals = [
+    makeFestival('CachedOngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+      id: 'cached-ongoing', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+    }),
+    makeFestival('CachedExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+      id: 'cached-expired', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+    }),
+  ];
+  await page.evaluate(installFixture, { artists: ['Alpha'], artistPlays: { alpha: 12 } });
+  const state = await page.evaluate(async data => {
+    await DB.clear('artists');
+    await DB.put('artists', 'alpha', { ts: Date.now(), cHash: countryHash(), shows: [] });
+    await DB.put('meta', 'festivals', { ts: Date.now(), cHash: countryHash(), ver: FEST_VER, data });
+    localStorage.setItem(ONBOARD_CACHE_SUMMARY_KEY, JSON.stringify({
+      artistCount: 1,
+      concertCount: 0,
+      festCount: 2,
+      cacheTimestamp: Date.now(),
+      latestPlaylistUrl: PINNED_PLAYLIST.url,
+      cHash: countryHash(),
+      ts: Date.now(),
+    }));
+    const info = await checkIDBCache();
+    await instantResume({ manual: true });
+    return {
+      festCount: info?.festCount,
+      resumedIds: festivals.map(festival => festival.id),
+      endDate: festivals[0]?.endDate,
+      refreshRunning: Boolean(window._festRefreshRunning),
+    };
+  }, cachedFestivals);
+  assert.equal(state.festCount, 1);
+  assert.deepEqual(state.resumedIds, ['cached-ongoing']);
+  assert.equal(state.endDate, cachedFestivals[0].endDate);
+  assert.equal(state.refreshRunning, false);
+});
+
+test('festival-only refresh retains ongoing events and saves a restorable cache', { concurrency: false }, async () => {
+  const freshFestival = makeFestival('FreshFest', 7, 'Paris', 'FR', 48.8566, 2.3522, {
+    id: 'fresh-fest', score: 80, matched: [{ artist: 'Alpha', plays: 12 }],
+  });
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'], artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('ExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'expired-fest', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('StaleFutureFest', 30, 'Madrid', 'ES', 40.41, -3.7, { id: 'stale-future' }),
+    ],
+  });
+  const result = await page.evaluate(async fresh => {
+    const originalFetch = fetchFestivalsData;
+    fetchFestivalsData = async () => { festivals.push(fresh); };
+    API_KEY = 'offline-ui-test';
+    try {
+      await rescanFestsOnly();
+      const cache = await DB.get('meta', 'festivals');
+      return {
+        ids: festivals.map(f => f.id).sort(),
+        cacheIds: cache.data.map(f => f.id).sort(),
+        scopeMatches: cache.cHash === countryHash(),
+        versionMatches: cache.ver === FEST_VER,
+      };
+    } finally {
+      fetchFestivalsData = originalFetch;
+    }
+  }, freshFestival);
+  assert.deepEqual(result.ids, ['fresh-fest', 'ongoing-fest']);
+  assert.deepEqual(result.cacheIds, result.ids);
+  assert.equal(result.scopeMatches, true);
+  assert.equal(result.versionMatches, true);
+});
+
+test('a full refresh retains ongoing festivals without carrying them into a changed search scope', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, {
+    artists: ['Alpha'], artistPlays: { alpha: 12 },
+    festivals: [
+      makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('ExpiredFest', -5, 'London', 'GB', 51.5074, -0.1278, {
+        id: 'expired-fest', endDate: isoOffset(-1), score: 76, matched: [{ artist: 'Alpha', plays: 12 }],
+      }),
+      makeFestival('StaleFutureFest', 30, 'Madrid', 'ES', 40.41, -3.7, { id: 'stale-future' }),
+    ],
+  });
+  const result = await page.evaluate(() => {
+    const scan = beginScanRun(true);
+    const initial = festivals.map(f => f.id);
+    const restored = mergeOngoingFestivals(scan.ongoingFestivalSnapshot, []).map(f => f.id);
+    countryMode = 'include';
+    includeCountries = new Set(['FR']);
+    const changedScope = mergeOngoingFestivals(scan.ongoingFestivalSnapshot, []).map(f => f.id);
+    window._scanActive = false;
+    return { initial, restored, changedScope };
+  });
+  assert.deepEqual(result.initial, ['ongoing-fest']);
+  assert.deepEqual(result.restored, ['ongoing-fest']);
+  assert.deepEqual(result.changedScope, []);
+});
+
+for (const action of ['importFestivalsOnly', 'rescanFestsOnly']) {
+  test(`${action} marks stopped discovery as partial instead of a fresh complete cache`, { concurrency: false }, async () => {
+    await page.evaluate(installFixture, {
+      artists: ['Alpha'], artistPlays: { alpha: 12 },
+      festivals: [makeFestival('OngoingFest', -2, 'Berlin', 'DE', 52.52, 13.405, {
+        id: 'ongoing-fest', endDate: isoOffset(2), score: 82, matched: [{ artist: 'Alpha', plays: 12 }],
+      })],
+    });
+    const result = await page.evaluate(async actionName => {
+      await DB.put('meta', 'festivals', {
+        data: festivals, ts: Date.now(), cHash: countryHash(), ver: FEST_VER,
+      });
+      const originalFetch = fetchFestivalsData;
+      fetchFestivalsData = async () => { scanAborted = true; };
+      API_KEY = 'offline-ui-test';
+      try {
+        await window[actionName]();
+        const cache = await DB.get('meta', 'festivals');
+        return {
+          cacheTimestamp: cache.ts,
+          acceptsAsFresh: (Date.now() - cache.ts) < TTL_FEST,
+          retained: cache.data.map(f => f.id),
+          status: document.getElementById('hd-msg').textContent,
+        };
+      } finally {
+        fetchFestivalsData = originalFetch;
+      }
+    }, action);
+    assert.equal(result.cacheTimestamp, 0);
+    assert.equal(result.acceptsAsFresh, false);
+    assert.deepEqual(result.retained, ['ongoing-fest']);
+    assert.match(result.status, /stopped.*partial/i);
+  });
+}
 
 test('festival rows open the overlay and ticket links use openExternalUrl', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
@@ -822,6 +1402,71 @@ test('concert rows focus the selected artist', { concurrency: false }, async () 
   assert.equal(focusState.focusedArtist, 'Nova');
   assert.equal(focusState.focusName, 'Nova');
   assert.notEqual(focusState.overlayDisplay, 'none');
+});
+
+test('Enter on a concert row opens its map on mobile', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Nova'], artistPlays: { nova: 10 },
+    concerts: [
+      makeConcert('Nova', 3, 'Roundhouse', 'London', 'GB', 51.54, -0.15),
+      makeConcert('Nova', 6, 'Ancienne Belgique', 'Brussels', 'BE', 50.847, 4.349, { id: 'nova-keyboard-show' }),
+    ],
+  });
+  const semantics = await page.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('agenda');
+    const row = [...document.querySelectorAll('#cal-body .ev-row.is-clickable')].find(row => row.querySelector('.ev-sub strong')?.textContent === 'Ancienne Belgique');
+    row.focus();
+    return { role: row.getAttribute('role'), tabIndex: row.tabIndex, focused: document.activeElement === row };
+  });
+  assert.deepEqual(semantics, { role: 'button', tabIndex: 0, focused: true });
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+  }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+  }, page.sessionId);
+  await settleUi(page);
+  const result = await page.evaluate(() => ({
+    view: document.body.dataset.workspaceView,
+    mapVisible: getComputedStyle(document.querySelector('.map-panel')).display !== 'none',
+    focusedArtist,
+    activeVenue: document.querySelector('#focus-list .fshow.active .fshow-venue')?.textContent,
+    artistDetailOpen: document.getElementById('ad-overlay').classList.contains('open'),
+  }));
+  assert.deepEqual(result, { view: 'map', mapVisible: true, focusedArtist: 'Nova', activeVenue: 'Ancienne Belgique', artistDetailOpen: false });
+});
+
+test('Space on a concert headline opens artist detail without triggering its parent map action', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  await page.evaluate(installFixture, {
+    artists: ['Nova'], artistPlays: { nova: 10 },
+    concerts: [makeConcert('Nova', 6, 'Ancienne Belgique', 'Brussels', 'BE', 50.847, 4.349)],
+  });
+  const semantics = await page.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('agenda');
+    const headline = document.querySelector('#cal-body .ev-row .ev-headline');
+    headline.focus();
+    return { role: headline.getAttribute('role'), tabIndex: headline.tabIndex, focused: document.activeElement === headline };
+  });
+  assert.deepEqual(semantics, { role: 'button', tabIndex: 0, focused: true });
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32,
+  }, page.sessionId);
+  await page.waitFor(() => document.getElementById('ad-overlay').classList.contains('open'));
+  const result = await page.evaluate(() => ({
+    view: document.body.dataset.workspaceView,
+    artistDetailOpen: document.getElementById('ad-overlay').classList.contains('open'),
+    detailArtist: document.querySelector('#ad-body .ad-name')?.textContent.trim(),
+    focusedArtist,
+    focusedConcertKey,
+  }));
+  assert.deepEqual(result, { view: 'agenda', artistDetailOpen: true, detailArtist: 'Nova', focusedArtist: null, focusedConcertKey: '' });
 });
 
 test('artist avatars render cached media when knowledge exists', { concurrency: false }, async () => {
@@ -934,7 +1579,7 @@ test('rapid filter updates coalesce into one deferred refresh', { concurrency: f
   });
 });
 
-test('map drag defers tile warmup and skips closed visible-panel work', { concurrency: false }, async () => {
+test('map drag skips closed visible-panel work and makes no tile prefetch', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
     artists: ['Drift'],
     artistPlays: { drift: 9 },
@@ -945,65 +1590,396 @@ test('map drag defers tile warmup and skips closed visible-panel work', { concur
   });
 
   const result = await page.evaluate(async () => {
-    const originalWarm = window.scheduleMapTileWarmup;
     const originalUpdateVisiblePanel = window.updateVisiblePanel;
-    const calls = { warm: 0, visible: 0 };
+    const calls = { visible: 0 };
     const mapEl = document.getElementById('map');
 
-    window.scheduleMapTileWarmup = function(...args) {
-      calls.warm += 1;
-      return originalWarm.apply(this, args);
-    };
     window.updateVisiblePanel = function(...args) {
       calls.visible += 1;
       return originalUpdateVisiblePanel.apply(this, args);
     };
 
     _visiblePanelOpen = false;
-    if (typeof _cancelMapTileWarmup === 'function') _cancelMapTileWarmup();
     clearTimeout(_moveTimer);
     clearTimeout(_zRenderTimer);
     await new Promise(resolve => setTimeout(resolve, 260));
-    calls.warm = 0;
     calls.visible = 0;
 
     lmap.fire('movestart');
     const start = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
     lmap.fire('move');
     const moving = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
     lmap.fire('moveend');
     const endImmediate = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
     await new Promise(resolve => setTimeout(resolve, 260));
     const settled = {
-      warm: calls.warm,
       visible: calls.visible,
       isPanning: mapEl.classList.contains('is-panning'),
     };
 
-    window.scheduleMapTileWarmup = originalWarm;
     window.updateVisiblePanel = originalUpdateVisiblePanel;
-    return { start, moving, endImmediate, settled };
+    return { start, moving, endImmediate, settled, hasPrefetch: typeof window.scheduleMapTileWarmup === 'function' };
   });
 
-  assert.deepEqual(result.start, { warm: 0, visible: 0, isPanning: true });
-  assert.deepEqual(result.moving, { warm: 0, visible: 0, isPanning: true });
-  assert.deepEqual(result.endImmediate, { warm: 1, visible: 0, isPanning: false });
-  assert.deepEqual(result.settled, { warm: 1, visible: 0, isPanning: false });
+  assert.deepEqual(result.start, { visible: 0, isPanning: true });
+  assert.deepEqual(result.moving, { visible: 0, isPanning: true });
+  assert.deepEqual(result.endImmediate, { visible: 0, isPanning: false });
+  assert.deepEqual(result.settled, { visible: 0, isPanning: false });
+  assert.equal(result.hasPrefetch, false);
+});
+
+function mapTileViewportSnapshot() {
+  const viewport = document.getElementById('map').getBoundingClientRect();
+  const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+    const rect = tile.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.right > viewport.left && rect.left < viewport.right
+      && rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  return {
+    visible: visible.map(tile => ({ url: tile.src, loaded: tile.complete && tile.naturalWidth === 256 && tile.naturalHeight === 256 })),
+    concertIds: concerts.map(event => event.id).sort(), festivalIds: festivals.map(event => event.id).sort(),
+    markerCount: tourMarkers.length + festMarkers.length,
+    retryHidden: document.getElementById('map-tile-status')?.hidden,
+    retryText: document.getElementById('map-tile-retry')?.textContent.trim(),
+    tileUnloads: window.__testTileUnloads || 0,
+    redraws: window.__testTileRedraws || 0,
+  };
+}
+
+function visibleMapTilesRecovered() {
+  const viewport = document.getElementById('map').getBoundingClientRect();
+  const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+    const rect = tile.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.right > viewport.left && rect.left < viewport.right
+      && rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  return visible.length > 0 && visible.every(tile => tile.complete && tile.naturalWidth === 256 && tile.naturalHeight === 256)
+    && document.getElementById('map-tile-status').hidden;
+}
+
+async function prepareMapTileRecovery(pageRef, mode) {
+  pageRef.mapTileFixture.mode = mode;
+  await setViewport(pageRef, 1366, 900);
+  await pageRef.evaluate(installFixture, {
+    artists: ['Tile Artist'], artistPlays: { 'tile artist': 8 },
+    concerts: [makeConcert('Tile Artist', 5, 'Tile Forum', 'London', 'GB', 51.5074, -0.1278, { id: 'tile-show' })],
+    festivals: [makeFestival('Tile Festival', 7, 'London', 'GB', 51.52, -0.1, {
+      id: 'tile-fest', lineup: ['Tile Artist'], matched: [{ artist: 'Tile Artist', plays: 8 }],
+    })],
+  });
+  await pageRef.evaluate(() => {
+    hideOnboard(); setWorkspaceView('map');
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    _mapFirstFit = true;
+    lmap.setView([51.51, -0.12], 7, { animate: false });
+    window.__testTileUnloads = 0;
+    window.__testTileRedraws = 0;
+  });
+  await pageRef.waitFor(() => Object.values(lmap._layers).some(layer => layer instanceof L.TileLayer), { timeoutMs: 6000 });
+  await pageRef.evaluate(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    layer.on('tileunload', () => { window.__testTileUnloads++; });
+    const redraw = layer.redraw;
+    layer.redraw = function(...args) { window.__testTileRedraws++; return redraw.apply(this, args); };
+  });
+  await pageRef.waitFor(() => [...document.querySelectorAll('#map img.leaflet-tile')].some(tile => tile.complete));
+  const snapshot = await pageRef.evaluate(mapTileViewportSnapshot);
+  assert.ok(snapshot.visible.length > 0, 'The real map must request visible tile images');
+  assert.deepEqual(snapshot.concertIds, ['tile-show']);
+  assert.deepEqual(snapshot.festivalIds, ['tile-fest']);
+  return snapshot;
+}
+
+function assertMapTileRequestsBounded(fixture, limit) {
+  assert.deepEqual(fixture.errors, [], 'All intercepted requests must complete locally');
+  assert.ok(fixture.attempts.size > 0);
+  for (const [url, attempts] of fixture.attempts) {
+    assert.match(url, OSM_TILE_REQUEST, 'Tile retries must retain the exact OSM URL');
+    assert.ok(attempts <= limit, `${url}: ${attempts} requests exceeds the ${limit}-request budget`);
+  }
+  assert.ok([...fixture.attempts.values()].reduce((sum, count) => sum + count, 0) <= fixture.attempts.size * limit,
+    'Tile failures must not create an unbounded request storm');
+}
+
+test('map tile recovery retries an initial tile error at the same URL and loads a decodable local PNG', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'first-error');
+  await page.waitFor(() => {
+    const viewport = document.getElementById('map').getBoundingClientRect();
+    const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+      const rect = tile.getBoundingClientRect();
+      return rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    return visible.length > 0 && visible.every(tile => tile.complete && tile.naturalWidth === 256);
+  }, { timeoutMs: 7000 });
+  const loaded = await page.evaluate(async () => {
+    const tile = [...document.querySelectorAll('#map img.leaflet-tile')].find(image => image.naturalWidth === 256);
+    await tile.decode();
+    return { width: tile.naturalWidth, height: tile.naturalHeight };
+  });
+  assert.deepEqual(loaded, { width: 256, height: 256 });
+  const snapshot = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(snapshot.visible.every(tile => tile.loaded));
+  assert.ok(snapshot.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 2),
+    'A failed visible image must retry once at its original URL');
+  assert.equal(snapshot.redraws, 0, 'Recovery must not redraw the whole tile layer');
+  assert.ok(snapshot.markerCount > 0);
+  assert.deepEqual(snapshot.concertIds, ['tile-show']);
+  assert.deepEqual(snapshot.festivalIds, ['tile-fest']);
+  assertMapTileRequestsBounded(page.mapTileFixture, 2);
+});
+
+test('map tile recovery stops after two automatic retries and Retry map recovers only visible failures', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'persistent-error');
+  await page.waitFor(() => document.getElementById('map-tile-status')?.hidden === false
+    && document.getElementById('map-tile-retry')?.disabled === false, { timeoutMs: 7500 });
+  await delay(250);
+  const failed = await page.evaluate(mapTileViewportSnapshot);
+  assert.equal(failed.retryText, 'Retry map');
+  assert.ok(failed.visible.every(tile => !tile.loaded));
+  assert.ok(failed.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 3),
+    'Each visible failure has one initial request and two automatic retries');
+  for (const viewport of [{ width: 375, height: 812 }, { width: 1440, height: 900 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    await page.waitFor(() => document.getElementById('map-tile-status')?.hidden === false
+      && document.getElementById('map-tile-retry')?.disabled === false, { timeoutMs: 7500 });
+    await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, page.sessionId);
+    await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, page.sessionId);
+    const status = await page.evaluate(() => {
+      const panel = document.getElementById('map-tile-status');
+      const button = document.getElementById('map-tile-retry');
+      button.focus();
+      const rect = panel.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+        buttonLeft: buttonRect.left, buttonRight: buttonRect.right, enabled: !button.disabled,
+        tag: button.tagName, tabIndex: button.tabIndex, focused: document.activeElement === button,
+        outline: Number.parseFloat(getComputedStyle(button).outlineWidth),
+        width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth };
+    });
+    assert.ok(status.left >= 0 && status.right <= status.width && status.top >= 0 && status.bottom <= status.height,
+      `${viewport.width}px: tile error status must remain inside the viewport: ${JSON.stringify(status)}`);
+    assert.ok(status.buttonLeft >= status.left && status.buttonRight <= status.right,
+      `${viewport.width}px: the Retry map button must fit inside its status panel`);
+    assert.ok(status.scrollWidth <= status.width + 1, `${viewport.width}px: tile status must not cause page overflow`);
+    assert.deepEqual([status.tag, status.tabIndex, status.enabled, status.focused], ['BUTTON', 0, true, true]);
+    assert.ok(status.outline >= 2, `${viewport.width}px: Retry map needs a visible keyboard focus outline`);
+  }
+  const paused = new Map(page.mapTileFixture.attempts);
+  await delay(700);
+  assert.deepEqual(page.mapTileFixture.attempts, paused, 'Exhausted failures must stop making automatic requests');
+  page.mapTileFixture.mode = 'success';
+  await page.evaluate(() => document.getElementById('map-tile-retry').focus());
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
+  await page.waitFor(visibleMapTilesRecovered);
+  const recovered = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(recovered.visible.every(tile => tile.loaded));
+  assert.ok(recovered.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 4));
+  for (const [url, count] of paused) {
+    if (!recovered.visible.some(tile => tile.url === url)) assert.equal(page.mapTileFixture.attempts.get(url), count,
+      'Manual recovery must leave unloaded and nonvisible tiles alone');
+  }
+  const afterClick = new Map(page.mapTileFixture.attempts);
+  await page.evaluate(() => { document.getElementById('map-tile-retry').click(); document.getElementById('map-tile-retry').click(); });
+  await delay(250);
+  assert.deepEqual(page.mapTileFixture.attempts, afterClick, 'Repeated Retry map clicks must not reload healthy images');
+  assert.equal(recovered.redraws, 0);
+  assert.deepEqual(recovered.concertIds, ['tile-show']);
+  assert.deepEqual(recovered.festivalIds, ['tile-fest']);
+  assertMapTileRequestsBounded(page.mapTileFixture, 4);
+});
+
+test('map tile recovery cancels a stalled image at the terminal watchdog and ignores its late PNG reply', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'success');
+  await page.waitFor(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    const records = [...layer._ctRecords.values()].filter(record => layer._ctVisible(record));
+    return records.length > 0 && records.every(record => record.finished && !record.failed && record.tile.naturalWidth === 256);
+  });
+  const target = await page.evaluate(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    const center = lmap.getCenter();
+    const point = lmap.project(center, 8);
+    const coords = L.point(Math.floor(point.x / 256), Math.floor(point.y / 256));
+    coords.z = 8;
+    return { key: layer._tileCoordsToKey(coords), url: L.Util.template(CT_MAP_TILE_URL, { z: 8, x: coords.x, y: coords.y }),
+      center: { lat: center.lat, lng: center.lng }, zoom: 8 };
+  });
+  const initialAttempts = new Map(page.mapTileFixture.attempts);
+  assert.equal(initialAttempts.has(target.url), false, 'The stalled image must use a fresh tile coordinate, not Chrome decoded-image memory cache');
+  page.mapTileFixture.holdNext(target.url);
+  await page.evaluate(targetTile => {
+    const nativeSetTimeout = window.setTimeout;
+    const nativeClearTimeout = window.clearTimeout;
+    window.__testHungTimers = [];
+    window.setTimeout = function(callback, milliseconds, ...args) {
+      if (milliseconds !== 10000) return nativeSetTimeout.call(this, callback, milliseconds, ...args);
+      const timer = { milliseconds, started: performance.now(), fired: false, cancelled: false, id: null };
+      timer.id = nativeSetTimeout.call(this, (...values) => { timer.fired = true; callback(...values); }, milliseconds, ...args);
+      window.__testHungTimers.push(timer);
+      return timer.id;
+    };
+    window.clearTimeout = function(id) {
+      const timer = window.__testHungTimers.find(item => item.id === id);
+      if (timer && !timer.fired) timer.cancelled = true;
+      return nativeClearTimeout.call(this, id);
+    };
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    // A fresh zoom level creates a real pending center tile. Recreating an
+    // already decoded healthy IMG can bypass CDP via Chrome's image cache.
+    lmap.setView([targetTile.center.lat, targetTile.center.lng], targetTile.zoom, { animate: false });
+    const tile = layer._tiles[targetTile.key].el;
+    const record = layer._ctRecords.get(tile);
+    // Narrow fault injection reaches the terminal branch without waiting for
+    // three 10-second hangs. The real image request and 10-second timer remain.
+    record.retries = 2;
+    window.__testHungTile = tile;
+    window.__testHungRecord = record;
+    window.__testHungCompletions = { errors: 0, loads: 0 };
+    layer.on('tileerror', event => { if (event.tile === tile) window.__testHungCompletions.errors++; });
+    layer.on('tileload', event => { if (event.tile === tile) window.__testHungCompletions.loads++; });
+  }, target);
+  try {
+    await page.waitFor(() => window.__testHungRecord.finished && window.__testHungRecord.failed
+      && document.getElementById('map-tile-retry').disabled === false, { timeoutMs: 12500 });
+  } catch (error) {
+    const state = await page.evaluate(() => {
+      const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+      const record = window.__testHungRecord;
+      const rect = bounds => ({ left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom,
+        width: bounds.width, height: bounds.height });
+      return { record: { removed: record.removed, finished: record.finished, failed: record.failed, retries: record.retries,
+        coords: { x: record.coords.x, y: record.coords.y, z: record.coords.z }, watchdog: record.watchdog,
+        retryTimer: record.retryTimer, connected: record.tile.isConnected, src: record.tile.getAttribute('src'),
+        naturalWidth: record.tile.naturalWidth, visible: layer?._ctVisible(record), retained: layer?._ctRecords.has(record.tile),
+        bounds: rect(record.tile.getBoundingClientRect()) },
+        map: { zoom: lmap.getZoom(), center: { lat: lmap.getCenter().lat, lng: lmap.getCenter().lng },
+          layerOwnsRuntime: _mapTileLayer === layer, viewport: rect(document.getElementById('map').getBoundingClientRect()) },
+        timers: window.__testHungTimers.map(timer => ({ ...timer, elapsed: performance.now() - timer.started })),
+        completions: window.__testHungCompletions, status: { hidden: document.getElementById('map-tile-status').hidden,
+          disabled: document.getElementById('map-tile-retry').disabled,
+          message: document.getElementById('map-tile-message').textContent },
+        pending: [...(layer?._ctRecords.values() || [])].filter(item => !item.finished).map(item => ({
+          x: item.coords.x, y: item.coords.y, z: item.coords.z, removed: item.removed, failed: item.failed,
+          retries: item.retries, src: item.tile.getAttribute('src'), visible: layer._ctVisible(item) })) };
+    });
+    throw new Error(`Map tile watchdog failed: ${JSON.stringify({ state, fixture: { target,
+      heldReplies: page.mapTileFixture.heldReplies.length, stalledRequest: page.mapTileFixture.stalledRequest,
+      targetAttempts: page.mapTileFixture.attempts.get(target.url), errors: page.mapTileFixture.errors } })}`, { cause: error });
+  }
+  assert.equal(page.mapTileFixture.heldReplies.length, 1, 'Only the selected image must remain stalled at the local server');
+  const timedOut = await page.evaluate(() => ({
+    src: window.__testHungTile.getAttribute('src'), width: window.__testHungTile.naturalWidth,
+    retries: window.__testHungRecord.retries, errors: window.__testHungCompletions.errors,
+    loads: window.__testHungCompletions.loads, retryHidden: document.getElementById('map-tile-status').hidden,
+  }));
+  assert.deepEqual(timedOut, { src: null, width: 0, retries: 2, errors: 1, loads: 0, retryHidden: false },
+    'Terminal timeout must cancel the native image and complete the Leaflet entry exactly once');
+  page.mapTileFixture.release();
+  for (let attempt = 0; attempt < 30 && !page.mapTileFixture.stalledRequest?.replied; attempt++) await delay(50);
+  assert.equal(page.mapTileFixture.stalledRequest?.replied, true, 'The late local PNG reply must be exercised');
+  await delay(250);
+  const late = await page.evaluate(() => ({
+    src: window.__testHungTile.getAttribute('src'), width: window.__testHungTile.naturalWidth,
+    errors: window.__testHungCompletions.errors, loads: window.__testHungCompletions.loads,
+    loadedClass: window.__testHungTile.classList.contains('leaflet-tile-loaded'),
+  }));
+  assert.deepEqual(late, { src: null, width: 0, errors: 1, loads: 0, loadedClass: false },
+    'A late PNG must not turn the completed failed entry into a hidden, decoded tile');
+  assert.equal(page.mapTileFixture.attempts.get(target.url), 1,
+    'The exhausted watchdog must not restart automatic attempts');
+  const healthyAttempts = new Map(page.mapTileFixture.attempts);
+  await page.evaluate(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    window.__testHealthyTiles = [...layer._ctRecords.values()].filter(record => layer._ctVisible(record) && !record.failed)
+      .map(record => record.tile);
+  });
+  await page.evaluate(() => document.getElementById('map-tile-retry').click());
+  await page.waitFor(() => {
+    const layer = Object.values(lmap._layers).find(item => item instanceof L.TileLayer);
+    return document.getElementById('map-tile-status').hidden && !window.__testHungTile.isConnected
+      && [...layer._ctRecords.values()].filter(record => layer._ctVisible(record)).every(record => record.tile.naturalWidth === 256
+        && record.tile.classList.contains('leaflet-tile-loaded'));
+  });
+  const recovered = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(recovered.visible.every(tile => tile.loaded));
+  assert.equal(page.mapTileFixture.attempts.get(target.url), 2,
+    'Manual retry must create one successful replacement at the exact same URL');
+  for (const [url, count] of healthyAttempts) if (url !== target.url) assert.equal(page.mapTileFixture.attempts.get(url), count,
+    'The stalled tile must not trigger requests for healthy images');
+  assert.equal(await page.evaluate(() => window.__testHealthyTiles.length > 0
+    && window.__testHealthyTiles.every(tile => tile.isConnected && tile.naturalWidth === 256)), true,
+  'Manual recovery must retain the healthy image elements');
+  assert.equal(recovered.redraws, 0);
+  assert.deepEqual(recovered.concertIds, ['tile-show']);
+  assert.deepEqual(recovered.festivalIds, ['tile-fest']);
+  assert.ok(recovered.markerCount > 0);
+  assertMapTileRequestsBounded(page.mapTileFixture, 3);
+});
+
+test('map tile recovery cancels unloaded tile retries and an online event recovers the current viewport', { concurrency: false }, async () => {
+  await prepareMapTileRecovery(page, 'persistent-error');
+  const original = await page.evaluate(mapTileViewportSnapshot);
+  const firstAttempts = new Map(original.visible.map(tile => [tile.url, page.mapTileFixture.attempts.get(tile.url)]));
+  await page.evaluate(() => { lmap.panBy([512, 0], { animate: false }); });
+  const retainedOffscreen = await page.evaluate(urls => {
+    const originalUrls = new Set(urls);
+    const viewport = document.getElementById('map').getBoundingClientRect();
+    return [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+      const rect = tile.getBoundingClientRect();
+      return originalUrls.has(tile.src) && tile.isConnected
+        && (rect.right <= viewport.left || rect.left >= viewport.right || rect.bottom <= viewport.top || rect.top >= viewport.bottom);
+    }).map(tile => tile.src);
+  }, [...firstAttempts.keys()]);
+  assert.ok(retainedOffscreen.length > 0, 'Panning keeps an offscreen strip in the small tile buffer');
+  await delay(1300);
+  for (const url of retainedOffscreen) assert.equal(page.mapTileFixture.attempts.get(url), firstAttempts.get(url),
+    'Attached tiles outside the viewport must not receive an automatic retry');
+  const originalAttempts = new Map(original.visible.map(tile => [tile.url, page.mapTileFixture.attempts.get(tile.url)]));
+  await page.evaluate(() => { lmap.setView([-33.86, 151.2], 7, { animate: false }); });
+  await page.waitFor(() => window.__testTileUnloads > 0);
+  await delay(1300);
+  for (const [url, count] of originalAttempts) assert.equal(page.mapTileFixture.attempts.get(url), count,
+    'Images removed by panning must never receive their pending retry');
+  await page.waitFor(() => document.getElementById('map-tile-status')?.hidden === false
+    && document.getElementById('map-tile-retry')?.disabled === false, { timeoutMs: 6000 });
+  const exhausted = await page.evaluate(mapTileViewportSnapshot);
+  assert.ok(exhausted.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 3));
+  page.mapTileFixture.mode = 'success';
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.waitFor(() => {
+    const viewport = document.getElementById('map').getBoundingClientRect();
+    const visible = [...document.querySelectorAll('#map img.leaflet-tile')].filter(tile => {
+      const rect = tile.getBoundingClientRect();
+      return rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    return visible.length > 0 && visible.every(tile => tile.naturalWidth === 256);
+  }, { timeoutMs: 2000 });
+  const recovered = await page.evaluate(mapTileViewportSnapshot);
+  const currentAttempts = new Map(page.mapTileFixture.attempts);
+  await page.evaluate(() => { window.dispatchEvent(new Event('online')); window.dispatchEvent(new Event('online')); });
+  await delay(250);
+  assert.deepEqual(page.mapTileFixture.attempts, currentAttempts, 'Repeated online notifications must not redraw healthy tiles');
+  for (const [url, count] of originalAttempts) assert.equal(page.mapTileFixture.attempts.get(url), count);
+  assert.equal(recovered.redraws, 0);
+  assert.deepEqual(recovered.concertIds, original.concertIds);
+  assert.deepEqual(recovered.festivalIds, original.festivalIds);
+  assert.ok(recovered.visible.every(tile => page.mapTileFixture.attempts.get(tile.url) === 4),
+    'Online recovery must reset the exhausted budget and recover immediately');
+  assertMapTileRequestsBounded(page.mapTileFixture, 4);
 });
 
 test('renderOverview skips visible-panel scan when the panel is collapsed', { concurrency: false }, async () => {
@@ -1239,4 +2215,1341 @@ test('clicking a concert artist opens playlist detail with preview and parrot sc
   assert.ok(detail.chips.includes('42 tracks'));
   assert.equal(detail.audioStub.playCalls, 1);
   assert.equal(detail.audioStub.lastSrc, 'https://cdn.example.test/night-drive.mp3');
+});
+
+function denseMapFixture({ tourCount = 16, festivalCount = 32, nearby = false } = {}) {
+  const artists = Array.from({ length: tourCount }, (_, index) => `Dense Artist ${index + 1}`);
+  const location = index => nearby
+    ? [52.52 + (index % 3 - 1) * 0.0007, 13.405 + (index % 5 - 2) * 0.0007]
+    : [52.52, 13.405];
+  return {
+    artists,
+    artistPlays: Object.fromEntries(artists.map(artist => [artist.toLowerCase(), 12])),
+    concerts: artists.map((artist, index) => makeConcert(
+      artist, index + 2, `Dense Tour Venue ${index + 1}`, `Tour City ${index + 1}`, 'DE',
+      ...location(index), { id: `dense-tour-${index + 1}` },
+    )),
+    festivals: Array.from({ length: festivalCount }, (_, index) => makeFestival(
+      `Dense Festival ${index + 1}`, index + 25, `Festival City ${index + 1}`, 'DE',
+      ...location(index + tourCount), {
+        id: `dense-fest-${index + 1}`, score: 85 - index,
+        matched: [{ artist: artists[index % artists.length], plays: 12 }],
+      },
+    )),
+  };
+}
+
+function mapLabelSnapshot() {
+  const itemId = item => item.kind === 'fest' ? item.f.id : item.ev.id;
+  const mapBounds = document.getElementById('map').getBoundingClientRect();
+  const markerBounds = element => {
+    const childBounds = element.firstElementChild?.getBoundingClientRect();
+    return childBounds?.width && childBounds?.height ? childBounds : element.getBoundingClientRect();
+  };
+  const descriptors = [];
+  lmap.eachLayer(layer => {
+    const descriptor = layer._ctLayout;
+    if (!descriptor || typeof layer.getLatLng !== 'function') return;
+    const point = layer.getLatLng();
+    const element = layer.getElement();
+    descriptors.push({
+      layoutId: element?.dataset.layoutId || '',
+      originalIds: descriptor.items.map(itemId).sort(),
+      displayedIds: (descriptor.displayItems || descriptor.items).map(itemId).sort(),
+      numbers: descriptor.items.map(item => item.number ?? null),
+      point: [point.lat, point.lng],
+    });
+  });
+  const visible = [...document.querySelectorAll('.map-layout-marker')].filter(element => {
+    const style = getComputedStyle(element);
+    const rect = markerBounds(element);
+    return element.getAttribute('aria-hidden') !== 'true' && style.visibility !== 'hidden'
+      && style.display !== 'none' && rect.width > 0 && rect.height > 0
+      && rect.right > mapBounds.left && rect.left < mapBounds.right
+      && rect.bottom > mapBounds.top && rect.top < mapBounds.bottom;
+  }).map(element => {
+    const rect = markerBounds(element);
+    return {
+      layoutId: element.dataset.layoutId,
+      members: Number(element.dataset.layoutMembers),
+      left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+    };
+  });
+  return { descriptors, visible };
+}
+
+function assertMapLabelsDoNotOverlap(snapshot, context = '') {
+  assert.ok(snapshot.visible.length > 0, `${context}: some map labels must remain visible`);
+  for (let i = 0; i < snapshot.visible.length; i++) {
+    const first = snapshot.visible[i];
+    assert.ok(first.layoutId, `${context}: a visible marker needs a layout identity`);
+    assert.ok(first.members >= 1, `${context}: a visible marker must expose its original events`);
+    for (const second of snapshot.visible.slice(i + 1)) {
+      const separated = first.right + 1.8 <= second.left || second.right + 1.8 <= first.left
+        || first.bottom + 1.8 <= second.top || second.bottom + 1.8 <= first.top;
+      assert.ok(separated, `${context}: labels ${first.layoutId} and ${second.layoutId} overlap or lack a 2px gap`);
+    }
+  }
+}
+
+function assertMapEventCoverage(snapshot, expectedIds) {
+  const originals = [...new Set(snapshot.descriptors.flatMap(marker => marker.originalIds))].sort();
+  assert.deepEqual(originals, [...expectedIds].sort(), 'Layout must retain every original event');
+  const visibleIds = new Set(snapshot.visible.flatMap(element => {
+    const descriptor = snapshot.descriptors.find(marker => marker.layoutId === element.layoutId);
+    assert.ok(descriptor, `Visible layout ${element.layoutId} must have an event descriptor`);
+    assert.equal(element.members, descriptor.displayedIds.length);
+    return descriptor.displayedIds;
+  }));
+  assert.deepEqual([...visibleIds].sort(), [...expectedIds].sort(), 'Every original event must remain accessible from a visible marker');
+  assert.equal(snapshot.visible.reduce((count, marker) => count + marker.members, 0), expectedIds.length, 'Visible groups must not duplicate or omit original events');
+}
+
+async function installDenseMap(pageRef, fixture) {
+  await pageRef.evaluate(installFixture, fixture);
+  await pageRef.evaluate(() => {
+    hideOnboard();
+    setWorkspaceView('map');
+    lmap.stop();
+    lmap.setView([52.52, 13.405], 10, { animate: false });
+    clearMapLayers();
+    renderOverview({ smartFit: false });
+    scheduleMapLabelLayout();
+  });
+  await settleUi(pageRef, 260);
+  await pageRef.evaluate(() => relayoutMapLabels());
+  await settleUi(pageRef, 80);
+}
+
+test('dense mixed tour and festival labels do not overlap and preserve all events on desktop and mobile', { concurrency: false }, async () => {
+  const fixture = denseMapFixture();
+  const expectedIds = [...fixture.concerts, ...fixture.festivals].map(event => event.id);
+  for (const viewport of [{ width: 1366, height: 900 }, { width: 375, height: 812 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    await installDenseMap(page, fixture);
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assertMapLabelsDoNotOverlap(snapshot, `${viewport.width}px`);
+    assertMapEventCoverage(snapshot, expectedIds);
+    assert.ok(snapshot.visible.some(marker => marker.members >= 12), 'A dense group must preserve more than a truncated preview');
+  }
+});
+
+test('mixed overflow groups list every event and preserve the festival and tour button actions', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture();
+  await installDenseMap(page, fixture);
+  const openLargestGroup = () => {
+    const groups = [...document.querySelectorAll('.map-layout-marker')]
+      .filter(element => element.getAttribute('aria-hidden') !== 'true'
+        && getComputedStyle(element).visibility !== 'hidden'
+        && (element.matches('.map-event-group') || element.querySelector('.map-event-group')))
+      .sort((a, b) => Number(b.dataset.layoutMembers) - Number(a.dataset.layoutMembers));
+    const group = groups[0];
+    if (!group) throw new Error('No visible overflow group');
+    const members = Number(group.dataset.layoutMembers);
+    let expectedIds = [];
+    lmap.eachLayer(layer => {
+      if (layer._ctLayout && layer.getElement?.() === group) {
+        expectedIds = layer._ctLayout.displayItems.map(item => item.kind === 'fest' ? item.f.id : item.ev.id).sort();
+      }
+    });
+    group.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return { members, expectedIds };
+  };
+  const expectedGroup = await page.evaluate(openLargestGroup);
+  await page.waitFor(() => document.querySelector('.map-event-group-list .map-event-group-row'));
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.map-event-group-list .map-event-group-row')].map(button => ({
+    tag: button.tagName, kind: button.dataset.kind, id: button.dataset.eventId,
+  })));
+  assert.ok(expectedGroup.members >= 12);
+  assert.equal(rows.length, expectedGroup.members, 'The group popup must list every represented event');
+  assert.deepEqual(rows.map(row => row.id).sort(), expectedGroup.expectedIds, 'The popup must retain the identities of all grouped events');
+  assert.equal(new Set(rows.map(row => row.id)).size, rows.length);
+  assert.ok(rows.every(row => row.tag === 'BUTTON'));
+  assert.ok(rows.some(row => row.kind === 'tour') && rows.some(row => row.kind === 'fest'));
+  const selectedFestival = rows.find(row => row.kind === 'fest');
+  await page.evaluate(id => document.querySelector(`.map-event-group-row[data-event-id="${id}"]`).click(), selectedFestival.id);
+  await page.waitFor(() => document.getElementById('fd-overlay').classList.contains('open'));
+  assert.equal(await page.evaluate(() => document.querySelector('.fd-name').textContent.trim()), fixture.festivals.find(festival => festival.id === selectedFestival.id).name);
+
+  await page.evaluate(() => { closeFestDetail(); lmap.closePopup(); });
+  await installDenseMap(page, fixture);
+  await page.evaluate(openLargestGroup);
+  await page.waitFor(() => document.querySelector('.map-event-group-row[data-kind="tour"]'));
+  const selectedTourId = await page.evaluate(() => {
+    const button = document.querySelector('.map-event-group-row[data-kind="tour"]');
+    const id = button.dataset.eventId;
+    button.click();
+    return id;
+  });
+  await settleUi(page, 260);
+  const focused = await page.evaluate(() => ({
+    artist: focusedArtist,
+    view: document.body.dataset.workspaceView,
+    title: document.getElementById('focus-name').textContent.trim(),
+  }));
+  const expectedArtist = fixture.concerts.find(concert => concert.id === selectedTourId).artist;
+  assert.deepEqual(focused, { artist: expectedArtist, view: 'map', title: expectedArtist });
+});
+
+test('nearby map labels remain separated through repeated pans and resizes without changing event coordinates', { concurrency: false }, async () => {
+  await setViewport(page, 1366, 900);
+  const fixture = denseMapFixture({ tourCount: 8, festivalCount: 16, nearby: true });
+  const expectedIds = [...fixture.concerts, ...fixture.festivals].map(event => event.id);
+  await installDenseMap(page, fixture);
+  const initial = await page.evaluate(mapLabelSnapshot);
+  const markerCoordinates = snapshot => snapshot.descriptors.map(marker => ({
+    ids: marker.originalIds.join('|'), point: marker.point,
+  })).sort((a, b) => a.ids.localeCompare(b.ids));
+  const originalCoordinates = markerCoordinates(initial);
+  assertMapLabelsDoNotOverlap(initial, 'initial');
+  assertMapEventCoverage(initial, expectedIds);
+  for (const width of [1100, 1440, 1200]) {
+    await page.evaluate(() => {
+      lmap.panBy([18, -12], { animate: false });
+      scheduleMapLabelLayout();
+    });
+    await setViewport(page, width, 900);
+    await settleUi(page, 220);
+    await page.evaluate(() => relayoutMapLabels());
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assertMapLabelsDoNotOverlap(snapshot, `${width}px after pan`);
+    assertMapEventCoverage(snapshot, expectedIds);
+    assert.deepEqual(markerCoordinates(snapshot), originalCoordinates, 'Collision layout must not relocate the actual Leaflet event coordinates');
+  }
+});
+
+test('numbered focus markers at a repeated venue preserve every show and do not overlap after zoom changes', { concurrency: false }, async () => {
+  await setViewport(page, 1366, 900);
+  const fixture = {
+    artists: ['Repeat Artist'], artistPlays: { 'repeat artist': 12 },
+    concerts: Array.from({ length: 12 }, (_, index) => makeConcert(
+      'Repeat Artist', index + 2, 'Repeated Venue', 'Berlin', 'DE', 52.52, 13.405,
+      { id: `repeated-venue-${index + 1}` },
+    )),
+  };
+  await page.evaluate(installFixture, fixture);
+  await page.evaluate(() => {
+    hideOnboard();
+    focusArtist('Repeat Artist');
+    lmap.stop();
+    lmap.setView([52.52, 13.405], 10, { animate: false });
+    scheduleMapLabelLayout();
+  });
+  const expectedIds = fixture.concerts.map(concert => concert.id);
+  for (const zoom of [10, 12, 9]) {
+    await page.evaluate(value => { lmap.setZoom(value, { animate: false }); scheduleMapLabelLayout(); }, zoom);
+    await settleUi(page, 240);
+    await page.evaluate(() => relayoutMapLabels());
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assertMapLabelsDoNotOverlap(snapshot, `focus zoom ${zoom}`);
+    assertMapEventCoverage(snapshot, expectedIds);
+    const focusBounds = await page.evaluate(() => {
+      const bounds = document.getElementById('focus-overlay').getBoundingClientRect();
+      return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom };
+    });
+    assert.ok(snapshot.visible.every(marker => marker.right <= focusBounds.left || marker.left >= focusBounds.right
+      || marker.bottom <= focusBounds.top || marker.top >= focusBounds.bottom), 'Focus markers must remain outside the artist overlay');
+    assert.deepEqual(snapshot.descriptors.flatMap(marker => marker.numbers).sort((a, b) => a - b), Array.from({ length: 12 }, (_, index) => index + 1));
+    assert.equal(await page.evaluate(() => document.querySelectorAll('#focus-list .fshow').length), 12);
+    assert.ok(snapshot.descriptors.every(marker => marker.point[0] === 52.52 && marker.point[1] === 13.405));
+  }
+});
+
+function openMapGroupForLifecycleTest() {
+  const groups = [...document.querySelectorAll('.map-layout-marker')]
+    .filter(element => element.getAttribute('aria-hidden') !== 'true'
+      && getComputedStyle(element).visibility !== 'hidden'
+      && element.querySelector('.map-event-group'))
+    .sort((first, second) => Number(second.dataset.layoutMembers) - Number(first.dataset.layoutMembers));
+  if (!groups.length) throw new Error('No visible overflow group');
+  lmap.eachLayer(layer => {
+    if (layer._ctLayout && layer.getElement?.() === groups[0]) window.__testPopupOwner = layer;
+  });
+  window.__testPopupOwner.openPopup();
+}
+
+function mapPopupLifecycleSnapshot() {
+  const owner = window.__testPopupOwner;
+  const element = owner.getElement();
+  const popup = owner.getPopup();
+  const open = owner.isPopupOpen();
+  if (!element) return { removed: true, open };
+  const popupBounds = open ? popup.getElement().getBoundingClientRect() : null;
+  const labelBounds = (element.firstElementChild || element).getBoundingClientRect();
+  const marginBottom = open ? Number.parseFloat(getComputedStyle(popup.getElement()).marginBottom) : 0;
+  const point = owner.getLatLng();
+  return {
+    open,
+    hidden: element.getAttribute('aria-hidden') === 'true',
+    compact: !!owner._ctLayout.compact,
+    expectedIds: owner._ctLayout.displayItems.map(item => item.kind === 'fest' ? item.f.id : item.ev.id).sort(),
+    popupIds: open ? [...popup.getElement().querySelectorAll('.map-event-group-row')].map(row => row.dataset.eventId).sort() : [],
+    centerError: open ? Math.abs((popupBounds.left + popupBounds.right - labelBounds.left - labelBounds.right) / 2) : 0,
+    topError: open ? Math.abs(popupBounds.bottom + marginBottom - labelBounds.top) : 0,
+    point: [point.lat, point.lng],
+    panCalls: window.__testPopupPanCalls || 0,
+  };
+}
+
+test('open overflow popup follows current group membership and label placement through pan and resize, and closes when hidden', { concurrency: false }, async () => {
+  // The startup seed importer otherwise rebuilds all markers after 1200ms.
+  // Keep that unrelated media refresh out of this popup reflow scenario.
+  await page.evaluate(() => { importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 }); });
+  await setViewport(page, 375, 812);
+  await installDenseMap(page, denseMapFixture());
+  await page.evaluate(openMapGroupForLifecycleTest);
+  await settleUi(page, 260);
+  const initial = await page.evaluate(mapPopupLifecycleSnapshot);
+  assert.equal(initial.open, true, 'Opening a visible compact group must keep its list open');
+  assert.equal(initial.compact, true);
+  assert.ok(initial.expectedIds.length >= 12);
+  assert.deepEqual(initial.popupIds, initial.expectedIds);
+  await page.evaluate(() => {
+    window.__testPopupPanCalls = 0;
+    const originalPanBy = lmap.panBy;
+    lmap.panBy = function (...args) {
+      window.__testPopupPanCalls++;
+      return originalPanBy.apply(this, args);
+    };
+  });
+  let expectedPanCalls = 0;
+  for (const width of [400, 420, 375]) {
+    await page.evaluate(() => { lmap.panBy([8, -5], { animate: false }); scheduleMapLabelLayout(); });
+    await setViewport(page, width, 812);
+    await settleUi(page, 180);
+    await page.evaluate(() => relayoutMapLabels());
+    const state = await page.evaluate(mapPopupLifecycleSnapshot);
+    assert.notEqual(state.removed, true, 'Pan and resize must retain the open popup owner');
+    assert.deepEqual(state.point, initial.point, 'Popup movement must not change the event coordinates');
+    assert.equal(state.panCalls, ++expectedPanCalls, 'Refreshing an open popup must not cause an auto-pan layout loop');
+    if (state.hidden) {
+      assert.equal(state.open, false, 'A popup whose marker becomes hidden must close');
+    } else {
+      assert.equal(state.open, true);
+      if (state.compact) assert.deepEqual(state.popupIds, state.expectedIds, 'An open group must show the current members after reflow');
+      assert.ok(state.centerError <= 1.1, `Popup horizontal anchor differs from its visible label by ${state.centerError}px`);
+      assert.ok(state.topError <= 1.1, `Popup vertical anchor differs from its visible label by ${state.topError}px`);
+    }
+  }
+  await page.evaluate(() => {
+    lmap.closePopup();
+    window.__testPopupOwner = null;
+  });
+  await page.evaluate(openMapGroupForLifecycleTest);
+  await settleUi(page, 180);
+  assert.equal((await page.evaluate(mapPopupLifecycleSnapshot)).open, true);
+  await page.evaluate(() => {
+    const overlay = document.getElementById('focus-overlay');
+    overlay.style.cssText = 'display:block;position:absolute;inset:0;width:100%;height:100%;max-width:none;';
+    relayoutMapLabels();
+  });
+  const hidden = await page.evaluate(mapPopupLifecycleSnapshot);
+  assert.equal(hidden.hidden, true, 'Labels covered by the focus overlay must be hidden');
+  assert.deepEqual(hidden.expectedIds, []);
+  assert.equal(hidden.open, false, 'The hidden owner must not leave a stale group popup open');
+});
+
+test('markers recreated while the mobile map is hidden receive real footprints when the map reopens', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture({ tourCount: 8, festivalCount: 16, nearby: true });
+  const expectedIds = [...fixture.concerts, ...fixture.festivals].map(event => event.id);
+  await installDenseMap(page, fixture);
+  const hidden = await page.evaluate(() => {
+    setWorkspaceView('agenda');
+    clearMapLayers();
+    renderOverview({ smartFit: false });
+    relayoutMapLabels();
+    const bounds = document.getElementById('map').getBoundingClientRect();
+    return {
+      width: bounds.width,
+      footprints: [...tourMarkers, ...festMarkers].map(marker => marker._ctLayout.footprint),
+    };
+  });
+  assert.equal(hidden.width, 0, 'The mobile agenda must actually hide the map');
+  assert.equal(hidden.footprints.length, expectedIds.length);
+  assert.ok(hidden.footprints.every(footprint => footprint === null), 'A hidden map must not cache zero-size marker measurements');
+  await settleUi(page, 120);
+  await page.evaluate(() => { setWorkspaceView('map'); scheduleMapLabelLayout(); });
+  await settleUi(page, 260);
+  await page.evaluate(() => relayoutMapLabels());
+  const footprints = await page.evaluate(() => [...tourMarkers, ...festMarkers].map(marker => marker._ctLayout.footprint));
+  assert.ok(footprints.every(footprint => footprint?.width > 0 && footprint?.height > 0), 'Every marker needs a measured footprint after returning to the map');
+  const snapshot = await page.evaluate(mapLabelSnapshot);
+  assertMapLabelsDoNotOverlap(snapshot, 'mobile map reopened');
+  assertMapEventCoverage(snapshot, expectedIds);
+});
+
+test('festival tab and highlighted festival preserve every coincident event in the shared collision layout', { concurrency: false }, async () => {
+  await setViewport(page, 1366, 900);
+  const fixture = denseMapFixture({ tourCount: 1, festivalCount: 32 });
+  fixture.concerts = [];
+  await page.evaluate(installFixture, fixture);
+  const expectedIds = fixture.festivals.map(festival => festival.id);
+  const highlightedId = expectedIds.at(-1);
+  for (const id of [null, highlightedId]) {
+    await page.evaluate(selectedId => {
+      hideOnboard();
+      setWorkspaceView('map');
+      if (selectedId === null) setTab('fests');
+      else renderFestMap(selectedId);
+      lmap.stop();
+      lmap.setView([52.52, 13.405], 10, { animate: false });
+      scheduleMapLabelLayout();
+    }, id);
+    await settleUi(page, 220);
+    await page.evaluate(() => relayoutMapLabels());
+    const snapshot = await page.evaluate(mapLabelSnapshot);
+    assert.equal(snapshot.descriptors.length, expectedIds.length, 'The festival-only route must register every event for collision layout');
+    assertMapLabelsDoNotOverlap(snapshot, id ? 'highlighted festival' : 'festival tab');
+    assertMapEventCoverage(snapshot, expectedIds);
+    assert.ok(snapshot.descriptors.every(marker => marker.point[0] === 52.52 && marker.point[1] === 13.405));
+    const state = await page.evaluate(selectedId => {
+      const selected = festMarkers.find(marker => marker._ctLayout.items.some(item => item.f.id === selectedId));
+      return {
+        tab: sidebarTab,
+        focused: focusedFest,
+        selectedCard: document.querySelector('.fcard.hl')?.dataset.id || null,
+        selectedStyle: selected?._ctLayout.icon.options.html.includes('is-selected') || false,
+        selectedPriority: selected?._ctLayout.priority || 0,
+        otherPriority: Math.max(...festMarkers.filter(marker => marker !== selected).map(marker => marker._ctLayout.priority)),
+      };
+    }, id);
+    assert.equal(state.tab, 'fests');
+    assert.equal(state.focused, id);
+    if (id) {
+      assert.equal(state.selectedCard, id);
+      assert.equal(state.selectedStyle, true);
+      assert.ok(state.selectedPriority > state.otherPriority, 'The selected festival must have layout priority without an oversized absolute label');
+    }
+  }
+});
+
+test('mobile zoom controls stay clear of the legend, honesty button and event labels', { concurrency: false }, async () => {
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture({ tourCount: 8, festivalCount: 16, nearby: true });
+  await installDenseMap(page, fixture);
+  // Put an actual event underneath the zoom buttons so the layout must avoid them.
+  const eventPoint = await page.evaluate(() => {
+    const mapBounds = document.getElementById('map').getBoundingClientRect();
+    const zoomBounds = document.querySelector('.leaflet-control-zoom').getBoundingClientRect();
+    const point = lmap.containerPointToLatLng([
+      (zoomBounds.left + zoomBounds.right) / 2 - mapBounds.left,
+      (zoomBounds.top + zoomBounds.bottom) / 2 - mapBounds.top,
+    ]);
+    return { lat: point.lat, lng: point.lng };
+  });
+  Object.assign(fixture.concerts[0], eventPoint);
+  await installDenseMap(page, fixture);
+  const controls = await page.evaluate(() => {
+    const bounds = selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+    };
+    return {
+      map: bounds('#map'), zoom: bounds('.leaflet-control-zoom'),
+      legend: bounds('#map-legend'), honesty: bounds('#honesty-float-btn'),
+      clickable: [...document.querySelectorAll('.leaflet-control-zoom a')].map(button => {
+        const rect = button.getBoundingClientRect();
+        return !!document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)?.closest('.leaflet-control-zoom');
+      }),
+    };
+  });
+  const separate = (first, second) => first.right <= second.left || first.left >= second.right
+    || first.bottom <= second.top || first.top >= second.bottom;
+  assert.ok(controls.zoom.width > 0 && controls.zoom.height > 0);
+  assert.ok(controls.zoom.left >= controls.map.left && controls.zoom.right <= controls.map.right
+    && controls.zoom.top >= controls.map.top && controls.zoom.bottom <= controls.map.bottom, 'Both zoom buttons must fit inside the visible mobile map');
+  assert.ok(separate(controls.zoom, controls.legend), 'The legend must not cover the zoom buttons');
+  assert.ok(separate(controls.zoom, controls.honesty), 'The honesty button must not cover the zoom buttons');
+  assert.deepEqual(controls.clickable, [true, true], 'Both zoom buttons must receive pointer input');
+  const snapshot = await page.evaluate(mapLabelSnapshot);
+  assertMapLabelsDoNotOverlap(snapshot, 'mobile controls');
+  assertMapEventCoverage(snapshot, [...fixture.concerts, ...fixture.festivals].map(event => event.id));
+  assert.ok(snapshot.visible.every(marker => separate(marker, controls.zoom)), 'Event labels must leave the zoom controls accessible');
+});
+
+const IMPORT_IDS = { a: '1'.repeat(22), b: '2'.repeat(22), c: '3'.repeat(22) };
+const importUrl = id => `https://open.spotify.com/playlist/${id}`;
+
+function spotifyImportFixture(id, name, credits = [['Alpha', 'Beta'], ['Alpha'], ['Gamma'], ['Alpha'], ['Beta']], extra = {}) {
+  const tracks = credits.map((artists, index) => ({
+    type: 'track', id: `${id}-${index}`, name: `${name} Track ${index + 1}`,
+    uri: `spotify:track:${id}`, duration_ms: 180000 + index, is_local: false,
+    external_urls: { spotify: `https://open.spotify.com/track/${id}` },
+    album: { name: `${name} Album`, images: [] },
+    artists: artists.map(artist => ({ id: `artist-${artist.toLowerCase().replace(/\W/g, '-')}`, name: artist })),
+  }));
+  return {
+    playlist: {
+      id, name, owner: { display_name: 'Offline Listener' }, images: [],
+      external_urls: { spotify: importUrl(id) }, tracks: { total: tracks.length }, snapshot_id: `snapshot-${id}`,
+    },
+    tracks, ...extra,
+  };
+}
+
+async function configureSpotifyImports(playlists) {
+  const response = await fetch(`${baseUrl}/__test/spotify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playlists }),
+  });
+  assert.equal(response.status, 200);
+}
+
+async function prepareSpotifyImportTest(pageRef, original = {}) {
+  await pageRef.evaluate(async () => {
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    await DB.clear('artists');
+    await DB.clear('meta');
+  });
+  await pageRef.evaluate(installFixture, original);
+  await pageRef.evaluate(() => {
+    if (typeof resetActivePlaylistSessionContext === 'function') resetActivePlaylistSessionContext();
+    saveOnboardHistory([]);
+    setMinTracks(1);
+    openPlaylistImport();
+    setPlaylistImportMinTracks(1);
+    window.__testImportScanCalls = [];
+    saveAndFetch = () => {
+      window.__testImportScanCalls.push({ id: SPOTIFY_PLAYLIST_META?.id || '', artists: [...ARTISTS] });
+    };
+  });
+}
+
+function spotifySessionSnapshot() {
+  return {
+    artists: [...ARTISTS], tracked: [...TRACKED_ARTISTS], plays: { ...ARTIST_PLAYS },
+    tracks: ARTIST_TRACKS, playlist: SPOTIFY_PLAYLIST_META,
+    concerts: concerts.map(event => event.id), festivals: festivals.map(event => event.id),
+    scanned: [...SCANNED_ARTISTS], cacheTimestamp, active: localStorage.getItem('tt_active_playlist'),
+    minTracks: getEffectiveMinTracks(), history: getOnboardHistory(),
+  };
+}
+
+async function runOfflineSpotifyImport(pageRef, url, mode = 'onboard') {
+  return pageRef.evaluate(async (value, importMode) => {
+    document.getElementById(importMode === 'onboard' ? 'onboard-url' : 'sp-playlist-url').value = value;
+    return runSpotifyImport({ mode: importMode });
+  }, url, mode);
+}
+
+test('playlist links mode is the editable default and the header opens an import that works with Enter', { concurrency: false }, async () => {
+  await configureSpotifyImports({ [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Keyboard Playlist') });
+  await page.evaluate(() => localStorage.clear());
+  await page.navigate(baseUrl);
+  const initial = await page.evaluate(() => ({
+    mode: PRODUCT_SCENARIO.id, pinned: isScenarioAProductMode(), minTracks: getEffectiveMinTracks(),
+    onboardReadonly: document.getElementById('onboard-url').readOnly,
+    settingsReadonly: document.getElementById('sp-playlist-url').readOnly,
+    title: document.getElementById('onboard-main-title').textContent,
+    cutoffVisible: getComputedStyle(document.getElementById('onboard-mintracks-chips')).display !== 'none',
+  }));
+  assert.equal(initial.mode, 'playlist-links');
+  assert.equal(initial.pinned, false);
+  assert.equal(initial.minTracks, 1);
+  assert.equal(initial.onboardReadonly, false);
+  assert.equal(initial.settingsReadonly, false);
+  assert.equal(initial.cutoffVisible, true);
+  assert.doesNotMatch(initial.title, /pinned/i);
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(url => {
+    hideOnboard();
+    document.getElementById('playlist-open-btn').click();
+    const input = document.getElementById('onboard-url');
+    input.value = url;
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  }, importUrl(IMPORT_IDS.a));
+  await page.waitFor(() => SPOTIFY_PLAYLIST_META?.id === '1'.repeat(22));
+  const imported = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(imported.playlist.name, 'Keyboard Playlist');
+  assert.deepEqual(imported.artists, ['Alpha', 'Beta', 'Gamma']);
+  await settleUi(page, 560);
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [{ id: IMPORT_IDS.a, artists: ['Alpha', 'Beta', 'Gamma'] }]);
+});
+
+test('Spotify link parsing accepts canonical URI localized and embed links and rejects unrelated hosts and paths', { concurrency: false }, async () => {
+  const valid = [
+    importUrl(IMPORT_IDS.a), `${importUrl(IMPORT_IDS.a)}?si=share&utm_source=copy-link`,
+    `spotify:playlist:${IMPORT_IDS.a}`, `https://open.spotify.com/intl-ru/playlist/${IMPORT_IDS.a}`,
+    `https://open.spotify.com/embed/playlist/${IMPORT_IDS.a}`, IMPORT_IDS.a,
+  ];
+  const invalid = [
+    `https://evil.example/playlist/${IMPORT_IDS.a}`, `https://open.spotify.com.evil.example/playlist/${IMPORT_IDS.a}`,
+    `https://open.spotify.com@evil.example/playlist/${IMPORT_IDS.a}`, `https://open.spotify.com/artist/${IMPORT_IDS.a}`,
+    `https://open.spotify.com/playlist/${IMPORT_IDS.a}/extra`, 'https://open.spotify.com/playlist/short',
+    `spotify:track:${IMPORT_IDS.a}`, `javascript:playlist/${IMPORT_IDS.a}`, `http://open.spotify.com/playlist/${IMPORT_IDS.a}`,
+  ];
+  const parsed = await page.evaluate((good, bad) => ({
+    valid: good.map(value => spExtractId(value)), invalid: bad.map(value => spExtractId(value)),
+  }), valid, invalid);
+  assert.deepEqual(parsed.valid, valid.map(() => IMPORT_IDS.a));
+  assert.ok(parsed.invalid.every(id => id === null), 'Only a real Spotify playlist resource may select a playlist');
+});
+
+test('arbitrary playlist import retains metadata and multi-artist counts while applying the selected cutoff', { concurrency: false }, async () => {
+  await configureSpotifyImports({ [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'My Joint Credits') });
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(() => setPlaylistImportMinTracks(2));
+  assert.equal(await runOfflineSpotifyImport(page, `spotify:playlist:${IMPORT_IDS.a}`), true);
+  const state = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(state.playlist.id, IMPORT_IDS.a);
+  assert.equal(state.playlist.name, 'My Joint Credits');
+  assert.equal(state.playlist.ownerName, 'Offline Listener');
+  assert.equal(state.playlist.trackCount, 5);
+  assert.equal(state.playlist.spotifyUrl, importUrl(IMPORT_IDS.a));
+  assert.deepEqual(state.artists, ['Alpha', 'Beta']);
+  assert.deepEqual(state.tracked, ['Alpha', 'Beta', 'Gamma']);
+  assert.deepEqual(state.plays, { alpha: 3, beta: 2, gamma: 1 });
+  assert.equal(state.tracks.alpha.totalTrackHits, 3);
+  assert.equal(state.tracks.beta.totalTrackHits, 2);
+  assert.equal(state.tracks.gamma.totalTrackHits, 1);
+  assert.equal(state.minTracks, 2);
+  assert.equal(state.active, IMPORT_IDS.a);
+  assert.ok(state.history.some(item => item.url === importUrl(IMPORT_IDS.a) && item.name === 'My Joint Credits'));
+  assert.deepEqual(await page.evaluate(() => ({ onboard: document.getElementById('onboard-url').value, settings: document.getElementById('sp-playlist-url').value })), {
+    onboard: importUrl(IMPORT_IDS.a), settings: importUrl(IMPORT_IDS.a),
+  });
+});
+
+test('failed and empty-threshold Spotify imports preserve the previous playlist session atomically', { concurrency: false }, async () => {
+  const successful = spotifyImportFixture(IMPORT_IDS.a, 'Keep This Playlist');
+  await configureSpotifyImports({ [IMPORT_IDS.a]: successful, [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Rejected Playlist') });
+  await prepareSpotifyImportTest(page);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  await settleUi(page, 560);
+  const originalConcert = makeConcert('Alpha', 4, 'Saved Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'saved-before-failure' });
+  await page.evaluate(event => { concerts = [event]; SCANNED_ARTISTS = ['Alpha']; persistData(); }, originalConcert);
+  for (const scenario of [
+    { fixture: spotifyImportFixture(IMPORT_IDS.b, 'Server Failure', undefined, { error: { status: 503, message: 'Spotify is temporarily unavailable' } }), cutoff: 1 },
+    { fixture: spotifyImportFixture(IMPORT_IDS.b, 'Empty Playlist', []), cutoff: 1 },
+    { fixture: spotifyImportFixture(IMPORT_IDS.b, 'No Threshold Match'), cutoff: 20 },
+  ]) {
+    await configureSpotifyImports({ [IMPORT_IDS.a]: successful, [IMPORT_IDS.b]: scenario.fixture });
+    await page.evaluate(cutoff => setPlaylistImportMinTracks(cutoff), scenario.cutoff);
+    const before = await page.evaluate(spotifySessionSnapshot);
+    assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), false);
+    const after = await page.evaluate(spotifySessionSnapshot);
+    assert.deepEqual(after, before, 'A rejected import must not replace artists, tracks, events, history or active playlist');
+    assert.equal(await page.evaluate(() => document.getElementById('onboard-url').value), importUrl(IMPORT_IDS.b), 'Keep the attempted link editable so the user can correct or retry it');
+  }
+});
+
+test('a newer Spotify import wins when an older playlist responds late', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Slow Playlist', [['Slow Artist']], { delayMs: 250 }),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Fast Playlist', [['Fast Artist']]),
+  });
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(url => {
+    document.getElementById('onboard-url').value = url;
+    window.__testSlowImport = runSpotifyImport({ mode: 'onboard' });
+  }, importUrl(IMPORT_IDS.a));
+  await page.waitFor(() => spotifyAccountState.pendingPlaylistId === '1'.repeat(22));
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), true);
+  assert.equal(await page.evaluate(() => window.__testSlowImport), false);
+  await settleUi(page, 600);
+  const state = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(state.active, IMPORT_IDS.b);
+  assert.equal(state.playlist.name, 'Fast Playlist');
+  assert.deepEqual(state.artists, ['Fast Artist']);
+  assert.deepEqual(state.plays, { 'fast artist': 1 });
+  assert.ok(state.history.every(item => item.url !== importUrl(IMPORT_IDS.a)), 'A superseded response must not enter playlist history');
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [{ id: IMPORT_IDS.b, artists: ['Fast Artist'] }]);
+});
+
+test('superseded 500ms scan callbacks and canceled imports cannot replace or scan the previous session', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Initial Playlist', [['Alpha']]),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Pending Playlist', [['Beta']], { delayMs: 900 }),
+  });
+  await prepareSpotifyImportTest(page);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  await page.evaluate(url => {
+    document.getElementById('onboard-url').value = url;
+    window.__testCanceledImport = runSpotifyImport({ mode: 'onboard' });
+  }, importUrl(IMPORT_IDS.b));
+  await page.waitFor(() => spotifyAccountState.pendingPlaylistId === '2'.repeat(22));
+  await settleUi(page, 550);
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [], 'The older delayed scan must not run while a newer import owns the UI');
+  await page.evaluate(() => onboardCancel());
+  assert.equal(await page.evaluate(() => window.__testCanceledImport), false);
+  await settleUi(page, 600);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before);
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [], 'Cancel must invalidate pending scan callbacks as well as the HTTP request');
+  assert.match(await page.evaluate(() => document.getElementById('onboard-status-text').textContent), /cancel/i);
+});
+
+test('Spotify access denial offers a clear reconnect action while retaining the link and current results', { concurrency: false }, async () => {
+  await configureSpotifyImports({ [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Private Playlist', undefined, {
+    error: { status: 403, message: 'Playlist access denied' },
+  }) });
+  await prepareSpotifyImportTest(page, {
+    artists: ['Saved Artist'], artistPlays: { 'saved artist': 6 },
+    concerts: [makeConcert('Saved Artist', 5, 'Saved Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'kept-on-denial' })],
+  });
+  const before = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), false);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before);
+  const ui = await page.evaluate(() => ({
+    input: document.getElementById('onboard-url').value,
+    status: document.getElementById('onboard-status-text').textContent,
+    authLabel: document.getElementById('onboard-auth-btn').textContent,
+    authDisabled: document.getElementById('onboard-auth-btn').disabled,
+    authVisible: getComputedStyle(document.getElementById('onboard-auth-btn')).display !== 'none'
+      && document.getElementById('onboard-auth-btn').getBoundingClientRect().height > 0,
+    retryDisabled: document.getElementById('onboard-btn').disabled,
+  }));
+  assert.equal(ui.input, importUrl(IMPORT_IDS.b));
+  assert.match(ui.status, /connect|sign in|access|private/i);
+  assert.match(ui.authLabel, /Spotify/i);
+  assert.equal(ui.authDisabled, false);
+  assert.equal(ui.authVisible, true);
+  assert.equal(ui.retryDisabled, false);
+
+  await page.evaluate(() => {
+    spotifyAccountState.loaded = true;
+    spotifyAccountState.loading = false;
+    spotifyAccountState.connected = true;
+    spotifyAccountState.user = { id: 'other-listener', displayName: 'Other Listener' };
+    spotifyAccountState.playlistsLoaded = true;
+    renderOnboardSpotifyAuth();
+  });
+  const typedLink = `${importUrl(IMPORT_IDS.b)}?si=keep-the-typed-link`;
+  assert.equal(await runOfflineSpotifyImport(page, typedLink), false);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, 'An access error from a connected account must preserve the previous session');
+  const connectedUi = await page.evaluate(() => {
+    const action = document.getElementById('playlist-login-action');
+    return {
+      label: action.textContent.trim(),
+      visible: !action.hidden && action.getBoundingClientRect().height > 0,
+      input: document.getElementById('onboard-url').value,
+    };
+  });
+  assert.equal(connectedUi.label, 'Switch Spotify account');
+  assert.equal(connectedUi.visible, true);
+  assert.equal(connectedUi.input, typedLink);
+  const reconnect = await page.evaluate(async () => {
+    window.__testAuthRoutes = [];
+    window.__testAuthOptions = [];
+    window.__testPlaylistListReloads = 0;
+    // Run the real auth handler with its navigation boundary replaced.
+    // The UI click must select reconnection without leaving this offline page.
+    const realAuthHandler = onboardSpotifyAuthAction;
+    const offlineAuthHandler = new Function('window', `return (${realAuthHandler.toString()});`)({
+      location: {
+        pathname: location.pathname, search: location.search, hash: location.hash,
+        assign: url => window.__testAuthRoutes.push(url),
+      },
+    });
+    onboardSpotifyAuthAction = opts => {
+      window.__testAuthOptions.push(opts || {});
+      window.__testAuthAction = offlineAuthHandler(opts);
+      return window.__testAuthAction;
+    };
+    loadSpotifyAccountPlaylists = async () => { window.__testPlaylistListReloads++; return []; };
+    document.getElementById('playlist-login-action').click();
+    await window.__testAuthAction;
+    return {
+      routes: window.__testAuthRoutes, options: window.__testAuthOptions,
+      listReloads: window.__testPlaylistListReloads,
+      pendingLink: localStorage.getItem('tt_pending_spotify_playlist'),
+      input: document.getElementById('onboard-url').value,
+    };
+  });
+  assert.deepEqual(reconnect.options, [{ reconnect: true }]);
+  assert.equal(reconnect.listReloads, 0, 'Switching accounts must enter login rather than refresh the current account playlists');
+  assert.equal(reconnect.routes.length, 1);
+  const route = new URL(reconnect.routes[0], baseUrl);
+  assert.equal(route.origin, baseUrl);
+  assert.equal(route.pathname, '/api/auth/spotify/login');
+  assert.equal(route.searchParams.get('show_dialog'), '1');
+  assert.equal(route.searchParams.get('returnTo'), '/');
+  assert.equal(reconnect.pendingLink, typedLink);
+  assert.equal(reconnect.input, typedLink);
+  assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, 'Starting account reconnection must not discard the working playlist results');
+});
+
+test('desktop and mobile playlist importers keep readable text and usable link widths within the viewport', { concurrency: false }, async () => {
+  await prepareSpotifyImportTest(page);
+  for (const viewport of [{ width: 1440, height: 900, minInputWidth: 260 }, { width: 375, height: 667, minInputWidth: 200 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    await page.evaluate(url => {
+      hideOnboard();
+      document.getElementById('playlist-open-btn').click();
+      document.getElementById('onboard-url').value = url;
+    }, `${importUrl(IMPORT_IDS.a)}?si=${'a'.repeat(100)}`);
+    await settleUi(page, 120);
+    const ui = await page.evaluate(() => {
+      const bounds = selector => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { left: rect.left, right: rect.right, width: rect.width };
+      };
+      const text = selector => {
+        const element = document.querySelector(selector);
+        const style = getComputedStyle(element);
+        return {
+          ...bounds(selector), text: element.textContent.trim(),
+          clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+          clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+          overflowX: style.overflowX, overflowY: style.overflowY,
+        };
+      };
+      return {
+        viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+        card: bounds('.onboard-card'), input: bounds('#onboard-url'), button: bounds('#onboard-btn'),
+        title: text('#onboard-main-title'), sub: text('#onboard-sub-text'),
+        editable: !document.getElementById('onboard-url').readOnly,
+      };
+    });
+    assert.equal(ui.editable, true);
+    assert.ok(ui.scrollWidth <= ui.viewport + 1, `${viewport.width}px: the importer must not create horizontal page scrolling`);
+    assert.ok(ui.input.width >= viewport.minInputWidth, `${viewport.width}px: link field needs at least ${viewport.minInputWidth}px, got ${ui.input.width}px`);
+    for (const [name, rect] of Object.entries({ card: ui.card, input: ui.input, button: ui.button, title: ui.title, sub: ui.sub })) {
+      assert.ok(rect.width > 0 && rect.left >= -1 && rect.right <= ui.viewport + 1, `${viewport.width}px: ${name} must fit within the viewport`);
+    }
+    for (const [name, element] of Object.entries({ title: ui.title, subtitle: ui.sub })) {
+      assert.ok(element.text.length > 0, `${viewport.width}px: ${name} must remain visible`);
+      assert.ok(element.clientHeight > 0 && (element.scrollHeight <= element.clientHeight + 1 || element.overflowY === 'visible')
+        && element.scrollWidth <= element.clientWidth + 1, `${viewport.width}px: the full ${name} must wrap without clipping: ${JSON.stringify(element)}`);
+    }
+  }
+});
+
+test('saved playlist sessions restore A after importing B and reloading without Spotify calls or cross-playlist cache data', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Saved Playlist A', [['Alpha', 'Shared'], ['Alpha']]),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Saved Playlist B', [['Beta'], ['Beta']]),
+  });
+  await prepareSpotifyImportTest(page, { artists: ['Original Main'], artistPlays: { 'original main': 8 } });
+  await page.evaluate(() => persistSettings());
+  const mainArtists = await page.evaluate(() => localStorage.getItem('tt_main_artists'));
+  assert.deepEqual(JSON.parse(mainArtists), ['Original Main']);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  const concertA = makeConcert('Alpha', 4, 'A Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'session-a-show' });
+  const festivalA = makeFestival('A Festival', 6, 'Berlin', 'DE', 52.52, 13.405, { id: 'session-a-fest', lineup: ['Alpha'], matched: [{ artist: 'Alpha', plays: 2 }] });
+  const concertB = makeConcert('Beta', 9, 'B Venue', 'Paris', 'FR', 48.8566, 2.3522, { id: 'session-b-show' });
+  await page.evaluate(async (event, festival) => {
+    concerts = [event]; festivals = [festival]; SCANNED_ARTISTS = ['Alpha']; cacheTimestamp = Date.now();
+    persistData();
+    await persistActivePlaylistSession();
+  }, concertA, festivalA);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), true);
+  await page.evaluate(async event => {
+    concerts = [event]; festivals = []; SCANNED_ARTISTS = ['Beta']; cacheTimestamp = Date.now();
+    persistData();
+    await persistActivePlaylistSession();
+    await DB.put('artists', 'beta', { ts: Date.now(), cHash: countryHash(), shows: [event] });
+    await DB.put('artists', 'unrelated', { ts: Date.now(), cHash: countryHash(), shows: [{ ...event, id: 'unrelated-cached-show', artist: 'Unrelated' }] });
+  }, concertB);
+  const callsBeforeReload = (await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls;
+  await page.navigate(baseUrl);
+  await page.waitFor(() => window.__testImportScanCalls === undefined
+    && SPOTIFY_PLAYLIST_META?.id === '2'.repeat(22) && concerts.some(event => event.id === 'session-b-show'));
+  const reloadedB = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(reloadedB.active, IMPORT_IDS.b);
+  assert.deepEqual(reloadedB.artists, ['Beta']);
+  assert.deepEqual(reloadedB.plays, { beta: 2 });
+  assert.deepEqual(reloadedB.concerts, ['session-b-show']);
+  assert.deepEqual(reloadedB.festivals, []);
+  assert.deepEqual(reloadedB.scanned, ['Beta']);
+  await page.evaluate(url => {
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    window.__testImportScanCalls = [];
+    saveAndFetch = () => window.__testImportScanCalls.push(true);
+    openPlaylistImport();
+    renderOnboardHistory();
+    const historyCard = [...document.querySelectorAll('#onboard-history [data-playlist-url]')].find(card => card.dataset.playlistUrl === url);
+    if (!historyCard) throw new Error('Saved playlist A is missing from history');
+    historyCard.click();
+  }, importUrl(IMPORT_IDS.a));
+  await page.waitFor(() => SPOTIFY_PLAYLIST_META?.id === '1'.repeat(22) && concerts.some(event => event.id === 'session-a-show'));
+  await settleUi(page, 620);
+  const restoredA = await page.evaluate(spotifySessionSnapshot);
+  assert.equal(restoredA.active, IMPORT_IDS.a);
+  assert.equal(restoredA.playlist.name, 'Saved Playlist A');
+  assert.deepEqual(restoredA.artists, ['Alpha', 'Shared']);
+  assert.deepEqual(restoredA.tracked, ['Alpha', 'Shared']);
+  assert.deepEqual(restoredA.plays, { alpha: 2, shared: 1 });
+  assert.equal(restoredA.tracks.alpha.totalTrackHits, 2);
+  assert.equal(restoredA.tracks.shared.totalTrackHits, 1);
+  assert.equal(restoredA.tracks.beta, undefined, 'Artist track caches must belong to the selected playlist');
+  assert.deepEqual(restoredA.concerts, ['session-a-show']);
+  assert.deepEqual(restoredA.festivals, ['session-a-fest']);
+  assert.deepEqual(restoredA.scanned, ['Alpha']);
+  assert.deepEqual((await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls, callsBeforeReload, 'History restore must use saved sessions without calling Spotify again');
+  assert.deepEqual(await page.evaluate(() => window.__testImportScanCalls), [], 'Opening a cached session must not start a replacement discovery scan');
+  assert.equal(await page.evaluate(() => localStorage.getItem('tt_main_artists')), mainArtists, 'Arbitrary imports must preserve the original Main artist source');
+  const sessions = await page.evaluate(async (first, second) => ({ a: await getPlaylistSession(first), b: await getPlaylistSession(second) }), IMPORT_IDS.a, IMPORT_IDS.b);
+  assert.deepEqual(sessions.a.concerts.map(event => event.id), ['session-a-show']);
+  assert.deepEqual(sessions.b.concerts.map(event => event.id), ['session-b-show']);
+});
+
+const KNOWN_SPOTIFY_ACCOUNT = {
+  user: { id: 'offline-listener', displayName: 'Offline Listener' },
+  playlists: [
+    { id: IMPORT_IDS.a, name: 'Saved Listening', url: importUrl(IMPORT_IDS.a), trackCount: 7, ownerName: 'Offline Listener' },
+    { id: IMPORT_IDS.b, name: 'Next Shows', url: importUrl(IMPORT_IDS.b), trackCount: 11, ownerName: 'Offline Listener' },
+  ],
+};
+
+async function seedKnownSpotifyAccount(pageRef) {
+  await pageRef.evaluate(account => {
+    Object.assign(spotifyAccountState, {
+      loaded: true, loading: false, connected: true, user: account.user,
+      playlists: account.playlists, playlistsLoaded: true, playlistsLoading: false,
+      pendingPlaylistId: '', error: '',
+    });
+    spotifyAuthFlash = null;
+    renderOnboardSpotifyAuth();
+  }, KNOWN_SPOTIFY_ACCOUNT);
+}
+
+async function prepareSpotifyAccountRefreshTest(pageRef) {
+  await configureSpotifyImports({ [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Working Playlist', [['Saved Artist']]) });
+  await prepareSpotifyImportTest(pageRef);
+  assert.equal(await runOfflineSpotifyImport(pageRef, importUrl(IMPORT_IDS.a)), true);
+  await settleUi(pageRef, 560);
+  await pageRef.waitFor(() => !spotifyAccountState.loading && !spotifyAccountState.playlistsLoading);
+  const event = makeConcert('Saved Artist', 5, 'Saved Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'working-auth-refresh-show' });
+  await pageRef.evaluate(async savedEvent => {
+    concerts = [savedEvent]; SCANNED_ARTISTS = ['Saved Artist']; persistData();
+    await persistActivePlaylistSession();
+    openPlaylistImport();
+  }, event);
+  await seedKnownSpotifyAccount(pageRef);
+}
+
+function spotifyAccountUiSnapshot() {
+  const authButton = document.getElementById('onboard-auth-btn');
+  const logout = document.getElementById('onboard-auth-logout');
+  const status = document.getElementById('onboard-auth-status');
+  return {
+    loaded: spotifyAccountState.loaded, loading: spotifyAccountState.loading,
+    connected: spotifyAccountState.connected, user: spotifyAccountState.user,
+    playlists: spotifyAccountState.playlists, playlistsLoaded: spotifyAccountState.playlistsLoaded,
+    playlistsLoading: spotifyAccountState.playlistsLoading, error: spotifyAccountState.error,
+    authLabel: authButton.textContent.trim(), authDisabled: authButton.disabled,
+    logoutVisible: getComputedStyle(logout).display !== 'none' && logout.getBoundingClientRect().height > 0,
+    cardIds: [...document.querySelectorAll('#onboard-auth-list button[data-playlist-id]')].map(card => card.dataset.playlistId),
+    status: status.textContent, tone: status.dataset.tone,
+  };
+}
+
+// Exercise the real response reader and account handlers. Only fetch is offline;
+// a short deadline makes an unfinished response body fail without a long wait.
+async function runSpotifyAccountResponseFixture(spec) {
+  const originalFetch = window.fetch;
+  const originalReader = fetchSpotifyUiJson;
+  const calls = [];
+  let bodyAbortCount = 0;
+  let bodyReadError = null;
+  let readerError = null;
+  window.fetch = async (input, options = {}) => {
+    calls.push(typeof input === 'string' ? input : input.url);
+    if (spec.kind === 'network') throw new TypeError('Offline connection interrupted');
+    if (spec.kind === 'body-timeout') {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"connected":'));
+          options.signal.addEventListener('abort', () => {
+            bodyAbortCount++;
+            controller.error(new DOMException('Offline body aborted', 'AbortError'));
+          }, { once: true });
+        },
+      });
+      const response = new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      const readJson = response.json.bind(response);
+      response.json = async () => {
+        try { return await readJson(); }
+        catch (error) {
+          bodyReadError = { name: error.name, message: error.message };
+          throw error;
+        }
+      };
+      return response;
+    }
+    return new Response(spec.kind === 'invalid-json' ? '<offline unavailable>' : JSON.stringify(spec.payload), {
+      status: spec.status || 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  fetchSpotifyUiJson = async (url, options, opts) => {
+    try {
+      return await originalReader(url, options, { ...opts, timeoutMs: 30 });
+    } catch (error) {
+      readerError = { status: error.status || null, message: error.message };
+      throw error;
+    }
+  };
+  try {
+    if (spec.action === 'session') await refreshSpotifyAccount({ withPlaylists: true, force: true });
+    else if (spec.action === 'playlists') await loadSpotifyAccountPlaylists(true);
+    else {
+      try { await fetchSpotifyUiJson('/__offline/spotify-response', {}, { label: 'Offline Spotify response' }); }
+      catch (_) {}
+    }
+    return { calls, bodyAbortCount, bodyReadError, readerError };
+  } finally {
+    window.fetch = originalFetch;
+    fetchSpotifyUiJson = originalReader;
+  }
+}
+
+function assertKnownSpotifyAccountRetained(ui, label) {
+  assert.equal(ui.connected, true, `${label}: a temporary failure must retain the known connection`);
+  assert.deepEqual(ui.user, KNOWN_SPOTIFY_ACCOUNT.user, `${label}: retain the known account`);
+  assert.deepEqual(ui.playlists, KNOWN_SPOTIFY_ACCOUNT.playlists, `${label}: retain previously loaded playlists`);
+  assert.equal(ui.loaded, true);
+  assert.equal(ui.playlistsLoaded, true);
+  assert.equal(ui.loading, false);
+  assert.equal(ui.playlistsLoading, false);
+  assert.equal(ui.authLabel, 'Refresh playlists');
+  assert.equal(ui.authDisabled, false, `${label}: the user can retry after the request settles`);
+  assert.equal(ui.logoutVisible, true);
+  assert.deepEqual(ui.cardIds, [IMPORT_IDS.a, IMPORT_IDS.b]);
+  assert.ok(ui.error.length > 0, `${label}: show the request failure`);
+  assert.equal(ui.status, ui.error);
+  assert.equal(ui.tone, 'error');
+}
+
+test('Spotify session refresh retains the account and playlists after transient failures without a second request', { concurrency: false }, async () => {
+  await prepareSpotifyAccountRefreshTest(page);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  const cases = [
+    { name: '503 unavailable', status: 503, payload: { error: 'Spotify unavailable' }, expectedStatus: 503 },
+    { name: '429 rate limit', status: 429, payload: { error: 'Try again later' }, expectedStatus: 429 },
+    { name: 'network interruption', kind: 'network' },
+    { name: 'response body timeout', kind: 'body-timeout', expectedStatus: 504 },
+    { name: 'malformed JSON 200', kind: 'invalid-json', expectedStatus: 502 },
+    { name: 'missing connected 200', payload: { user: null } },
+    { name: 'nonboolean connected 200', payload: { connected: 'false', user: null } },
+    { name: 'array 200', payload: [], expectedStatus: 502 },
+    { name: 'null 200', payload: null, expectedStatus: 502 },
+  ];
+  for (const scenario of cases) {
+    await seedKnownSpotifyAccount(page);
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, { ...scenario, action: 'session' });
+    assert.deepEqual(result.calls, ['/api/auth/spotify/session'], `${scenario.name}: a failed session check must not request playlists`);
+    if (scenario.expectedStatus) assert.equal(result.readerError.status, scenario.expectedStatus, scenario.name);
+    if (scenario.kind === 'body-timeout') assert.equal(result.bodyAbortCount, 1, 'The actual reader deadline must abort the stalled body');
+    assertKnownSpotifyAccountRetained(await page.evaluate(spotifyAccountUiSnapshot), scenario.name);
+    assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, `${scenario.name}: retain the imported playlist and saved events`);
+  }
+});
+
+test('Spotify playlist refresh retains loaded choices and results after transient or malformed responses', { concurrency: false }, async () => {
+  await prepareSpotifyAccountRefreshTest(page);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  const cases = [
+    { name: '503 unavailable', status: 503, payload: { error: 'Spotify unavailable' }, expectedStatus: 503 },
+    { name: '429 rate limit', status: 429, payload: { error: 'Try again later' }, expectedStatus: 429 },
+    { name: 'network interruption', kind: 'network' },
+    { name: 'response body timeout', kind: 'body-timeout', expectedStatus: 504 },
+    { name: 'malformed JSON 200', kind: 'invalid-json', expectedStatus: 502 },
+    { name: 'missing items 200', payload: { total: 0 } },
+    { name: 'nonarray items 200', payload: { items: null } },
+    { name: 'primitive 200', payload: 'unavailable', expectedStatus: 502 },
+  ];
+  for (const scenario of cases) {
+    await seedKnownSpotifyAccount(page);
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, { ...scenario, action: 'playlists' });
+    assert.deepEqual(result.calls, ['/api/spotify/me/playlists'], scenario.name);
+    if (scenario.expectedStatus) assert.equal(result.readerError.status, scenario.expectedStatus, scenario.name);
+    assertKnownSpotifyAccountRetained(await page.evaluate(spotifyAccountUiSnapshot), scenario.name);
+    assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, `${scenario.name}: refreshing account choices must preserve the working session`);
+  }
+});
+
+test('authoritative Spotify disconnect and 401 clear account choices while preserving the imported playlist', { concurrency: false }, async () => {
+  await prepareSpotifyAccountRefreshTest(page);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  for (const scenario of [
+    { name: 'disconnected session 200', action: 'session', payload: { connected: false, user: null } },
+    { name: 'session 401', action: 'session', status: 401, payload: { error: 'Session expired' } },
+    { name: 'playlist 401', action: 'playlists', status: 401, payload: { error: 'Session expired' } },
+    { name: 'non-JSON session 401', action: 'session', status: 401, kind: 'invalid-json' },
+    { name: 'JSON null session 401', action: 'session', status: 401, payload: null },
+  ]) {
+    await seedKnownSpotifyAccount(page);
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, scenario);
+    assert.deepEqual(result.calls, [scenario.action === 'session' ? '/api/auth/spotify/session' : '/api/spotify/me/playlists']);
+    const ui = await page.evaluate(spotifyAccountUiSnapshot);
+    assert.equal(ui.connected, false, scenario.name);
+    assert.equal(ui.user, null, scenario.name);
+    assert.deepEqual(ui.playlists, [], scenario.name);
+    assert.equal(ui.playlistsLoaded, false);
+    assert.equal(ui.loading, false);
+    assert.equal(ui.playlistsLoading, false);
+    assert.equal(ui.authLabel, 'Continue with Spotify');
+    assert.equal(ui.authDisabled, false);
+    assert.equal(ui.logoutVisible, false);
+    assert.deepEqual(ui.cardIds, []);
+    assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, `${scenario.name}: account logout must not discard imported concert results`);
+  }
+});
+
+test('Spotify response reader aborts an unfinished JSON body and preserves non-JSON error statuses', { concurrency: false }, async () => {
+  const timeout = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'body-timeout' });
+  assert.equal(timeout.bodyAbortCount, 1, 'The helper must abort the response body through its own AbortSignal');
+  assert.equal(timeout.readerError.status, 504, `An aborted body must reject rather than return an empty success object: ${JSON.stringify(timeout)}`);
+  assert.match(timeout.readerError.message, /timed out/i);
+  for (const status of [401, 429, 503]) {
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'invalid-json', status });
+    assert.equal(result.readerError.status, status, 'An HTML or malformed error body must preserve the upstream HTTP status');
+  }
+  const nullUnauthorized = await page.evaluate(runSpotifyAccountResponseFixture, { status: 401, payload: null });
+  assert.equal(nullUnauthorized.readerError.status, 401, 'A JSON null error body must preserve the authoritative unauthorized status');
+  const malformedSuccess = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'invalid-json', status: 200 });
+  assert.equal(malformedSuccess.readerError.status, 502, 'A malformed successful response must reject with an invalid-response error');
+});
+
+function sharedEventTypeFixture() {
+  return {
+    artists: ['Filter Alpha', 'Filter Beta'], artistPlays: { 'filter alpha': 12, 'filter beta': 9 },
+    concerts: [
+      makeConcert('Filter Alpha', 3, 'Filter Alpha First', 'Berlin', 'DE', 52.52, 13.405, { id: 'type-alpha-first' }),
+      makeConcert('Filter Alpha', 9, 'Filter Alpha Second', 'Amsterdam', 'NL', 52.362, 4.883, { id: 'type-alpha-second' }),
+      makeConcert('Filter Beta', 5, 'Filter Beta First', 'London', 'GB', 51.5074, -0.1278, { id: 'type-beta-first' }),
+    ],
+    festivals: [
+      makeFestival('Filter Weekend', 6, 'Berlin', 'DE', 52.521, 13.406, {
+        id: 'type-weekend-fest', score: 88, matched: [{ artist: 'Filter Alpha', plays: 12 }],
+      }),
+      makeFestival('Filter Nights', 12, 'Amsterdam', 'NL', 52.361, 4.882, {
+        id: 'type-nights-fest', score: 75, matched: [{ artist: 'Filter Beta', plays: 9 }],
+      }),
+    ],
+  };
+}
+
+async function prepareSharedEventTypeTest(pageRef, fixture = sharedEventTypeFixture()) {
+  await setViewport(pageRef, 1440, 900);
+  await pageRef.evaluate(installFixture, fixture);
+  await pageRef.evaluate(() => {
+    hideOnboard(); setWorkspaceView('map');
+    if (document.getElementById('map-sidebar').classList.contains('collapsed')) {
+      document.querySelector('#sidebar-open-tabs button').click();
+    } else document.getElementById('tab-tours').click();
+  });
+  await settleUi(pageRef, 180);
+}
+
+function sharedEventTypeSnapshot() {
+  const tourIds = new Set();
+  const festIds = new Set();
+  let markerLayers = 0;
+  let pathLayers = 0;
+  lmap.eachLayer(layer => {
+    if (layer instanceof L.Marker) markerLayers++;
+    if (layer instanceof L.Path) pathLayers++;
+    for (const item of layer._ctLayout?.items || []) {
+      if (item.kind === 'tour') tourIds.add(item.ev.id);
+      else if (item.kind === 'fest') festIds.add(item.f.id);
+    }
+  });
+  const name = element => (element?.firstChild?.textContent || element?.textContent || '').trim();
+  const calendarArtists = [...document.querySelectorAll('#cal-body .ev-headline .ev-name')].map(name).sort();
+  const calendarFests = [...document.querySelectorAll('#cal-body .ev-main > .ev-name')].map(name).sort();
+  const typeChips = Object.fromEntries([...document.querySelectorAll('#cal-type-row [data-t]')]
+    .map(button => [button.dataset.t, button.classList.contains('on')]));
+  return {
+    showShows, showFests, showMapTours, showMapFests, focusedArtist, sidebarTab,
+    typeChips, calendarArtists, calendarFests,
+    tourIds: [...tourIds].sort(), festIds: [...festIds].sort(), markerLayers, pathLayers,
+    selectedMapTypes: ['both', 'tours', 'fests'].filter(type => {
+      const button = document.getElementById('mft-' + type);
+      return button.classList.contains('on') || button.classList.contains('on-f');
+    }),
+    tourLayerOn: document.getElementById('lt-t').classList.contains('on-t'),
+    festLayerOn: document.getElementById('lt-f').classList.contains('on-f'),
+    focusRows: document.querySelectorAll('#focus-list .fshow').length,
+    visiblePanelCount: Number(document.getElementById('msb-visible-count').textContent),
+    tourMarkerCount: tourMarkers.length,
+    visiblePanelNames: [...document.querySelectorAll('#msb-visible-list .msb-vis-name')].map(name).sort(),
+    visibleArtistFocus: hasVisibleArtistFocus(),
+  };
+}
+
+function assertSharedEventTypeState(state, shows, fests, label) {
+  assert.deepEqual([state.showShows, state.showFests], [shows, fests], `${label}: calendar type selection`);
+  assert.deepEqual([state.showMapTours, state.showMapFests], [shows, fests], `${label}: the map must use the calendar type selection`);
+  assert.deepEqual(state.typeChips, { shows, fests }, `${label}: calendar chips reflect the shared selection`);
+  assert.deepEqual([state.tourLayerOn, state.festLayerOn], [shows, fests], `${label}: map layer toggles reflect the shared selection`);
+  assert.deepEqual(state.selectedMapTypes, shows && fests ? ['both'] : shows ? ['tours'] : fests ? ['fests'] : [], `${label}: map type chips reflect the shared selection`);
+  assert.deepEqual(state.calendarArtists, shows ? ['Filter Alpha', 'Filter Alpha', 'Filter Beta'] : [], `${label}: filtered calendar concerts`);
+  assert.deepEqual(state.calendarFests, fests ? ['Filter Nights', 'Filter Weekend'] : [], `${label}: filtered calendar festivals`);
+  if (!shows) assert.deepEqual(state.tourIds, [], `${label}: disabled shows must have no attached marker descriptors`);
+  if (!fests) assert.deepEqual(state.festIds, [], `${label}: disabled festivals must have no attached marker descriptors`);
+  if (!shows && !fests) {
+    assert.equal(state.markerLayers, 0, `${label}: both types disabled must remove all marker layers`);
+    assert.equal(state.pathLayers, 0, `${label}: both types disabled must remove route lines and dots`);
+    assert.equal(state.visiblePanelCount, 0, `${label}: the visible-map count must clear with the map`);
+  }
+}
+
+function assertOverviewTourRepresentatives(state) {
+  // Overview selects the artist's first show inside the current viewport.
+  // Smart fitting after a filter click may legitimately change that show.
+  assert.equal(state.tourIds.length, 2, 'Overview must retain exactly one marker for each included artist');
+  assert.ok(state.tourIds.includes('type-beta-first'));
+  const alphaIds = state.tourIds.filter(id => ['type-alpha-first', 'type-alpha-second'].includes(id));
+  assert.equal(alphaIds.length, 1, 'Overview must retain a known Filter Alpha event');
+}
+
+async function clickEventTypeControl(pageRef, selector) {
+  await pageRef.evaluate(value => {
+    const button = document.querySelector(value);
+    if (!button || button.tagName !== 'BUTTON') throw new Error(`Missing event-type button ${value}`);
+    button.click();
+  }, selector);
+  await settleUi(pageRef, 180);
+  return pageRef.evaluate(sharedEventTypeSnapshot);
+}
+
+test('calendar Shows and Fests buttons filter overview markers and allow both event types to be disabled', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  const initial = await page.evaluate(sharedEventTypeSnapshot);
+  assertSharedEventTypeState(initial, true, true, 'initial overview');
+  assertOverviewTourRepresentatives(initial);
+  assert.deepEqual(initial.festIds, ['type-nights-fest', 'type-weekend-fest']);
+
+  const showsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(showsOnly, true, false, 'Shows only');
+  assertOverviewTourRepresentatives(showsOnly);
+  const empty = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(empty, false, false, 'Both disabled');
+  const festsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(festsOnly, false, true, 'Fests only');
+  assert.deepEqual(festsOnly.festIds, ['type-nights-fest', 'type-weekend-fest']);
+  const restored = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(restored, true, true, 'Both restored');
+  assertOverviewTourRepresentatives(restored);
+  assert.deepEqual(restored.festIds, initial.festIds);
+
+  const bridged = sharedEventTypeFixture();
+  bridged.artists = ['Filter Alpha'];
+  bridged.concerts = [{ ...bridged.concerts[0], isFest: true }];
+  bridged.festivals = [{
+    ...bridged.festivals[0], date: bridged.concerts[0].date,
+    venue: bridged.concerts[0].venue, lat: bridged.concerts[0].lat, lng: bridged.concerts[0].lng,
+  }];
+  await prepareSharedEventTypeTest(page, bridged);
+  const festivalAppearanceAsShow = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assert.deepEqual(festivalAppearanceAsShow.calendarArtists, ['Filter Alpha'], 'Shows-only keeps an imported concert flagged as a festival appearance');
+  assert.deepEqual(festivalAppearanceAsShow.calendarFests, []);
+  assert.deepEqual(festivalAppearanceAsShow.tourIds, ['type-alpha-first'], 'The festival-appearance concert must have a show marker when the festival layer is disabled');
+  assert.deepEqual(festivalAppearanceAsShow.festIds, []);
+  await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  const festivalAppearanceAsFest = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assert.deepEqual(festivalAppearanceAsFest.calendarArtists, []);
+  assert.deepEqual(festivalAppearanceAsFest.tourIds, [], 'Fests-only cannot rebuild any concert ID, including isFest concerts');
+  assert.deepEqual(festivalAppearanceAsFest.festIds, ['type-weekend-fest']);
+});
+
+test('focused artist maps honor shared event types without rebuilding excluded shows from raw concerts', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  await page.evaluate(() => document.querySelector('.msb-artist[data-artist="Filter Alpha"] .msb-focus').click());
+  await settleUi(page, 180);
+  const initial = await page.evaluate(sharedEventTypeSnapshot);
+  assert.equal(initial.focusedArtist, 'Filter Alpha');
+  assert.deepEqual(initial.tourIds, ['type-alpha-first', 'type-alpha-second']);
+  assert.equal(initial.visiblePanelCount, initial.tourMarkerCount, 'Entering artist focus must update the visible marker count');
+
+  await page.evaluate(() => {
+    lmap.stop();
+    // Keep the unrelated artist and both festival locations in bounds. They
+    // must still be excluded because the map represents only Filter Alpha.
+    lmap.setView([52, 6], 4, { animate: false });
+    document.querySelector('#msb-visible .msb-visible-hd').click();
+  });
+  await settleUi(page, 220);
+  assert.equal(await page.evaluate(() => [...concerts, ...festivals].every(event => lmap.getBounds().contains([event.lat, event.lng]))), true,
+    'The unrelated artist and festivals must be in bounds so the panel test exercises represented-event filtering');
+  const openFocus = await page.evaluate(sharedEventTypeSnapshot);
+  assert.deepEqual(openFocus.visiblePanelNames, ['Filter Alpha'], 'The open On screen panel must exclude unrelated artists and unrendered festivals in focus mode');
+  assert.equal(openFocus.visiblePanelCount, 1, 'The open panel counts the single represented artist rather than their two show markers');
+
+  const showsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(showsOnly, true, false, 'Focused Shows only');
+  assert.deepEqual(showsOnly.tourIds, initial.tourIds);
+  assert.deepEqual(showsOnly.visiblePanelNames, ['Filter Alpha'], 'Shows-only keeps the open panel scoped to the focused artist');
+  assert.equal(showsOnly.visiblePanelCount, 1);
+  const empty = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(empty, false, false, 'Focused both disabled');
+  assert.equal(empty.focusRows, 0, 'The focus list must not retain disabled concert rows');
+  assert.deepEqual(empty.visiblePanelNames, [], 'An empty map must not retain old On screen rows');
+  const festsOnly = await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  assertSharedEventTypeState(festsOnly, false, true, 'Focused Fests only');
+  assert.equal(festsOnly.focusedArtist, 'Filter Alpha', 'The artist selection is retained for restoring Shows');
+  assert.equal(festsOnly.visibleArtistFocus, false, 'Fests-only is overview mode even with a remembered artist selection');
+  await page.evaluate(() => {
+    window.__testFestivalRootsBeforeZoom = [...festMarkers];
+    lmap.setZoom(lmap.getZoom() === 8 ? 6 : 8, { animate: false });
+  });
+  await page.waitFor(() => festMarkers.length > 0 && festMarkers.every(marker => !window.__testFestivalRootsBeforeZoom.includes(marker)));
+  await settleUi(page, 180);
+  const zoomedFests = await page.evaluate(sharedEventTypeSnapshot);
+  assertSharedEventTypeState(zoomedFests, false, true, 'Fests-only after real zoom');
+  assert.equal(zoomedFests.visibleArtistFocus, false);
+  assert.deepEqual(zoomedFests.festIds, ['type-nights-fest', 'type-weekend-fest'], 'Zoom must rebuild the overview festival markers without losing events');
+  const restored = await clickEventTypeControl(page, '#cal-type-row [data-t="shows"]');
+  assertSharedEventTypeState(restored, true, true, 'Focused Shows restored');
+  assert.equal(restored.focusedArtist, 'Filter Alpha');
+  assert.deepEqual(restored.tourIds, initial.tourIds, 'Restoring Shows must retain the selected artist instead of showing other artists');
+  assert.deepEqual(restored.visiblePanelNames, ['Filter Alpha'], 'Restoring Both must remove festival and unrelated-artist rows from the focused On screen panel');
+  assert.equal(restored.visiblePanelCount, 1, 'The restored open focus panel counts only the represented artist');
+});
+
+test('map type chips and layer buttons synchronize calendar types including an empty map selection', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  const tours = await clickEventTypeControl(page, '#mft-tours');
+  assertSharedEventTypeState(tours, true, false, 'Map Tours');
+  assertOverviewTourRepresentatives(tours);
+  const fests = await clickEventTypeControl(page, '#mft-fests');
+  assertSharedEventTypeState(fests, false, true, 'Map Fests');
+  assert.deepEqual(fests.festIds, ['type-nights-fest', 'type-weekend-fest']);
+  const both = await clickEventTypeControl(page, '#mft-both');
+  assertSharedEventTypeState(both, true, true, 'Map Both');
+  await clickEventTypeControl(page, '#tab-tours');
+  const onlyFests = await clickEventTypeControl(page, '#lt-t');
+  assertSharedEventTypeState(onlyFests, false, true, 'Tour layer disabled');
+  const empty = await clickEventTypeControl(page, '#lt-f');
+  assertSharedEventTypeState(empty, false, false, 'Both map layers disabled');
+  const restored = await clickEventTypeControl(page, '#lt-t');
+  assertSharedEventTypeState(restored, true, false, 'Tour layer restored');
+  assertOverviewTourRepresentatives(restored);
+});
+
+test('map sidebar tab changes do not reenable excluded event types or leave disabled festival markers', { concurrency: false }, async () => {
+  await prepareSharedEventTypeTest(page);
+  await clickEventTypeControl(page, '#mft-tours');
+  const excludedFests = await clickEventTypeControl(page, '#tab-fests');
+  assertSharedEventTypeState(excludedFests, true, false, 'Festival tab with festivals disabled');
+  const tours = await clickEventTypeControl(page, '#tab-tours');
+  assertSharedEventTypeState(tours, true, false, 'Tour tab keeps Shows only');
+  assertOverviewTourRepresentatives(tours);
+
+  await clickEventTypeControl(page, '#mft-fests');
+  const excludedTours = await clickEventTypeControl(page, '#tab-tours');
+  assertSharedEventTypeState(excludedTours, false, true, 'Tour tab with shows disabled');
+  await clickEventTypeControl(page, '#cal-type-row [data-t="fests"]');
+  for (const tab of ['fests', 'tours']) {
+    const empty = await clickEventTypeControl(page, '#tab-' + tab);
+    assertSharedEventTypeState(empty, false, false, `${tab} tab with both types disabled`);
+  }
+
+  await page.navigate(baseUrl);
+  await prepareSharedEventTypeTest(page, { ...sharedEventTypeFixture(), concerts: [] });
+  const festivalOnlyControls = await page.evaluate(() => ({
+    typesVisible: ['both', 'tours', 'fests'].every(type => {
+      const button = document.getElementById('mft-' + type);
+      return getComputedStyle(button).display !== 'none' && button.getBoundingClientRect().height > 0;
+    }),
+    filterBarVisible: getComputedStyle(document.getElementById('msb-filters')).display !== 'none',
+  }));
+  assert.deepEqual(festivalOnlyControls, { typesVisible: true, filterBarVisible: true }, 'A fresh festival-only dataset must expose map type controls without requiring any concert data first');
+  const festivalOnly = await clickEventTypeControl(page, '#mft-fests');
+  assert.deepEqual(festivalOnly.festIds, ['type-nights-fest', 'type-weekend-fest']);
+  assert.deepEqual(festivalOnly.typeChips, { shows: false, fests: true });
 });

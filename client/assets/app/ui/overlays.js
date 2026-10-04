@@ -15,7 +15,7 @@ function openFestDetail(festId) {
   const f = festivals.find(x => x.id === festId);
   if (!f) return;
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const score    = f.score  || 0;
   const matched  = (f.matched || []).slice().sort((a, b) => b.weight - a.weight);
   const lineup   = (f.lineup || []);
@@ -150,7 +150,7 @@ function _artistDetailMatchKeys(value) {
 }
 
 function _artistDetailUpcomingShows(artist) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const artistKeys = _artistDetailMatchKeys(artist);
   const seen = new Set();
   return (concerts || [])
@@ -509,59 +509,27 @@ function _adKeyHandler(e) {
 }
 
 function renderFestMap(hlId) {
-  festMarkers.forEach(m => m.remove()); festMarkers = [];
+  clearFestMarkers();
+  if (!showMapFests) {
+    focusedFest = null;
+    document.querySelectorAll('.fcard').forEach(c => c.classList.remove('hl'));
+    _refreshVisiblePanelAfterRender();
+    scheduleMapLabelLayout();
+    return;
+  }
   focusedFest = hlId;
   document.querySelectorAll('.fcard').forEach(c => c.classList.toggle('hl', c.dataset.id === hlId));
 
-  const today = new Date().toISOString().split('T')[0];
-  const up = festivals.filter(f => f.date >= today && f.lat && f.lng && geoDisplayOk(f.country || ''));
-  if (!up.length) return;
+  const up = festivals.filter(f => eventDateMatchesPreset(f) && f.lat && f.lng && geoDisplayOk(f.country || '') && mapScoreOkFest(f));
+  if (!up.length) {
+    _refreshVisiblePanelAfterRender();
+    scheduleMapLabelLayout();
+    return;
+  }
 
-  const maxS = Math.max(...up.map(f => f.score||0), 1);
-
-  up.forEach(f => {
-    const score = f.score || 0, isHL = f.id === focusedFest;
-    // score is 0-100; pct is 0-1 for visual sizing/coloring
-    const pct = score / 100;
-    const size = isHL ? 32 : score > 0 ? Math.round(10 + pct * 18) : 8;
-    const col = isHL ? '#c8ff5f' : pct > .5 ? '#c8ff5f' : pct > .15 ? '#ffaa3c' : score > 0 ? '#ff8c5f' : '#3a3a42';
-    const bg = isHL ? 'rgba(200,255,95,.22)' : score > 0 ? `rgba(200,170,95,${.07+pct*.13})` : 'rgba(8,8,10,.75)';
-    const glow = isHL ? '0 0 16px rgba(200,255,95,.5)' : score > 0 ? '0 0 6px rgba(200,170,95,.35)' : 'none';
-    const mc = (f.matched||[]).length;
-    // Show score number inside marker (instead of match count)
-    const inner = score > 0 ? `<span style="font-size:${Math.max(.44,.34+pct*.2)}rem;font-weight:700;font-family:'DM Mono',monospace;color:${isHL?'#08080a':col};line-height:1">${score}</span>` : '';
-    const label = isHL ? `<div style="position:absolute;bottom:${size+6}px;left:50%;transform:translateX(-50%);white-space:nowrap;background:rgba(8,8,10,.96);border:1.5px solid #c8ff5f;border-radius:5px;padding:3px 9px;font-family:Syne,sans-serif;font-weight:800;font-size:.6rem;color:#c8ff5f;box-shadow:0 2px 14px rgba(0,0,0,.85);pointer-events:none">${f.name}</div>` : '';
-    const totalH = size + (isHL ? size+8 : 0);
-
-    const icon = L.divIcon({ className:'', iconSize:[size, totalH], iconAnchor:[size/2, totalH],
-      html:`<div style="position:relative;width:${size}px;height:${totalH}px;display:flex;align-items:flex-end;justify-content:center">
-        ${label}
-        <div style="width:${size}px;height:${size}px;border-radius:50%;background:${bg};border:${isHL?2.5:1.5}px solid ${col};display:flex;align-items:center;justify-content:center;box-shadow:${glow};flex-shrink:0">${inner}</div>
-      </div>`
-    });
-
-    const cc = f.country ? ' '+flag(f.country) : '';
-    const matched = f.matched || [];
-    const artistChips = matched.map(m => {
-      const label = m.plays > 0 ? `${m.artist} <span style="opacity:.55;font-size:.58rem">${m.plays}</span>` : m.artist;
-      return `<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;margin:2px 2px 0 0;border-radius:100px;background:rgba(200,255,95,.1);border:1px solid rgba(200,255,95,.3);color:#c8ff5f;font-size:.6rem;white-space:nowrap">${label}</span>`;
-    }).join('');
-    const artistBlock = matched.length
-      ? `<div style="margin:6px 0 4px;max-height:120px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:0">★ ${artistChips}</div>`
-      : '';
-    const popup = `<b style="font-family:Syne,sans-serif;color:${score>0?'#c8ff5f':'#ffaa3c'}">${f.name}</b><br>${fmtDate(f.date)} · ${f.city}${cc}<br>${f.venue?`<span style="color:var(--muted);font-size:.62rem">${f.venue}</span><br>`:''}${artistBlock}${f.url?`<a href="${f.url}" target="_blank" style="color:#ffaa3c">Tickets →</a>`:''}`;
-
-    const mk = L.marker([f.lat, f.lng], { icon, zIndexOffset: isHL ? 1000 : Math.round(score * 5) })
-      .addTo(lmap).bindPopup(popup);
-    mk.on('click', () => {
-      if (f.id !== focusedFest) {
-        renderFestMap(f.id);
-        const card = document.querySelector(`.fcard[data-id="${f.id}"]`);
-        if (card) card.scrollIntoView({ behavior:'smooth', block:'nearest' });
-      }
-    });
-    festMarkers.push(mk);
-  });
+  _renderFestLabels({ items: up, cluster: false, highlightedId: hlId });
+  _refreshVisiblePanelAfterRender();
+  scheduleMapLabelLayout();
 
   if (hlId) {
     const hf = up.find(f => f.id === hlId);
@@ -908,11 +876,11 @@ async function testUrl(url, label) {
 // State mirrored from onboard filter panel (applied before entering app)
 const DEFAULT_ONBOARD_TITLE = isScenarioAProductMode()
   ? 'Pinned playlist import'
-  : 'See upcoming concerts from a Spotify playlist';
+  : 'Find your music, live.';
 const DEFAULT_ONBOARD_SUB =
   isScenarioAProductMode()
     ? `${PINNED_PLAYLIST.name}: scan ${PINNED_PLAYLIST.trackCount} tracks, keep artists with ${scenarioAFixedMinTracks()}+ repeats, then show worldwide tour dates.`
-    : 'Sign in with Spotify, choose a playlist, or paste any playlist link. Once scanned, the result reopens instantly on this device.';
+    : 'Paste a Spotify playlist link to find its artists on tour and at festivals. Each playlist keeps its own results on this device.';
 const spotifyAccountState = {
   loaded: false,
   loading: false,

@@ -22,7 +22,7 @@
 - Canonical local Spotify redirect URI:
 
 ```text
-http://localhost:3002/api/auth/spotify/callback
+http://127.0.0.1:3002/api/auth/spotify/callback
 ```
 
 ## Git and handoff

@@ -35,7 +35,7 @@ function openConcertDrawer(ev) {
   const col = getColor(ev.artist);
   const plays = ARTIST_PLAYS[(ev.artist||'').toLowerCase()] || 0;
   const fest = _festForConcert(ev);
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const weekday = new Date(ev.date + 'T12:00:00').toLocaleString('en-US', { weekday:'long' });
   const loc = [ev.city, ev.state && ev.country === 'US' ? ev.state : '', ev.country ? flag(ev.country) : ''].filter(Boolean).join(' ');
   const tourShows = [...(
