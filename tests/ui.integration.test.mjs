@@ -2599,3 +2599,221 @@ test('saved playlist sessions restore A after importing B and reloading without 
   assert.deepEqual(sessions.a.concerts.map(event => event.id), ['session-a-show']);
   assert.deepEqual(sessions.b.concerts.map(event => event.id), ['session-b-show']);
 });
+
+const KNOWN_SPOTIFY_ACCOUNT = {
+  user: { id: 'offline-listener', displayName: 'Offline Listener' },
+  playlists: [
+    { id: IMPORT_IDS.a, name: 'Saved Listening', url: importUrl(IMPORT_IDS.a), trackCount: 7, ownerName: 'Offline Listener' },
+    { id: IMPORT_IDS.b, name: 'Next Shows', url: importUrl(IMPORT_IDS.b), trackCount: 11, ownerName: 'Offline Listener' },
+  ],
+};
+
+async function seedKnownSpotifyAccount(pageRef) {
+  await pageRef.evaluate(account => {
+    Object.assign(spotifyAccountState, {
+      loaded: true, loading: false, connected: true, user: account.user,
+      playlists: account.playlists, playlistsLoaded: true, playlistsLoading: false,
+      pendingPlaylistId: '', error: '',
+    });
+    spotifyAuthFlash = null;
+    renderOnboardSpotifyAuth();
+  }, KNOWN_SPOTIFY_ACCOUNT);
+}
+
+async function prepareSpotifyAccountRefreshTest(pageRef) {
+  await configureSpotifyImports({ [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'Working Playlist', [['Saved Artist']]) });
+  await prepareSpotifyImportTest(pageRef);
+  assert.equal(await runOfflineSpotifyImport(pageRef, importUrl(IMPORT_IDS.a)), true);
+  await settleUi(pageRef, 560);
+  await pageRef.waitFor(() => !spotifyAccountState.loading && !spotifyAccountState.playlistsLoading);
+  const event = makeConcert('Saved Artist', 5, 'Saved Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'working-auth-refresh-show' });
+  await pageRef.evaluate(async savedEvent => {
+    concerts = [savedEvent]; SCANNED_ARTISTS = ['Saved Artist']; persistData();
+    await persistActivePlaylistSession();
+    openPlaylistImport();
+  }, event);
+  await seedKnownSpotifyAccount(pageRef);
+}
+
+function spotifyAccountUiSnapshot() {
+  const authButton = document.getElementById('onboard-auth-btn');
+  const logout = document.getElementById('onboard-auth-logout');
+  const status = document.getElementById('onboard-auth-status');
+  return {
+    loaded: spotifyAccountState.loaded, loading: spotifyAccountState.loading,
+    connected: spotifyAccountState.connected, user: spotifyAccountState.user,
+    playlists: spotifyAccountState.playlists, playlistsLoaded: spotifyAccountState.playlistsLoaded,
+    playlistsLoading: spotifyAccountState.playlistsLoading, error: spotifyAccountState.error,
+    authLabel: authButton.textContent.trim(), authDisabled: authButton.disabled,
+    logoutVisible: getComputedStyle(logout).display !== 'none' && logout.getBoundingClientRect().height > 0,
+    cardIds: [...document.querySelectorAll('#onboard-auth-list button[data-playlist-id]')].map(card => card.dataset.playlistId),
+    status: status.textContent, tone: status.dataset.tone,
+  };
+}
+
+// Exercise the real response reader and account handlers. Only fetch is offline;
+// a short deadline makes an unfinished response body fail without a long wait.
+async function runSpotifyAccountResponseFixture(spec) {
+  const originalFetch = window.fetch;
+  const originalReader = fetchSpotifyUiJson;
+  const calls = [];
+  let bodyAbortCount = 0;
+  let bodyReadError = null;
+  let readerError = null;
+  window.fetch = async (input, options = {}) => {
+    calls.push(typeof input === 'string' ? input : input.url);
+    if (spec.kind === 'network') throw new TypeError('Offline connection interrupted');
+    if (spec.kind === 'body-timeout') {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"connected":'));
+          options.signal.addEventListener('abort', () => {
+            bodyAbortCount++;
+            controller.error(new DOMException('Offline body aborted', 'AbortError'));
+          }, { once: true });
+        },
+      });
+      const response = new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      const readJson = response.json.bind(response);
+      response.json = async () => {
+        try { return await readJson(); }
+        catch (error) {
+          bodyReadError = { name: error.name, message: error.message };
+          throw error;
+        }
+      };
+      return response;
+    }
+    return new Response(spec.kind === 'invalid-json' ? '<offline unavailable>' : JSON.stringify(spec.payload), {
+      status: spec.status || 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  fetchSpotifyUiJson = async (url, options, opts) => {
+    try {
+      return await originalReader(url, options, { ...opts, timeoutMs: 30 });
+    } catch (error) {
+      readerError = { status: error.status || null, message: error.message };
+      throw error;
+    }
+  };
+  try {
+    if (spec.action === 'session') await refreshSpotifyAccount({ withPlaylists: true, force: true });
+    else if (spec.action === 'playlists') await loadSpotifyAccountPlaylists(true);
+    else {
+      try { await fetchSpotifyUiJson('/__offline/spotify-response', {}, { label: 'Offline Spotify response' }); }
+      catch (_) {}
+    }
+    return { calls, bodyAbortCount, bodyReadError, readerError };
+  } finally {
+    window.fetch = originalFetch;
+    fetchSpotifyUiJson = originalReader;
+  }
+}
+
+function assertKnownSpotifyAccountRetained(ui, label) {
+  assert.equal(ui.connected, true, `${label}: a temporary failure must retain the known connection`);
+  assert.deepEqual(ui.user, KNOWN_SPOTIFY_ACCOUNT.user, `${label}: retain the known account`);
+  assert.deepEqual(ui.playlists, KNOWN_SPOTIFY_ACCOUNT.playlists, `${label}: retain previously loaded playlists`);
+  assert.equal(ui.loaded, true);
+  assert.equal(ui.playlistsLoaded, true);
+  assert.equal(ui.loading, false);
+  assert.equal(ui.playlistsLoading, false);
+  assert.equal(ui.authLabel, 'Refresh playlists');
+  assert.equal(ui.authDisabled, false, `${label}: the user can retry after the request settles`);
+  assert.equal(ui.logoutVisible, true);
+  assert.deepEqual(ui.cardIds, [IMPORT_IDS.a, IMPORT_IDS.b]);
+  assert.ok(ui.error.length > 0, `${label}: show the request failure`);
+  assert.equal(ui.status, ui.error);
+  assert.equal(ui.tone, 'error');
+}
+
+test('Spotify session refresh retains the account and playlists after transient failures without a second request', { concurrency: false }, async () => {
+  await prepareSpotifyAccountRefreshTest(page);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  const cases = [
+    { name: '503 unavailable', status: 503, payload: { error: 'Spotify unavailable' }, expectedStatus: 503 },
+    { name: '429 rate limit', status: 429, payload: { error: 'Try again later' }, expectedStatus: 429 },
+    { name: 'network interruption', kind: 'network' },
+    { name: 'response body timeout', kind: 'body-timeout', expectedStatus: 504 },
+    { name: 'malformed JSON 200', kind: 'invalid-json', expectedStatus: 502 },
+    { name: 'missing connected 200', payload: { user: null } },
+    { name: 'nonboolean connected 200', payload: { connected: 'false', user: null } },
+    { name: 'array 200', payload: [], expectedStatus: 502 },
+    { name: 'null 200', payload: null, expectedStatus: 502 },
+  ];
+  for (const scenario of cases) {
+    await seedKnownSpotifyAccount(page);
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, { ...scenario, action: 'session' });
+    assert.deepEqual(result.calls, ['/api/auth/spotify/session'], `${scenario.name}: a failed session check must not request playlists`);
+    if (scenario.expectedStatus) assert.equal(result.readerError.status, scenario.expectedStatus, scenario.name);
+    if (scenario.kind === 'body-timeout') assert.equal(result.bodyAbortCount, 1, 'The actual reader deadline must abort the stalled body');
+    assertKnownSpotifyAccountRetained(await page.evaluate(spotifyAccountUiSnapshot), scenario.name);
+    assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, `${scenario.name}: retain the imported playlist and saved events`);
+  }
+});
+
+test('Spotify playlist refresh retains loaded choices and results after transient or malformed responses', { concurrency: false }, async () => {
+  await prepareSpotifyAccountRefreshTest(page);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  const cases = [
+    { name: '503 unavailable', status: 503, payload: { error: 'Spotify unavailable' }, expectedStatus: 503 },
+    { name: '429 rate limit', status: 429, payload: { error: 'Try again later' }, expectedStatus: 429 },
+    { name: 'network interruption', kind: 'network' },
+    { name: 'response body timeout', kind: 'body-timeout', expectedStatus: 504 },
+    { name: 'malformed JSON 200', kind: 'invalid-json', expectedStatus: 502 },
+    { name: 'missing items 200', payload: { total: 0 } },
+    { name: 'nonarray items 200', payload: { items: null } },
+    { name: 'primitive 200', payload: 'unavailable', expectedStatus: 502 },
+  ];
+  for (const scenario of cases) {
+    await seedKnownSpotifyAccount(page);
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, { ...scenario, action: 'playlists' });
+    assert.deepEqual(result.calls, ['/api/spotify/me/playlists'], scenario.name);
+    if (scenario.expectedStatus) assert.equal(result.readerError.status, scenario.expectedStatus, scenario.name);
+    assertKnownSpotifyAccountRetained(await page.evaluate(spotifyAccountUiSnapshot), scenario.name);
+    assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, `${scenario.name}: refreshing account choices must preserve the working session`);
+  }
+});
+
+test('authoritative Spotify disconnect and 401 clear account choices while preserving the imported playlist', { concurrency: false }, async () => {
+  await prepareSpotifyAccountRefreshTest(page);
+  const before = await page.evaluate(spotifySessionSnapshot);
+  for (const scenario of [
+    { name: 'disconnected session 200', action: 'session', payload: { connected: false, user: null } },
+    { name: 'session 401', action: 'session', status: 401, payload: { error: 'Session expired' } },
+    { name: 'playlist 401', action: 'playlists', status: 401, payload: { error: 'Session expired' } },
+    { name: 'non-JSON session 401', action: 'session', status: 401, kind: 'invalid-json' },
+    { name: 'JSON null session 401', action: 'session', status: 401, payload: null },
+  ]) {
+    await seedKnownSpotifyAccount(page);
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, scenario);
+    assert.deepEqual(result.calls, [scenario.action === 'session' ? '/api/auth/spotify/session' : '/api/spotify/me/playlists']);
+    const ui = await page.evaluate(spotifyAccountUiSnapshot);
+    assert.equal(ui.connected, false, scenario.name);
+    assert.equal(ui.user, null, scenario.name);
+    assert.deepEqual(ui.playlists, [], scenario.name);
+    assert.equal(ui.playlistsLoaded, false);
+    assert.equal(ui.loading, false);
+    assert.equal(ui.playlistsLoading, false);
+    assert.equal(ui.authLabel, 'Continue with Spotify');
+    assert.equal(ui.authDisabled, false);
+    assert.equal(ui.logoutVisible, false);
+    assert.deepEqual(ui.cardIds, []);
+    assert.deepEqual(await page.evaluate(spotifySessionSnapshot), before, `${scenario.name}: account logout must not discard imported concert results`);
+  }
+});
+
+test('Spotify response reader aborts an unfinished JSON body and preserves non-JSON error statuses', { concurrency: false }, async () => {
+  const timeout = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'body-timeout' });
+  assert.equal(timeout.bodyAbortCount, 1, 'The helper must abort the response body through its own AbortSignal');
+  assert.equal(timeout.readerError.status, 504, `An aborted body must reject rather than return an empty success object: ${JSON.stringify(timeout)}`);
+  assert.match(timeout.readerError.message, /timed out/i);
+  for (const status of [401, 429, 503]) {
+    const result = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'invalid-json', status });
+    assert.equal(result.readerError.status, status, 'An HTML or malformed error body must preserve the upstream HTTP status');
+  }
+  const nullUnauthorized = await page.evaluate(runSpotifyAccountResponseFixture, { status: 401, payload: null });
+  assert.equal(nullUnauthorized.readerError.status, 401, 'A JSON null error body must preserve the authoritative unauthorized status');
+  const malformedSuccess = await page.evaluate(runSpotifyAccountResponseFixture, { kind: 'invalid-json', status: 200 });
+  assert.equal(malformedSuccess.readerError.status, 502, 'A malformed successful response must reject with an invalid-response error');
+});

@@ -197,7 +197,7 @@ function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.31.0058',
+    appVersion: '2.31.0059',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
@@ -820,10 +820,12 @@ function simplifySpotifyImages(images) {
 }
 
 async function fetchSpotifyProfile(accessToken) {
-  const response = await spotifyApiFetch('https://api.spotify.com/v1/me', {
-    accessToken,
+  const data = await spotifyApiFetch('https://api.spotify.com/v1/me', {
+    accessToken, json: true,
   });
-  const data = await response.json();
+  if (typeof data?.id !== 'string' || !data.id.trim()) {
+    throw spotifyRequestError('Spotify returned invalid account metadata.', 502, 'INCOMPLETE_IMPORT');
+  }
   return {
     id: data.id || '',
     displayName: data.display_name || data.id || 'Spotify',
@@ -885,11 +887,17 @@ async function fetchSpotifyUserPlaylists(accessToken) {
 
   while (nextUrl && pageCount < 6) {
     pageCount += 1;
-    const response = await spotifyApiFetch(nextUrl, { accessToken });
-    const data = await response.json();
+    const data = await spotifyApiFetch(nextUrl, { accessToken, json: true });
+    if (!Array.isArray(data?.items)) {
+      throw spotifyRequestError('Spotify returned an invalid playlist list.', 502, 'INCOMPLETE_IMPORT');
+    }
 
-    for (const item of data.items || []) {
+    for (const item of data.items) {
       if (!item || !item.id) continue;
+      const trackCount = item.items?.total ?? item.tracks?.total;
+      if (!Number.isSafeInteger(trackCount) || trackCount < 0) {
+        throw spotifyRequestError('Spotify returned an invalid playlist item count.', 502, 'INCOMPLETE_IMPORT');
+      }
       items.push({
         id: item.id,
         name: item.name || 'Untitled playlist',
@@ -901,7 +909,7 @@ async function fetchSpotifyUserPlaylists(accessToken) {
           : '',
         imageUrl: item.images && item.images[0] ? item.images[0].url : '',
         images: simplifySpotifyImages(item.images),
-        trackCount: item.tracks && typeof item.tracks.total === 'number' ? item.tracks.total : 0,
+        trackCount,
         collaborative: Boolean(item.collaborative),
         public: item.public,
       });

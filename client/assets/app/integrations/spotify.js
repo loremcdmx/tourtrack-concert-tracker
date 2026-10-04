@@ -228,15 +228,31 @@ async function fetchSpotifyUiJson(url, fetchOptions = {}, opts = {}) {
       ...fetchOptions,
       signal: controller.signal,
     });
-    const data = await response.json().catch(() => ({}));
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === 'AbortError') throw error;
+      if (response.ok) {
+        const invalid = new Error(`${opts.label || 'Spotify request'} returned an invalid response.`);
+        invalid.status = 502;
+        throw invalid;
+      }
+      data = {};
+    }
     if (!response.ok) {
-      const error = new Error(data.error || `${opts.label || 'Spotify request'} failed (${response.status}).`);
+      const error = new Error(data?.error || `${opts.label || 'Spotify request'} failed (${response.status}).`);
       error.status = response.status;
       throw error;
     }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      const invalid = new Error(`${opts.label || 'Spotify request'} returned an invalid response.`);
+      invalid.status = 502;
+      throw invalid;
+    }
     return data;
   } catch (error) {
-    if (error && error.name === 'AbortError') {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
       const timeoutError = new Error(`${opts.label || 'Spotify request'} timed out after ${Math.round(timeoutMs / 1000)}s.`);
       timeoutError.status = 504;
       throw timeoutError;
@@ -258,6 +274,7 @@ async function refreshSpotifyAccount(opts = {}) {
   spotifyAccountState.error = '';
   renderOnboardSpotifyAuth();
 
+  let sessionChecked = false;
   try {
     const data = await fetchSpotifyUiJson('/api/auth/spotify/session', {
       credentials: 'same-origin',
@@ -266,6 +283,10 @@ async function refreshSpotifyAccount(opts = {}) {
       timeoutMs: 12000,
     });
 
+    if (typeof data.connected !== 'boolean') {
+      throw new Error('Spotify session check returned an invalid response.');
+    }
+    sessionChecked = true;
     spotifyAccountState.loaded = true;
     spotifyAccountState.connected = !!data.connected;
     spotifyAccountState.user = data.user || null;
@@ -277,18 +298,20 @@ async function refreshSpotifyAccount(opts = {}) {
     }
   } catch (e) {
     spotifyAccountState.loaded = true;
-    spotifyAccountState.connected = false;
-    spotifyAccountState.user = null;
-    spotifyAccountState.playlists = [];
-    spotifyAccountState.playlistsLoaded = false;
-    spotifyAccountState.playlistsLoading = false;
+    if (e.status === 401) {
+      spotifyAccountState.connected = false;
+      spotifyAccountState.user = null;
+      spotifyAccountState.playlists = [];
+      spotifyAccountState.playlistsLoaded = false;
+      spotifyAccountState.playlistsLoading = false;
+    }
     spotifyAccountState.error = e.message || 'Spotify is unavailable right now.';
   } finally {
     spotifyAccountState.loading = false;
     renderOnboardSpotifyAuth();
   }
 
-  if (spotifyAccountState.connected && opts.withPlaylists) {
+  if (sessionChecked && spotifyAccountState.connected && opts.withPlaylists) {
     return loadSpotifyAccountPlaylists(Boolean(opts.force));
   }
 
@@ -313,7 +336,10 @@ async function loadSpotifyAccountPlaylists(force = false) {
       label: 'Spotify playlists',
       timeoutMs: 20000,
     });
-    spotifyAccountState.playlists = Array.isArray(data.items) ? data.items : [];
+    if (!Array.isArray(data.items)) {
+      throw new Error('Spotify playlists returned an invalid response.');
+    }
+    spotifyAccountState.playlists = data.items;
     spotifyAccountState.playlistsLoaded = true;
     spotifyAccountState.error = '';
   } catch (e) {

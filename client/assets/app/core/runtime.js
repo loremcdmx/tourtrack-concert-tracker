@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '2.31.0058'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
+const APP_VERSION = '2.31.0059'; // x.y.zzzz — x=major feature, y=builds, z=changes in build
 
 const PRODUCT_SCENARIO = Object.freeze({
   id: window.__SERVER_CONFIG__?.pinnedPlaylistOnly === true ? 'scenario-a' : 'playlist-links',

@@ -82,11 +82,20 @@ async function request(context, url, options) {
   return res;
 }
 
-function sessionCookie(context, { expired = false } = {}) {
+function sessionCookie(context, { expired = false, withoutUser = false } = {}) {
   const session = { accessToken: 'fixture-user-access', refreshToken: 'fixture-user-refresh',
     expiresAt: Date.now() + (expired ? -1000 : 3600_000), scope: ['playlist-read-private'],
-    user: { id: 'fixture-user', displayName: 'Fixture User' } };
+    user: withoutUser ? null : { id: 'fixture-user', displayName: 'Fixture User' } };
   return `tt_spotify_session=${encodeURIComponent(context.sealJson(session))}`;
+}
+
+function hangingJsonBody(options, onStart, onAbort) {
+  return { ok: true, json: () => new Promise((resolve, reject) => {
+    onStart();
+    const abort = () => { onAbort(); reject(options.signal.reason); };
+    if (options.signal.aborted) abort();
+    else options.signal.addEventListener('abort', abort, { once: true });
+  }) };
 }
 
 function playlistProvider({ endpoint = 'items', entries = [], snapshot = 'stable', pageHook = null } = {}) {
@@ -345,6 +354,141 @@ test('refresh timeout preserves the session while invalid_grant alone clears it'
   assert.equal(res.status, 200);
   assert.equal(res.json().connected, false);
   assert.match(res.getHeader('set-cookie').join(';'), /Max-Age=0/);
+});
+
+test('a stalled profile body times out without losing a valid or freshly refreshed session', async () => {
+  for (const expired of [false, true]) {
+    let bodiesStarted = 0;
+    let bodiesAborted = 0;
+    const { context, calls } = harness(async (url, options) => {
+      if (url === 'https://accounts.spotify.com/api/token') {
+        assert.equal(new URLSearchParams(options.body).get('grant_type'), 'refresh_token');
+        return json({ access_token: 'fixture-new-access', expires_in: 3600 });
+      }
+      assert.equal(url, 'https://api.spotify.com/v1/me');
+      return hangingJsonBody(options, () => { bodiesStarted += 1; }, () => { bodiesAborted += 1; });
+    }, { timeoutMs: 5 });
+    const res = await request(context, '/api/auth/spotify/session', {
+      cookie: sessionCookie(context, { expired, withoutUser: true }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json().connected, true);
+    assert.equal(res.json().user, null, 'Optional profile enrichment can fail while account access stays valid');
+    assert.ok(bodiesStarted > 0, 'Headers arrived and JSON body consumption actually started');
+    assert.equal(bodiesAborted, bodiesStarted, 'Every stalled body is aborted by its own deadline');
+    const cookies = res.getHeader('set-cookie') || [];
+    assert.ok(cookies.every(value => !value.includes('Max-Age=0')), 'A profile timeout must not clear the user session');
+    if (expired) {
+      assert.ok(cookies.some(value => value.startsWith('tt_spotify_session=')), 'A successful token refresh is retained');
+      assert.equal(calls.filter(call => call.url === 'https://accounts.spotify.com/api/token').length, 1);
+    } else {
+      assert.equal(calls.filter(call => call.url === 'https://accounts.spotify.com/api/token').length, 0);
+    }
+  }
+});
+
+test('OAuth callback completes and stores the session when only the profile response body stalls', async () => {
+  let bodiesStarted = 0;
+  let bodiesAborted = 0;
+  const { context } = harness(async (url, options) => {
+    if (url === 'https://accounts.spotify.com/api/token') {
+      assert.equal(new URLSearchParams(options.body).get('grant_type'), 'authorization_code');
+      return json({ access_token: 'fixture-login-access', refresh_token: 'fixture-login-refresh',
+        expires_in: 3600, scope: 'playlist-read-private' });
+    }
+    assert.equal(url, 'https://api.spotify.com/v1/me');
+    return hangingJsonBody(options, () => { bodiesStarted += 1; }, () => { bodiesAborted += 1; });
+  }, { timeoutMs: 5 });
+  const cookie = `tt_spotify_state=${encodeURIComponent(context.sealJson({
+    state: 'fixture-login-state', returnTo: '/?fixture=return', ts: Date.now(),
+  }))}`;
+  const res = await request(context, '/api/auth/spotify/callback?code=fixture-code&state=fixture-login-state', { cookie });
+  assert.equal(res.status, 302);
+  assert.equal(res.getHeader('location'), '/?fixture=return&spotify=connected');
+  const savedSession = (res.getHeader('set-cookie') || []).find(value => value.startsWith('tt_spotify_session='));
+  assert.ok(savedSession);
+  assert.equal(savedSession.includes('Max-Age=0'), false);
+  assert.equal(bodiesStarted, 1);
+  assert.equal(bodiesAborted, 1);
+});
+
+test('a stalled user-playlist response body returns 504 without clearing authentication', async () => {
+  let bodiesStarted = 0;
+  let bodiesAborted = 0;
+  const { context, calls } = harness(async (url, options) => {
+    assert.equal(url, 'https://api.spotify.com/v1/me/playlists?limit=50');
+    return hangingJsonBody(options, () => { bodiesStarted += 1; }, () => { bodiesAborted += 1; });
+  }, { timeoutMs: 5 });
+  const res = await request(context, '/api/spotify/me/playlists', { cookie: sessionCookie(context) });
+  assert.equal(res.status, 504);
+  assert.equal('items' in res.json(), false, 'No partial playlist list is reported as successful');
+  assert.equal(res.getHeader('set-cookie'), undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(bodiesStarted, 1);
+  assert.equal(bodiesAborted, 1);
+});
+
+test('user-playlist choices accept modern and legacy totals while preserving zero and rejecting malformed counts', async () => {
+  for (const [metadata, expected] of [
+    [{ items: { total: 87 } }, 87],
+    [{ tracks: { total: 42 } }, 42],
+    [{ items: { total: 0 }, tracks: { total: 99 } }, 0],
+    [{ items: {}, tracks: { total: 12 } }, 12],
+  ]) {
+    const { context } = harness(async () => json({ items: [{ id: playlistId, name: 'Fixture', ...metadata }], next: null }));
+    const res = await request(context, '/api/spotify/me/playlists', { cookie: sessionCookie(context) });
+    assert.equal(res.status, 200);
+    assert.equal(res.json().items[0].trackCount, expected);
+  }
+  for (const metadata of [{}, { items: { total: -1 } }, { items: { total: 1.5 } },
+    { items: { total: '87' } }, { items: { total: 9007199254740992 } },
+    { items: { total: -1 }, tracks: { total: 12 } }]) {
+    const { context } = harness(async () => json({ items: [{ id: playlistId, ...metadata }], next: null }));
+    const res = await request(context, '/api/spotify/me/playlists', { cookie: sessionCookie(context) });
+    assert.equal(res.status, 502);
+    assert.equal(res.json().code, 'INCOMPLETE_IMPORT');
+    assert.equal('items' in res.json(), false);
+    assert.equal(res.getHeader('set-cookie'), undefined);
+  }
+});
+
+test('malformed profile objects reject with 502 while optional enrichment preserves an existing session', async () => {
+  for (const payload of [{}, { id: '' }, { id: '   ' }, { id: 12 }]) {
+    const { context } = harness(async url => {
+      assert.equal(url, 'https://api.spotify.com/v1/me');
+      return json(payload);
+    });
+    await assert.rejects(context.fetchSpotifyProfile('fixture-access'), { status: 502, code: 'INCOMPLETE_IMPORT' });
+    const res = await request(context, '/api/auth/spotify/session', {
+      cookie: sessionCookie(context, { withoutUser: true }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json().connected, true);
+    assert.equal(res.json().user, null, 'Malformed metadata must never fabricate an empty account identity');
+    assert.equal(res.getHeader('set-cookie'), undefined, 'Optional metadata failure must not revoke an existing session');
+  }
+  const valid = harness(async () => json({ id: 'fixture-id' }));
+  const profile = await valid.context.fetchSpotifyProfile('fixture-access');
+  assert.equal(profile.id, 'fixture-id');
+  assert.equal(profile.displayName, 'fixture-id', 'Removed or absent display_name does not invalidate an account');
+});
+
+test('malformed playlist-list objects return 502 without emitting an empty success or clearing cookies', async () => {
+  for (const payload of [{}, { items: null }, { items: {} }, { items: 'invalid' }]) {
+    const { context } = harness(async url => {
+      assert.equal(url, 'https://api.spotify.com/v1/me/playlists?limit=50');
+      return json(payload);
+    });
+    const res = await request(context, '/api/spotify/me/playlists', { cookie: sessionCookie(context) });
+    assert.equal(res.status, 502);
+    assert.equal(res.json().code, 'INCOMPLETE_IMPORT');
+    assert.equal('items' in res.json(), false);
+    assert.equal(res.getHeader('set-cookie'), undefined);
+  }
+  const empty = harness(async () => json({ items: [], next: null }));
+  const res = await request(empty.context, '/api/spotify/me/playlists', { cookie: sessionCookie(empty.context) });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json().items, []);
 });
 
 test('share-link resolver follows only validated manual redirects and cancels preview bodies', async () => {
