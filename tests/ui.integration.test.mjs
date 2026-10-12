@@ -1437,6 +1437,65 @@ test('concert rows focus the selected artist', { concurrency: false }, async () 
   assert.notEqual(focusState.overlayDisplay, 'none');
 });
 
+test('focused tour controls stay reachable and the phone list leaves the map visible', { concurrency: false }, async () => {
+  for (const [width, height] of [[320,568],[320,844],[390,844],[768,844],[1440,844]]) {
+    await setViewport(page, width, height);
+    await page.evaluate(installFixture, {
+      artists: ['Nova and the very long touring artist name'],
+      artistPlays: { 'nova and the very long touring artist name': 12 },
+      concerts: Array.from({ length: 9 }, (_, index) => makeConcert('Nova and the very long touring artist name', index + 3,
+        `Tour venue ${index + 1}`, 'London', 'GB', 51.54 + index * .01, -.15)),
+    });
+    await page.evaluate(() => { hideOnboard(); focusConcert(concerts[0]); });
+    await settleUi(page);
+    const geometry = await page.evaluate(() => {
+      const box = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; };
+      const close = document.querySelector('.focus-close');
+      const r = close.getBoundingClientRect();
+      const list = document.getElementById('focus-list');
+      return { map:box('.map-panel'), panel:box('#focus-overlay'), refresh:box('#map-refresh-area-btn'),
+        close:box('.focus-close'), legend:box('#map-legend'),
+        clickable:close.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)),
+        scrollable:list.scrollHeight>list.clientHeight, listHeight:list.clientHeight,
+        overflow:document.documentElement.scrollWidth>innerWidth };
+    });
+    const separate = (a, b) => a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom;
+    assert.equal(geometry.clickable, true, `The focus close button must receive clicks at ${width}px`);
+    assert.ok(geometry.close.width >= 44 && geometry.close.height >= 44);
+    assert.ok(separate(geometry.panel, geometry.refresh), 'Refresh area must not cover the focused tour header');
+    assert.ok(geometry.panel.left >= geometry.map.left && geometry.panel.right <= geometry.map.right
+      && geometry.panel.top >= geometry.map.top && geometry.panel.bottom <= geometry.map.bottom);
+    assert.equal(geometry.overflow, false);
+    if (width <= 1100) {
+      assert.ok(geometry.panel.height <= geometry.map.height*.45, 'The phone tour list must leave most of the map visible');
+      assert.ok(separate(geometry.panel, geometry.legend), 'The compact tour list must not cover the legend');
+      assert.ok(geometry.scrollable && geometry.listHeight > 20, 'Every tour date must remain reachable in a scrollable list');
+    }
+    const fit = await page.evaluate(() => {
+      focusedConcertKey = '';
+      focusArtist(ARTISTS[0]);
+      return { zoom:lmap.getZoom(), allVisible:concerts.every(event=>lmap.getBounds().contains([event.lat,event.lng])) };
+    });
+    assert.ok(Number.isFinite(fit.zoom) && fit.allVisible, 'Fitting a tour must use the real map height');
+    if (width <= 760) {
+      const hidden = await page.evaluate(() => {
+        lmap.setZoom(3, { animate:false });
+        setWorkspaceView('agenda');
+        lmap.invalidateSize({ pan:false, animate:false });
+        const before = lmap.getZoom();
+        renderMap({ smartFit:false });
+        return { before, after:lmap.getZoom(), width:lmap.getSize().x };
+      });
+      assert.equal(hidden.width, 0);
+      assert.equal(hidden.after, hidden.before, 'Background redraws must not fit a hidden map');
+      await page.evaluate(() => setWorkspaceView('map'));
+    }
+    await page.evaluate(() => document.querySelector('.focus-close').click());
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('focus-overlay')).display), 'none');
+    assert.ok(await page.evaluate(() => document.getElementById('map-legend').getBoundingClientRect().height > 0), 'Closing focus restores the map legend');
+  }
+});
+
 test('Enter on a concert row opens its map on mobile', { concurrency: false }, async () => {
   await setViewport(page, 375, 812);
   await page.evaluate(installFixture, {

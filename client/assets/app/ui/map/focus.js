@@ -353,7 +353,14 @@ function renderFocusMode(artist) {
       if (targetMarker) window.setTimeout(() => targetMarker.openPopup(), 220);
     } else {
       const bounds = L.latLngBounds(coords.map(e => [e.lat, e.lng]));
-      lmap.fitBounds(bounds, { padding:[40, 320], maxZoom:8, duration:.9 });
+      const size = lmap.getSize();
+      if (size.x <= 0 || size.y <= 0) return;
+      const inset = Math.min(40, Math.max(8, Math.min(size.x, size.y) * .08));
+      const panel = document.getElementById('focus-overlay').getBoundingClientRect();
+      const rightInset = panel.height > size.y * .5
+        ? Math.min(panel.width + 24, size.x * .45) : inset;
+      lmap.fitBounds(bounds, { paddingTopLeft:[inset, inset],
+        paddingBottomRight:[rightInset, inset], maxZoom:8, duration:.9 });
     }
   }
   if (targetEvent) {
