@@ -5,7 +5,7 @@ function shiftIsoDate(iso, days) {
   if (!iso) return '';
   const d = new Date(iso + 'T12:00:00');
   d.setDate(d.getDate() + days);
-  return d.toISOString().split('T')[0];
+  return _isoDateOnly(d);
 }
 function _normText(s) {
   return _normDia(s)

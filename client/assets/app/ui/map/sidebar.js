@@ -44,8 +44,12 @@ function buildSidebarArtistRow(artist, evs, ctx) {
     <button class="msb-focus">→</button>`;
   row.querySelector('.msb-star').onclick  = e => toggleFavorite(artist, e);
   row.querySelector('.msb-focus').onclick = e => { e.stopPropagation(); focusArtist(artist); };
-  row.onclick = () => focusArtist(artist);
-  return row;
+  row.onclick = event => {
+    const action = event.target.closest('button,a,[role="button"]');
+    if (action && action !== row) return;
+    focusArtist(artist);
+  };
+  return bindKeyboardClick(row);
 }
 
 function renderSidebarArtistList(list, artists, ctx) {
@@ -110,7 +114,8 @@ function createFestCardNode(festival) {
   const score = festival.score || 0;
   const matched = festival.matched || [];
   const lineup = festival.lineupResolved || _resolvedFestivalLineup(festival);
-  const linkedShows = festival.linkedShows || _festivalLinkedConcerts(festival).length;
+  const linkedShows = Number.isFinite(festival.linkedShows)
+    ? festival.linkedShows : _festivalLinkedConcerts(festival).length;
   const perfect = score >= 80 && matched.length >= 2;
   const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
   const loc = [festival.city, festival.country ? flag(festival.country) : ''].filter(Boolean).join(' ');
@@ -246,30 +251,15 @@ function setTab(tab, opts = {}) {
     { const _mr2 = document.getElementById('map-reset'); if (_mr2) _mr2.style.display = 'none'; }
     const leg = document.getElementById('map-legend');
     if (leg) leg.style.opacity = '0';
-    // Sync map type to Fests if it was Tours-only
-    if (mapTypeFilter === 'tours') {
-      mapTypeFilter = 'both'; showMapTours = true; showMapFests = true;
-      ['both','tours','fests'].forEach(v => {
-        const b = document.getElementById('mft-'+v);
-        if (b) { b.classList.remove('on','on-f'); if (v==='both') b.classList.add('on'); }
-      });
-    }
     if (deferRender) return;
     clearMapLayers();
     renderFestMap(null);
     buildFestPanel();
   } else {
     _festPanelBuildToken++;
+    focusedFest = null;
     const leg = document.getElementById('map-legend');
     if (leg) leg.style.opacity = '1';
-    // Sync map type to Tours if it was Fests-only
-    if (mapTypeFilter === 'fests') {
-      mapTypeFilter = 'both'; showMapTours = true; showMapFests = true;
-      ['both','tours','fests'].forEach(v => {
-        const b = document.getElementById('mft-'+v);
-        if (b) { b.classList.remove('on','on-f'); if (v==='both') b.classList.add('on'); }
-      });
-    }
     if (deferRender) return;
     clearMapLayers();
     _rebuildMapData();
@@ -310,7 +300,7 @@ function setArtistPreset(preset) {
 
 function applyArtistPreset(list) {
   if (artistPreset === 'all') return list;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const hasPlays = Object.values(ARTIST_PLAYS).some(v => v > 0);
   if (artistPreset === 'fav') {
     return list.filter(artist => favoriteArtists.has((artist || '').toLowerCase()));
@@ -378,21 +368,21 @@ function sortedArtists() {
 
 function buildStats() {
   const el = document.getElementById('msb-stats');
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in30  = new Date(); in30.setDate(in30.getDate() + 30);
-  const in30s = in30.toISOString().split('T')[0];
+  const in30s = _isoDateOnly(in30);
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
 
-  const artistsOnTour = Object.keys(allTourData).length;
-  if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }
-  // Show map filter bar when we have data
+  // Keep controls reachable even when the selected types have no results.
   const filtersEl = document.getElementById('msb-filters');
   if (filtersEl) {
     filtersEl.style.display = '';
     const maxVal = document.getElementById('mfilt-max-val');
     if (maxVal) maxVal.textContent = MAP_MAX_ARTISTS;
   }
+  const artistsOnTour = Object.keys(allTourData).length;
+  if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }
 
   // Tours ending soon: last show is within 90 days, tour has ≥5 shows
   const endingSoon = Object.entries(allTourData).filter(([, evs]) => {
@@ -429,9 +419,9 @@ function buildStats() {
 
 function buildSidebar() {
   buildStats();
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
   document.querySelectorAll('[data-ap]').forEach(btn =>
     btn.classList.toggle('on', btn.dataset.ap === artistPreset));
 
@@ -551,8 +541,7 @@ function buildSidebar() {
 }
 
 function buildFestPanel() {
-  const today = new Date().toISOString().split('T')[0];
-  const upFests = festivals.filter(f => f.date >= today && geoDisplayOk(f.country || '') && dateMatchesPreset(f.date));
+  const upFests = showMapFests ? festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f)) : [];
   const withM = upFests.filter(f => f.score > 0).length;
   document.getElementById('tab-fests').textContent = upFests.length ? `🎪 Festivals · ${withM}★` : '🎪 Festivals';
 
@@ -580,7 +569,7 @@ function buildFestPanel() {
   sorted.forEach(f => {
     const score = f.score || 0, matched = f.matched || [];
     const lineup = f.lineupResolved || _resolvedFestivalLineup(f);
-    const linkedShows = f.linkedShows || _festivalLinkedConcerts(f).length;
+    const linkedShows = Number.isFinite(f.linkedShows) ? f.linkedShows : _festivalLinkedConcerts(f).length;
     // score is already 0-100 (normalized in scoreFestivals)
     const perfect = score >= 80 && matched.length >= 2;
     const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
@@ -665,7 +654,8 @@ function createFestCardNode(festival) {
   const score = festival.score || 0;
   const matched = festival.matched || [];
   const lineup = festival.lineupResolved || _resolvedFestivalLineup(festival);
-  const linkedShows = festival.linkedShows || _festivalLinkedConcerts(festival).length;
+  const linkedShows = Number.isFinite(festival.linkedShows)
+    ? festival.linkedShows : _festivalLinkedConcerts(festival).length;
   const perfect = score >= 80 && matched.length >= 2;
   const ringCls = perfect ? 'p' : score > 0 ? 's' : '';
   const loc = [festival.city, festival.country ? flag(festival.country) : ''].filter(Boolean).join(' ');
@@ -742,8 +732,7 @@ function renderFestCardChunks(container, festivalsList) {
 }
 
 buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
-  const today = new Date().toISOString().split('T')[0];
-  const upFests = festivals.filter(f => f.date >= today && geoDisplayOk(f.country || '') && dateMatchesPreset(f.date));
+  const upFests = showMapFests ? festivals.filter(f => geoDisplayOk(f.country || '') && eventDateMatchesPreset(f) && mapScoreOkFest(f)) : [];
   const withMatches = upFests.filter(f => f.score > 0).length;
   const tab = document.getElementById('tab-fests');
   if (tab) tab.textContent = upFests.length ? ('Festivals - ' + withMatches + ' matches') : 'Festivals';
@@ -754,7 +743,7 @@ buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
   if (cb) cb.checked = showUnrankedFests;
 
   if (!upFests.length) {
-    setFestPanelMessage(container, 'No festivals match current date / location filters');
+    setFestPanelMessage(container, showMapFests ? 'No festivals match current filters' : 'Festivals are hidden — enable Fests to show them');
     return;
   }
 
@@ -779,10 +768,10 @@ buildFestPanel = window.buildFestPanel = function buildFestPanelOptimized() {
 
 buildSidebar = window.buildSidebar = function buildSidebarOptimized() {
   buildStats();
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in90 = new Date();
   in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
   document.querySelectorAll('[data-ap]').forEach(btn =>
     btn.classList.toggle('on', btn.dataset.ap === artistPreset));
 

@@ -19,6 +19,7 @@ function _concertFocusKey(ev) {
 
 function focusConcert(ev) {
   if (!ev?.artist) return;
+  if (typeof setWorkspaceView === 'function') setWorkspaceView('map');
   focusedConcertKey = _concertFocusKey(ev);
   focusArtist(ev.artist);
   const mapEl = document.getElementById('map');
@@ -27,6 +28,7 @@ function focusConcert(ev) {
 
 function focusArtist(artist) {
   focusedArtist = artist;
+  focusedFest = null;
   { const _mr3 = document.getElementById('map-reset'); if (_mr3) _mr3.style.display = artist ? '' : 'none'; }
   document.querySelectorAll('.msb-artist').forEach(r => r.classList.toggle('on', r.dataset.artist === artist));
   document.getElementById('msb-all').classList.toggle('on', artist === null);
@@ -59,28 +61,24 @@ function focusArtist(artist) {
 }
 
 function renderFocusMode(artist) {
-  // allTourData keys are canonical names from concerts[]. Two failure modes:
-  // 1. allTourData was wiped by a mid-scan renderMap() while focusedArtist was
-  //    still set — we rebuild it before the lookup.
-  // 2. Name case/whitespace mismatch between the click closure and the stored key
-  //    — we do a case-insensitive fallback.
-  if (Object.keys(allTourData).length === 0 && concerts.length > 0) {
-    const today = new Date().toISOString().split('T')[0];
-    for (const c of concerts) {
-      if (c.date < today || isHidden(c.artist)) continue;
-      (allTourData[c.artist] = allTourData[c.artist] || []).push(c);
-    }
-    for (const a in allTourData) allTourData[a].sort((a, b) => a.date.localeCompare(b.date));
-  }
-  let evs = allTourData[artist];
-  if (!evs) {
+  // A scan can replace the data while focused. Recover through the same
+  // filtered source as overview; raw concerts would restore excluded events.
+  if (showMapTours && Object.keys(allTourData).length === 0 && concerts.length > 0) _rebuildMapData();
+  let evs = showMapTours ? allTourData[artist] : null;
+  if (showMapTours && !evs) {
     const lower = artist.toLowerCase();
     const key = Object.keys(allTourData).find(k => k.toLowerCase() === lower);
     if (key) { evs = allTourData[key]; artist = key; }
   }
-  if (!evs) { renderOverview(); return; }
+  if (!evs?.length) {
+    document.getElementById('focus-overlay').style.display = 'none';
+    document.getElementById('focus-list').replaceChildren();
+    renderOverview();
+    return;
+  }
+  document.getElementById('focus-overlay').style.display = 'block';
   const col = getColor(artist);
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const future = evs.filter(e => e.date >= today);
   const display = future.length ? future : evs;
   const targetConcertKey = focusedConcertKey;
@@ -328,6 +326,8 @@ function renderFocusMode(artist) {
     const mk = L.marker([ev.lat, ev.lng], { icon, bubblingMouseEvents: false })
       .addTo(lmap)
       .bindPopup(pop, { autoPan: true, autoPanPaddingTopLeft: [10,10], autoPanPaddingBottomRight: [10,80] });
+    _mapRegisterLabel(mk, 'focus:' + artist + '|' + _concertFocusKey(ev), first ? 5000 : 1000 - i,
+      [{ kind: 'tour', artist, ev, number: i + 1 }]);
     markersByKey.set(_concertFocusKey(ev), mk);
     mk.on('click', (e) => {
       L.DomEvent.stopPropagation(e);
@@ -341,6 +341,9 @@ function renderFocusMode(artist) {
     });
     tourMarkers.push(mk);
   });
+
+  _refreshVisiblePanelAfterRender();
+  scheduleMapLabelLayout();
 
   // Fly to fit all markers
   if (coords.length > 0) {

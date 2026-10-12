@@ -1,9 +1,18 @@
 'use strict';
 
 function stopScan() {
-  scanAborted = true;
-  window._scanActive = false;
+  invalidateScanRun();
   document.getElementById('stop-btn').style.display = 'none';
+  document.getElementById('loadbar').style.display = 'none';
+  document.getElementById('hd-progress').style.display = 'none';
+  window._mergeMode = false;
+  window._mergeBaseKeys = null;
+  window._mergeBaseByArtist = null;
+  if (typeof deduplicateConcerts === 'function') concerts = deduplicateConcerts(concerts);
+  if (festivals.length && typeof scoreFestivals === 'function') scoreFestivals();
+  cacheTimestamp = Date.now();
+  if (typeof persistData === 'function') persistData();
+  if (typeof scheduleUiRefresh === 'function') scheduleUiRefresh();
   setStatus('Stopped — showing partial results', false);
 }
 
@@ -23,7 +32,8 @@ function stopScan() {
 // Returns: Map<artistName, shows[]>  (empty array = confirmed not touring on BIT)
 const TTL_BIT_PREFLIGHT = 12 * 3600e3; // 12h — tour status changes slowly
 
-async function bitPreFlightScan(artists) {
+async function bitPreFlightScan(artists, run = getScanContext()) {
+  if (!isScanRunCurrent(run)) return new Map();
   if (window._bitBlocked) {
     dblog('warn', 'BIT pre-flight: skipped (BIT is blocked this session)');
     return new Map();
@@ -37,6 +47,7 @@ async function bitPreFlightScan(artists) {
     const cacheKey = 'bit_pf_' + artist.toLowerCase().trim();
     try {
       const cached = await DB.get('meta', cacheKey);
+      if (!isScanRunCurrent(run)) return results;
       if (cached && (Date.now() - cached.ts) < TTL_BIT_PREFLIGHT) {
         results.set(artist, cached.shows || []);
         continue;
@@ -54,15 +65,16 @@ async function bitPreFlightScan(artists) {
   dblog('info', `BIT pre-flight: ${toCheck.length} to check (${results.size} cached) · concurrency=8`);
   setProgress(`BIT pre-flight: 0/${toCheck.length} checked…`, 5);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   let checked = 0;
   let idx = 0;
 
   // Worker coroutine — each of the 8 runs independently until the queue is empty
   async function worker() {
-    while (idx < toCheck.length && !scanAborted) {
+    while (idx < toCheck.length && isScanRunCurrent(run)) {
       const artist = toCheck[idx++];
-      const shows = await fetchBIT(artist, today).catch(() => []);
+      const shows = await fetchBIT(artist, today, run).catch(() => []);
+      if (!isScanRunCurrent(run)) return;
       results.set(artist, shows);
 
       // Persist to IDB so subsequent smart scans don't re-check
@@ -79,6 +91,7 @@ async function bitPreFlightScan(artists) {
 
   // 8 parallel workers — BIT handles this fine, no shared rate limiter needed
   await Promise.all(Array.from({ length: 8 }, worker));
+  if (!isScanRunCurrent(run)) return results;
 
   const touring = [...results.values()].filter(s => s.length > 0).length;
   const notTouring = results.size - touring;
@@ -116,28 +129,32 @@ function shouldUseGeoSweep() {
   return true;
 }
 
-async function geoSweepScan(today) {
+async function geoSweepScan(today, run = getScanContext()) {
+  if (!isScanRunCurrent(run)) return new Map();
   // Build a normalized alias index for exact performer-slot matches.
-  const artistIndex = buildArtistAliasIndex(ARTISTS);
+  const artistIndex = buildArtistAliasIndex(run.artists);
   const found = new Map(); // artist → shows[]
 
   dblog('info', `Geo sweep: scanning ${[...includeCountries].join(',')} for all music events, then matching ${ARTISTS.length} artists`);
 
   for (const cc of includeCountries) {
-    if (scanAborted) break;
+    if (!isScanRunCurrent(run)) break;
     let page = 0;
     let totalPages = null;
 
-    while (page < GEO_SWEEP_MAX_PAGES && !scanAborted) {
+    while (page < GEO_SWEEP_MAX_PAGES && isScanRunCurrent(run)) {
       await (window._rateLimitedWait?.());
+      if (!isScanRunCurrent(run)) return found;
       const url = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&classificationName=music&countryCode=${cc}&size=200&page=${page}&sort=date,asc&startDateTime=${today}T00:00:00Z`;
 
       let evs = [];
       try {
         const r = await apiFetch(url);
+        if (!isScanRunCurrent(run)) return found;
         if (r.status === 429) { window._onTm429?.(); await sleep(6000); continue; }
         if (!r.ok) break;
         const d = await r.json();
+        if (!isScanRunCurrent(run)) return found;
         evs = d?._embedded?.events || [];
 
         // On first page, figure out how many total pages exist for logging
@@ -146,6 +163,7 @@ async function geoSweepScan(today) {
           dblog('info', `Geo sweep ${cc}: ${d.page.totalElements} total music events (${totalPages} pages)`);
         }
       } catch(e) {
+        if (!isScanRunCurrent(run)) return found;
         dblog('warn', `Geo sweep ${cc} p${page}: ${e.message}`);
         break;
       }

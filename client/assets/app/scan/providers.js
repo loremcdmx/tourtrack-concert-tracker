@@ -41,7 +41,10 @@ function _attractionL1Set(key, value) {
 // it hadn't changed — wasting a TM request on data you already knew. Now:
 //   - ID re-fetch: only if > 30 days old (almost never happens in practice)
 //   - Count re-fetch: every 24-48h, because tour announcements happen daily
-async function resolveAttractionInfo(artist) {
+async function resolveAttractionInfo(artist, run = getScanContext()) {
+  const cancelled = () => !isScanRunCurrent(run);
+  const empty = { id: null, totalUpcoming: 0 };
+  if (cancelled()) return empty;
   const key = artist.toLowerCase().trim();
 
   // ── L1 check (in-memory) ─────────────────────────────────────────
@@ -52,6 +55,7 @@ async function resolveAttractionInfo(artist) {
   const now = Date.now();
   try {
     const cached = await DB.get('attractions', key);
+    if (cancelled()) return empty;
     if (cached) {
       const idFresh      = (now - cached.ts) < TTL_ATTRACTION;
       const countTTL     = (cached.totalUpcoming === 0) ? TTL_UPCOMING_ZERO : TTL_UPCOMING;
@@ -80,10 +84,13 @@ async function resolveAttractionInfo(artist) {
         if (cached.id) {
           try {
             await (window._rateLimitedWait?.());
+            if (cancelled()) return empty;
             const countUrl = `https://app.ticketmaster.com/discovery/v2/attractions/${cached.id}.json?apikey=${API_KEY}`;
             const cr = await apiFetch(countUrl, 5000);
+            if (cancelled()) return empty;
             if (cr.ok) {
               const cd = await cr.json();
+              if (cancelled()) return empty;
               const ue = cd.upcomingEvents;
               const totalUpcoming = ue ? (ue._total ?? null) : 0;
               const updated = { ...cached, totalUpcoming, tsCounted: now };
@@ -103,6 +110,7 @@ async function resolveAttractionInfo(artist) {
               return result;
             }
           } catch(e) {
+            if (cancelled()) return empty;
             // Count refresh failed — fall through to return stale count rather than erroring
             dblog('warn', `${artist}: count refresh failed (${e.message}) — using stale count`);
           }
@@ -114,6 +122,7 @@ async function resolveAttractionInfo(artist) {
       }
     }
   } catch(e) {}
+  if (cancelled()) return empty;
 
   // ── Full network fetch (cache miss or ID expired) ─────────────────
   const ambig = artistIsAmbiguous(artist);
@@ -146,61 +155,51 @@ async function resolveAttractionInfo(artist) {
     const hasDiacritics = artistAscii !== artist && artistAscii.trim();
 
     await (window._rateLimitedWait?.());
-    const primary = apiFetch(buildUrl(artist), 6000);
-    // Fire ASCII fallback in parallel when diacritics are present — we'd otherwise
-    // pay a second rate-limit gap after the primary miss, which dominates runtime
-    // for the 10% of artists with non-ASCII names.
-    let ascii = null;
-    if (hasDiacritics) {
-      await (window._rateLimitedWait?.());
-      ascii = apiFetch(buildUrl(artistAscii), 6000);
-      // Attach a swallow-handler eagerly so if the primary path throws (e.g.
-      // 429) we don't leak an unhandled rejection or a pinned response body.
-      ascii.catch(() => {});
-    }
+    if (cancelled()) return empty;
+    const aRes = await apiFetch(buildUrl(artist), 6000);
+    if (cancelled()) return empty;
+    if (aRes.ok) {
+      const aData = await aRes.json();
+      if (cancelled()) return empty;
+      const items = aData?._embedded?.attractions || [];
+      let best = _findBest(items);
 
-    try {
-      const aRes = await primary;
-      if (aRes.ok) {
-        const aData = await aRes.json();
-        const items = aData?._embedded?.attractions || [];
-        let best = _findBest(items);
-
-        if (!best && ascii) {
-          let aRes2 = null;
-          try { aRes2 = await ascii; } catch { aRes2 = null; }
-          if (aRes2?.ok) {
-            const aData2 = await aRes2.json();
-            const items2 = aData2?._embedded?.attractions || [];
-            best = _findBest(items2);
-            if (best) dblog('info', `${artist}: found via ASCII fallback "${artistAscii}" → ${best.name}`);
-          } else if (aRes2?.status === 429) {
-            throw new Error('429');
-          }
-        } else if (ascii) {
-          ascii.then(r => r.text?.()).catch(() => {}); // drain unused body
+      // Await the fallback in this worker. A detached speculative request
+      // could outlive the session handoff and call the next run's hooks.
+      if (!best && hasDiacritics) {
+        await (window._rateLimitedWait?.());
+        if (cancelled()) return empty;
+        let aRes2 = null;
+        try { aRes2 = await apiFetch(buildUrl(artistAscii), 6000); } catch { aRes2 = null; }
+        if (cancelled()) return empty;
+        if (aRes2?.ok) {
+          const aData2 = await aRes2.json();
+          if (cancelled()) return empty;
+          const items2 = aData2?._embedded?.attractions || [];
+          best = _findBest(items2);
+          if (best) dblog('info', `${artist}: found via ASCII fallback "${artistAscii}" → ${best.name}`);
+        } else if (aRes2?.status === 429) {
+          throw new Error('429');
         }
-
-        if (best) {
-          id = best.id;
-          attractionName = best.name || '';
-          const ue = best.upcomingEvents;
-          totalUpcoming = ue ? (ue._total ?? null) : null;
-        } else {
-          totalUpcoming = 0; // Not found on TM — no events possible
-        }
-      } else if (aRes.status === 429) {
-        throw new Error('429');
       }
-    } finally {
-      // Make sure the ASCII body is always consumed so the socket is freed,
-      // even when the primary branch throws before we read it.
-      if (ascii) ascii.then(r => r?.text?.()).catch(() => {});
+
+      if (best) {
+        id = best.id;
+        attractionName = best.name || '';
+        const ue = best.upcomingEvents;
+        totalUpcoming = ue ? (ue._total ?? null) : null;
+      } else {
+        totalUpcoming = 0; // Not found on TM — no events possible
+      }
+    } else if (aRes.status === 429) {
+      throw new Error('429');
     }
   } catch(e) {
+    if (cancelled()) return empty;
     if (e.message === '429') throw e; // let caller handle 429
     dblog('warn', `${artist}: attraction lookup failed — ${e.message}`);
   }
+  if (cancelled()) return empty;
 
   const record = { id, ts: now, tsCounted: now, name: artist, matchName: attractionName, totalUpcoming };
   if (typeof recordTicketmasterKnowledge === 'function') {
@@ -219,8 +218,8 @@ async function resolveAttractionInfo(artist) {
 }
 
 // Backward-compatible shim — callers that only need the ID (retrySingleArtist, etc.)
-async function resolveAttractionId(artist) {
-  const info = await resolveAttractionInfo(artist);
+async function resolveAttractionId(artist, run = getScanContext()) {
+  const info = await resolveAttractionInfo(artist, run);
   return info.id;
 }
 
@@ -228,15 +227,17 @@ async function resolveAttractionId(artist) {
 // - If existingShows provided (incremental mode): fetches page 0 only, diffs by event ID,
 //   returns merged set (existing + any new events found).
 // - Otherwise: full paginated fetch.
-async function fetchConcerts(artist, today, existingShows = null) {
-  today = today || new Date().toISOString().split('T')[0];
+async function fetchConcerts(artist, today, existingShows = null, run = getScanContext()) {
+  if (!isScanRunCurrent(run)) return [];
+  today = today || _isoDateOnly(new Date());
   const ambig = artistIsAmbiguous(artist);
 
   // ── Step 1: attraction info (id + upcoming count from TM) ────────
   // resolveAttractionInfo costs exactly 1 TM request on first run; subsequent
   // calls are free (7-day IDB cache). The returned totalUpcoming lets us bail out
   // before ever hitting the events endpoint for artists who aren't touring.
-  const { id: attractionId, totalUpcoming } = await resolveAttractionInfo(artist);
+  const { id: attractionId, totalUpcoming } = await resolveAttractionInfo(artist, run);
+  if (!isScanRunCurrent(run)) return [];
 
   if (attractionId) {
     dblog('ok', `${artist}: attractionId=${attractionId} · TM upcoming=${totalUpcoming ?? '?'}`);
@@ -260,14 +261,16 @@ async function fetchConcerts(artist, today, existingShows = null) {
   const knownIds = existingShows ? new Set(existingShows.map(s => s.id)) : null;
 
   for (let page = 0; page < MAX_PAGE; page++) {
-    if (scanAborted) break;
+    if (!isScanRunCurrent(run)) return [];
     await (window._rateLimitedWait?.());  // rate-limit every individual TM request
+    if (!isScanRunCurrent(run)) return [];
 
     const url = attractionId
       ? `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&attractionId=${attractionId}&size=${TM_EVENTS_PAGE_SIZE}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`
       : `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&keyword=${encodeURIComponent(artist)}&classificationName=music&size=${TM_EVENTS_PAGE_SIZE}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`;
 
     const r = await apiFetch(url);
+    if (!isScanRunCurrent(run)) return [];
     if (r.status === 429) throw new Error('429');
     if (r.status === 413) {
       // 413 = URL too long or bad chars — try ASCII-normalized name
@@ -277,8 +280,10 @@ async function fetchConcerts(artist, today, existingShows = null) {
           dblog('warn', `"${artist}": 413 — retrying with ASCII name "${ascii}"`);
           const urlAscii = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${API_KEY}&keyword=${encodeURIComponent(ascii)}&classificationName=music&size=${TM_EVENTS_PAGE_SIZE}&page=${page}&sort=date,asc${apiCountryParam()}&startDateTime=${today}T00:00:00Z`;
           const r2 = await apiFetch(urlAscii);
+          if (!isScanRunCurrent(run)) return [];
           if (r2.ok) {
             const d2 = await r2.json();
+            if (!isScanRunCurrent(run)) return [];
             const evs2 = d2?._embedded?.events || [];
             for (const ev of evs2) {
               if (!attractionId && !artistMatch(artist, ev, ambig)) continue;
@@ -294,6 +299,7 @@ async function fetchConcerts(artist, today, existingShows = null) {
     }
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
+    if (!isScanRunCurrent(run)) return [];
     const evs = d?._embedded?.events || [];
     const totalPages = Number.isFinite(d?.page?.totalPages) ? d.page.totalPages : null;
 
@@ -318,6 +324,7 @@ async function fetchConcerts(artist, today, existingShows = null) {
 
     if (page < MAX_PAGE - 1) await sleep(80); // tight sleep between pages — we already paid ~300ms per fetch
   }
+  if (!isScanRunCurrent(run)) return [];
 
   // Incremental: merge new shows with existing, avoiding duplicates
   if (existingShows && knownIds) {
@@ -352,13 +359,15 @@ async function bitFetch(url, ms = 5000) {
 
 // Bandsintown fallback — called ONLY for artists with 0 TM results
 // API is free, no key required, CORS-friendly from browser
-async function fetchBIT(artist, today) {
+async function fetchBIT(artist, today, run = getScanContext()) {
+  if (!isScanRunCurrent(run)) return [];
   // Circuit breaker — skip if BIT is globally unreachable this session
   if (window._bitBlocked) return [];
   try {
     const name = encodeURIComponent(artist);
     const url = `https://rest.bandsintown.com/artists/${name}/events?app_id=tourtrack&date=upcoming`;
     const r = await bitFetch(url, 4000); // BIT-specific fetch — no TM proxy, no rate limit
+    if (!isScanRunCurrent(run)) return [];
     if (r.status === 403 || r.status === 401 || r.status === 503) {
       window._bitBlocked = true;
       dblog('warn', `BIT API: HTTP ${r.status} — disabling Bandsintown for this session`);
@@ -366,6 +375,7 @@ async function fetchBIT(artist, today) {
     }
     if (!r.ok) return [];
     const data = await r.json();
+    if (!isScanRunCurrent(run)) return [];
     if (!Array.isArray(data)) return [];
     const shows = [];
     for (const ev of data) {
@@ -383,6 +393,7 @@ async function fetchBIT(artist, today) {
     if (shows.length) dblog('ok', `${artist}: +${shows.length} shows (Bandsintown fallback)`);
     return shows;
   } catch(e) {
+    if (!isScanRunCurrent(run)) return [];
     // Network-level block ("Failed to fetch") — BIT is unreachable, stop trying
     const isNetBlock = e.message?.includes('Failed to fetch') ||
                        e.message?.includes('NetworkError') ||

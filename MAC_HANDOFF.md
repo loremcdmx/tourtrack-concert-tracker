@@ -40,11 +40,16 @@ npx vercel link --yes --project concerttracker
 npm run env:pull:dev
 ```
 
-That command writes `.env` locally from the linked `concerttracker` project and keeps the canonical local callback:
+That command writes `.env` locally from the linked `concerttracker` project.
+Register the canonical local callback in the Spotify developer dashboard:
 
 ```text
-http://localhost:3002/api/auth/spotify/callback
+http://127.0.0.1:3002/api/auth/spotify/callback
 ```
+
+Spotify rejects `localhost` redirect URIs. The local server normalizes a legacy
+`localhost` callback to the loopback IP without editing `.env`, and returns login
+to the original app origin so existing browser data stays available.
 
 Fallback only if Vercel access is unavailable: copy `.env.example` to `.env` and fill:
 
@@ -53,7 +58,7 @@ PORT=3002
 TICKETMASTER_API_KEYS=your_ticketmaster_key
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SPOTIFY_REDIRECT_URI=http://localhost:3002/api/auth/spotify/callback
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:3002/api/auth/spotify/callback
 SESSION_SECRET=replace_with_a_long_random_secret
 ```
 

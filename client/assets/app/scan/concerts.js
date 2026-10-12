@@ -44,8 +44,8 @@ function visibleConcerts() {
   const last = len ? list[len - 1] : null;
   const scenarioArtists = isScenarioAProductMode() && Array.isArray(ARTISTS) ? ARTISTS : null;
   const artistLength = scenarioArtists ? scenarioArtists.length : -1;
-  const artistFirst = artistLength ? String(scenarioArtists[0] || '') : '';
-  const artistLast = artistLength ? String(scenarioArtists[artistLength - 1] || '') : '';
+  const artistFirst = artistLength > 0 ? String(scenarioArtists[0] || '') : '';
+  const artistLast = artistLength > 0 ? String(scenarioArtists[artistLength - 1] || '') : '';
   if (
     _visibleConcertsCacheList === list &&
     _visibleConcertsCacheLength === len &&

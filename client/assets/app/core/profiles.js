@@ -25,6 +25,7 @@ function profSaveAll(all) {
 // Snapshot the current in-memory ARTISTS/ARTIST_PLAYS into a
 // non-Main profile slot so it survives page refreshes.
 function profPersistCurrent() {
+  if (typeof getActivePlaylistSessionId === 'function' && getActivePlaylistSessionId()) return;
   if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   if (activeProf === PROF_MAIN) return; // Main is always read from tt_artists/tt_plays
   const all = profAll();
@@ -68,14 +69,14 @@ function profRenderSelect() {
 function profSwitch(name) {
   if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) return;
   // Called from the <select> onChange — skip if already on this profile.
-  if (name === activeProf) return;
+  if (name === activeProf && !(typeof getActivePlaylistSessionId === 'function' && getActivePlaylistSessionId())) return;
   // Scan loops capture ARTISTS by reference and push results into the global
   // concerts[]. If we let the user swap profiles mid-scan, in-flight artists
   // belonging to the OLD profile would land in the NEW profile's concerts[]
   // and the loop body would start reading the NEW profile's ARTISTS array
   // mid-iteration. Cleanest mitigation: abort the running scan first; the
   // user can rescan in the new profile when they're ready.
-  if (window._scanActive) {
+  if (window._scanActive && typeof stopActiveScanAndWait !== 'function') {
     if (typeof scanAborted !== 'undefined') {
       scanAborted = true;
       window._scanActive = false;
@@ -98,12 +99,19 @@ function profSwitch(name) {
     try { persistSettings(); } catch (e) {}
   }
   profPersistCurrent();   // snapshot the profile we're leaving
-  _profApply(name);
+  return _profApply(name);
 }
 
 // Internal: load a profile into memory and re-render everything.
 // No guard — safe to call even when name === activeProf.
 function _profApply(name) {
+  if (typeof leavePlaylistSessionForProfile === 'function') {
+    return leavePlaylistSessionForProfile(originalMain => _profApplyPrepared(name, originalMain));
+  }
+  return _profApplyPrepared(name, null);
+}
+
+function _profApplyPrepared(name, originalMain) {
   if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
     name = PROF_MAIN;
   }
@@ -130,10 +138,25 @@ function _profApply(name) {
       ? uniqueArtistNames([...ARTISTS, ...Object.keys(ARTIST_PLAYS || {})])
       : ARTISTS.slice();
   }
+  if (originalMain && name === PROF_MAIN) {
+    concerts = originalMain.cHash === countryHash() ? (originalMain.concerts || []) : [];
+    festivals = originalMain.cHash === countryHash() ? (originalMain.festivals || []) : [];
+    SCANNED_ARTISTS = originalMain.cHash === countryHash() ? (originalMain.scannedArtists || []) : [];
+    fetchErrors = originalMain.cHash === countryHash() ? (originalMain.fetchErrors || {}) : {};
+    cacheTimestamp = originalMain.cHash === countryHash() ? (originalMain.cacheTimestamp || 0) : 0;
+  } else {
+    const allowed = new Set(ARTISTS.map(artist => artist.toLowerCase()));
+    concerts = concerts.filter(show => allowed.has(String(show?.artist || '').toLowerCase()));
+    SCANNED_ARTISTS = (SCANNED_ARTISTS || []).filter(artist => allowed.has(artist.toLowerCase()));
+    fetchErrors = {};
+  }
   ARTIST_TRACKS = {};
   SPOTIFY_PLAYLIST_META = null;
   _artistTracksHydratedProfile = '';
-  if (typeof hydrateArtistTrackState === 'function') hydrateArtistTrackState(activeProf).catch(() => {});
+  if (originalMain && name === PROF_MAIN && typeof setArtistTrackState === 'function') {
+    setArtistTrackState(originalMain.artistTracks || {}, originalMain.playlistMeta || null, activeProf);
+    if (typeof _minTracksFilter !== 'undefined') _minTracksFilter = Math.max(1, Number(originalMain.minTracks) || 1);
+  } else if (typeof hydrateArtistTrackState === 'function') hydrateArtistTrackState(activeProf).catch(() => {});
 
   // Keep the artists textarea in Settings in sync if it's open.
   const ta = document.getElementById('artists-ta');
@@ -145,6 +168,7 @@ function _profApply(name) {
   }
   updateArtistCount && updateArtistCount();
   profRenderSelect(); // always refresh the dropdown + delete-btn state
+  if (typeof persistData === 'function') persistData();
 
   if (!ARTISTS.length) {
     // Empty profile — rescore festivals to zero (they still hold scores
@@ -318,6 +342,15 @@ function profDelete() {
 
 // ── Boot ────────────────────────────────────────────────────────
 function profInit() {
+  if (typeof getActivePlaylistSessionId === 'function' && getActivePlaylistSessionId()) {
+    // restore() has already loaded this playlist's synchronous taste mirror.
+    // A saved legacy profile must not replace it during boot.
+    activeProf = PROF_MAIN;
+    try { localStorage.setItem('tt_active_profile', PROF_MAIN); } catch (_) {}
+    if (typeof hydrateArtistTrackState === 'function') hydrateArtistTrackState(activeProf).catch(() => {});
+    profRenderSelect();
+    return;
+  }
   if (typeof isScenarioAProductMode === 'function' && isScenarioAProductMode()) {
     activeProf = PROF_MAIN;
     try { localStorage.setItem('tt_active_profile', PROF_MAIN); } catch(e) {}

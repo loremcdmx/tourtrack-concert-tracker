@@ -158,7 +158,7 @@ async function runMatchV2() {
 function buildMatchPane() {
   const body = document.getElementById('match-body');
   if (!body) return;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   if (!matchShared.length) {
     body.innerHTML = '<div style="padding:20px 14px;font-size:.6rem;color:var(--muted2);text-align:center">No shared artists found.</div>';
@@ -266,39 +266,45 @@ function matchScoreFestivals() {
   const mySet  = new Set(ARTISTS.map(a => a.toLowerCase()));
   const herSet = new Set(Object.keys(matchHerMap));
   const re = a => new RegExp(`(^|[^a-z])${(a||'').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}([^a-z]|$)`);
+  // Patterns and play weights depend on the profiles, not on the festival.
+  const myArtists = ARTISTS.map(name => {
+    const key = name.toLowerCase();
+    const shared = herSet.has(key);
+    const myWeight = pw(ARTIST_PLAYS[key] || 0);
+    return {
+      name, pattern: re(name), shared,
+      weight: shared ? (myWeight + pw(matchHerMap[key].count)) * 1.5 : myWeight,
+    };
+  });
+  const herOnlyArtists = [...herSet].filter(key => !mySet.has(key)).map(key => ({
+    name: matchHerMap[key].name,
+    pattern: re(matchHerMap[key].name),
+    weight: pw(matchHerMap[key].count),
+  }));
 
   return festivals.map(f => {
     const ll   = (f.lineup||[]).map(n => n.toLowerCase());
     const fn   = (f.name||'').toLowerCase();
-    const test = name => {
-      const r = re(name);
-      return ll.length ? ll.some(l => r.test(l)) : r.test(fn);
-    };
+    const test = pattern => ll.length ? ll.some(name => pattern.test(name)) : pattern.test(fn);
 
     const matchedShared = [], matchedMe = [], matchedHer = [];
     let score = 0;
 
     // My artists
-    for (const myName of ARTISTS) {
-      if (!test(myName)) continue;
-      const key = myName.toLowerCase();
-      const myW = pw(ARTIST_PLAYS[key] || 0);
-      if (herSet.has(key)) {
-        const herW = pw(matchHerMap[key].count);
-        matchedShared.push(myName);
-        score += (myW + herW) * 1.5; // shared = bonus
+    for (const artist of myArtists) {
+      if (!test(artist.pattern)) continue;
+      if (artist.shared) {
+        matchedShared.push(artist.name);
       } else {
-        matchedMe.push(myName);
-        score += myW;
+        matchedMe.push(artist.name);
       }
+      score += artist.weight;
     }
     // Her-only artists
-    for (const herKey of herSet) {
-      if (mySet.has(herKey)) continue; // already handled
-      const herName = matchHerMap[herKey].name;
-      if (!test(herName)) continue;
-      matchedHer.push(herName);
-      score += pw(matchHerMap[herKey].count);
+    for (const artist of herOnlyArtists) {
+      if (!test(artist.pattern)) continue;
+      matchedHer.push(artist.name);
+      score += artist.weight;
     }
 
     return { ...f, matchScore: score, matchedShared, matchedMe, matchedHer };
@@ -308,7 +314,8 @@ function matchScoreFestivals() {
 function renderMatchMap() {
   if (!lmap) { initMap(); }
   clearMapLayers();
-  const today = new Date().toISOString().split('T')[0];
+  _rebuildMapData();
+  const today = _isoDateOnly(new Date());
   const sharedNames = new Set(matchShared.map(s => s.name));
 
   // Plot only shared artist concerts
@@ -418,11 +425,11 @@ ${item('TODO', 'htag-todo', '<strong>Festival lineup enrichment:</strong> No rel
 
 function buildStats() {
   const el = document.getElementById('msb-stats');
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const in30  = new Date(); in30.setDate(in30.getDate() + 30);
-  const in30s = in30.toISOString().split('T')[0];
+  const in30s = _isoDateOnly(in30);
   const in90  = new Date(); in90.setDate(in90.getDate() + 90);
-  const in90s = in90.toISOString().split('T')[0];
+  const in90s = _isoDateOnly(in90);
 
   const artistsOnTour = Object.keys(allTourData).length;
   if (!artistsOnTour) { if (el) el.style.display = 'none'; return; }

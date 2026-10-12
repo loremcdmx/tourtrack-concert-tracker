@@ -32,11 +32,18 @@ TICKETMASTER_API_KEYS=your_ticketmaster_key
 ```env
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SPOTIFY_REDIRECT_URI=http://localhost:3002/api/auth/spotify/callback
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:3002/api/auth/spotify/callback
 SESSION_SECRET=replace_with_a_long_random_secret
 ```
 
 Register the same redirect URI in the Spotify developer dashboard before testing login.
+
+Spotify no longer accepts `localhost` in redirect URIs. Register
+`http://127.0.0.1:3002/api/auth/spotify/callback` exactly. The tracker can stay
+open at `http://localhost:3002`: local login uses the loopback IP for OAuth and
+returns to the original browser origin, preserving its saved playlist data.
+The local server also normalizes a legacy `localhost` callback from the
+environment; the corresponding IP callback must still be registered with Spotify.
 
 4. Start the app:
 
@@ -67,7 +74,7 @@ If the repo is not linked yet, the script now attempts `vercel link --yes --proj
 4. Keep Spotify redirect canonical:
 
 ```text
-http://localhost:3002/api/auth/spotify/callback
+http://127.0.0.1:3002/api/auth/spotify/callback
 ```
 
 5. Run:
@@ -91,6 +98,73 @@ Read AGENTS.md, README.md, and MAC_HANDOFF.md. Check git status, run npm run che
 - `npm run env:pull:dev` - pull `.env` from the linked Vercel project's `development` environment after backing up any existing local file
 - `npm run check` - syntax check server and client code
 - `npm test` - run the UI regression suite
+
+Date filters use your local calendar day. Multi-day festivals stay visible until
+their final day and match any selected date range they overlap, including after
+restoring a saved session. Ticketmaster end dates are retained during import.
+
+The map uses OpenStreetMap tiles with visible attribution. A service worker
+keeps viewed tiles in a persistent cache independent of app releases, honoring
+server freshness headers (seven days when no readable expiry is provided).
+The cache trims to 512 tiles of up to 128 KiB each; expired tiles use normal
+HTTP revalidation, and unsupported/restricted browsers retain normal loading.
+Storage reads, network/body reads and background writes have separate deadlines
+so a stalled cache cannot hold up a downloaded tile. A permitted stale PNG can
+bridge a transient outage without extending its freshness; rate limits retain
+the provider's Retry-After pause. Late native storage writes and pruning resume
+bounded reconciliation when they finish, restoring newer known tiles and the
+cache limit. Native storage calls cannot be canceled, so the limit is eventual
+after a stall; worker termination can interrupt repair until another tile is stored.
+Failed visible tiles retry twice at the same URL. **Retry map** and returning
+online recover failed tiles without reloading healthy tiles or event markers.
+Leaving the viewport cancels pending retries; hung image requests are stopped.
+It loads the current viewport without background tile prefetching. Regression
+tests run with isolated browser storage and offline API responses, so they do
+not consume live provider quota or use your API credentials.
+
+Map labels share one screen-space layout across tours, festivals, city clusters,
+and focused routes. Labels avoid each other and map controls while venue
+coordinates and route geometry remain exact. Crowded areas become compact
+groups with a complete, scrollable event list. The layout follows pan, zoom,
+resize, and the phone's Agenda/Map switch, including open popup positions.
+
+The workspace has an agenda beside the live atlas on desktop, with separate
+Agenda and Map views on phones. Filters expand from the agenda header. Concert
+rows and artist controls support keyboard activation. Festival-only refreshes
+survive reloads without changing the search scope of stored concert results.
+Late track-cache responses cannot overwrite a newer import or profile choice.
+Deterministic regressions also cover batched filter redraws and reuse of festival
+matching patterns; these verify work counts rather than machine timing.
+
+## Playlist links
+
+Use **Playlist** in the header to paste a Spotify playlist link. Full
+`open.spotify.com/playlist/...` links (including locale and embed variants),
+`spotify:playlist:...` URIs, playlist IDs, and mobile `spotify.link` share links
+are accepted. Import includes every available music track, with all artists
+selected by default and an optional minimum track count. Unavailable tracks,
+local files and podcast episodes are counted separately. A failed page or a
+playlist edited during import never produces a successful partial import.
+
+Each imported playlist keeps its own artists, track counts, track details,
+concerts, festival scores and scan progress on this device. Previously imported
+playlists reopen from history without Spotify requests. Discovery caches remain
+shared for reuse; results are restricted to the active playlist's artists and
+country scope. Switching playlists stops and drains the old scan before the
+new session is activated. Failed or canceled imports preserve the active session.
+The original Main session is preserved during migration.
+
+Spotify access rules still apply. Since the February 2026 Development Mode
+migration, playlist items are available only to the playlist owner or a
+collaborator; app-only credentials cannot bypass this restriction. Connect the
+appropriate Spotify account when prompted. Extended Quota applications can
+retain the older public-playlist access. See the official
+[playlist items reference](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
+and [migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
+Other streaming services are not supported by this importer.
+
+The old pinned-playlist experience is available only with an explicit
+`window.__SERVER_CONFIG__.pinnedPlaylistOnly === true` configuration.
 
 ## External-user readiness
 

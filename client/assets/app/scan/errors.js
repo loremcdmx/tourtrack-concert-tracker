@@ -48,7 +48,7 @@ function updateErrorTab() {
 
 async function retrySingleArtist(artist) {
   if (!API_KEY) return;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const now = Date.now();
   const cHash = countryHash();
   const idbKey = artist.toLowerCase().trim();

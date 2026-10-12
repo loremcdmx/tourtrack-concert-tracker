@@ -135,7 +135,7 @@ function isCDMX(city) {
 // ── DATE OFFSET HELPER ──────────────────────────────────────────
 function dateOffset(days) {
   const d = new Date(); d.setDate(d.getDate() + days);
-  return d.toISOString().split('T')[0];
+  return _isoDateOnly(d);
 }
 
 let _artistIndexCacheRef = null;
@@ -568,11 +568,11 @@ function _rankScore(artist) {
 }
 
 function renderMxCalendar() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   // All future MX concerts — use unified score filter
-  let mxCons = dateFilter_(visibleConcerts())
-    .filter(c => c.country === 'MX' && !isHidden(c.artist) && scoreOkArtist(c.artist));
+  let mxCons = showShows ? dateFilter_(visibleConcerts())
+    .filter(c => c.country === 'MX' && !isHidden(c.artist) && scoreOkArtist(c.artist)) : [];
 
   // MX festivals — use score filter for fests
   const mxFests = showFests
@@ -826,7 +826,7 @@ function drpRender() {
   const ML = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   document.getElementById('drp-month-lbl').textContent = ML[_drpMonth] + ' ' + _drpYear;
   const grid = document.getElementById('drp-grid');
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   grid.innerHTML = '';
   // Day-of-week headers
   ['Mo','Tu','We','Th','Fr','Sa','Su'].forEach(d => {
@@ -843,7 +843,9 @@ function drpRender() {
   }
   for (let d = 1; d <= lastDay; d++) {
     const iso = _drpYear + '-' + String(_drpMonth + 1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-    const el = document.createElement('div');
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.setAttribute('aria-label', iso);
     el.className = 'drp-day';
     el.textContent = d;
     if (iso < today) el.classList.add('drp-past');
@@ -910,12 +912,19 @@ function monthBounds(offsetMonths = 0) {
   const now = new Date();
   const first = new Date(now.getFullYear(), now.getMonth() + offsetMonths, 1);
   const last = new Date(now.getFullYear(), now.getMonth() + offsetMonths + 1, 0);
-  const iso = d => d.toISOString().split('T')[0];
+  const iso = d => _isoDateOnly(d);
   return { from: iso(first), to: iso(last) };
 }
 
 function dateMatchesPreset(dateStr, filter = dateFilter) {
   return dateMatchesNamedPreset(dateStr, filter, {
+    rangeFrom: calDateFrom,
+    rangeTo: calDateTo,
+  });
+}
+
+function eventDateMatchesPreset(event, filter = dateFilter) {
+  return dateRangeMatchesNamedPreset(event?.date, event?.endDate, filter, {
     rangeFrom: calDateFrom,
     rangeTo: calDateTo,
   });
@@ -965,7 +974,6 @@ function toggleFavorite(artistName, e) {
   if (favoriteArtists.has(key)) favoriteArtists.delete(key);
   else favoriteArtists.add(key);
   persistSettingsDeferred();
-  buildSidebar();
   renderMap();
   // Show/hide fav-only toggle
   const favBtn = document.getElementById('lt-fav');
@@ -985,18 +993,42 @@ function resetFavorites() {
   const btn = document.getElementById('lt-fav');
   if (btn) btn.style.display = 'none';
   persistSettings();
-  buildSidebar();
   refreshFilteredMap();
 }
 
+function applyEventTypeFilter(shows, fests) {
+  showShows = showMapTours = !!shows;
+  showFests = showMapFests = !!fests;
+  mapTypeFilter = showShows ? (showFests ? 'both' : 'tours') : (showFests ? 'fests' : 'none');
+  document.querySelectorAll('[data-t]').forEach(btn => {
+    const on = btn.dataset.t === 'shows' ? showShows : showFests;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  ['both', 'tours', 'fests'].forEach(type => {
+    const btn = document.getElementById('mft-' + type);
+    if (!btn) return;
+    const on = mapTypeFilter === type;
+    btn.classList.toggle('on', on && type !== 'fests');
+    btn.classList.toggle('on-f', on && type === 'fests');
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  [['lt-t', 'on-t', showShows], ['lt-f', 'on-f', showFests]].forEach(([id, cls, on]) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.classList.toggle(cls, on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
 function toggleType(t) {
-  if (t === 'shows') { showShows = !showShows; document.querySelector('[data-t=shows]').classList.toggle('on', showShows); }
-  else               { showFests  = !showFests;  document.querySelector('[data-t=fests]').classList.toggle('on', showFests); }
+  if (t !== 'shows' && t !== 'fests') return;
+  applyEventTypeFilter(t === 'shows' ? !showShows : showShows, t === 'fests' ? !showFests : showFests);
   scheduleFilterRefresh();
 }
 
 function dateFilter_(arr) {
-  return arr.filter(e => dateMatchesPreset(e.date));
+  return arr.filter(e => eventDateMatchesPreset(e));
 }
 
 // ── SCORE FILTER ─────────────────────────────────────────────────
@@ -1052,9 +1084,9 @@ function mapDateOk(dateStr) {
 // also rebuilding the full sidebar DOM (which renderMap does via buildSidebar).
 //
 function _rebuildMapData() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   allTourData = {};
-  const skipTours = mapTypeFilter === 'fests';
+  const skipTours = !showMapTours;
   if (!skipTours) {
     for (const c of visibleConcerts()) {
       if (c.date < today || isHidden(c.artist)) continue;
@@ -1172,7 +1204,7 @@ function scheduleFilterRefresh(opts = {}) {
   if (_scheduledFilterRefreshRaf) return;
 
   // Let the pressed-state paint before we start the expensive list/map rebuild.
-  requestAnimationFrame(() => {
+  _scheduledFilterRefreshRaf = requestAnimationFrame(() => {
     _scheduledFilterRefreshRaf = requestAnimationFrame(flushScheduledFilterRefresh);
   });
 }
@@ -1219,17 +1251,8 @@ function scheduleUiRefresh() {
 
 // Filter control handlers
 function setMapType(t) {
-  mapTypeFilter = t;
-  // Update button styles: tours/fests use their respective colors
-  ['both','tours','fests'].forEach(v => {
-    const btn = document.getElementById('mft-' + v);
-    if (!btn) return;
-    btn.classList.remove('on', 'on-f');
-    if (v === t) btn.classList.add(v === 'fests' ? 'on-f' : 'on');
-  });
-  // Sync the old layer-toggle state variables
-  showMapTours = t !== 'fests';
-  showMapFests = t !== 'tours';
+  if (!['both', 'tours', 'fests', 'none'].includes(t)) return;
+  applyEventTypeFilter(t === 'both' || t === 'tours', t === 'both' || t === 'fests');
   // Keep score controls available in every mode: tours use ARTIST_PLAYS,
   // festivals use festival.score.
   const scoreRow = document.getElementById('mfilt-score-row');
@@ -1249,7 +1272,7 @@ function setMapDate(d) {
   if (rangeRow) rangeRow.style.display = d === 'range' ? '' : 'none';
   const preset = d === 'week' ? '7' : d === 'month' ? '30' : d;
   if (d === 'range') {
-    const today = new Date().toISOString().split('T')[0];
+    const today = _isoDateOnly(new Date());
     const end   = dateOffset(30);
     const fromEl = document.getElementById('mfilt-from');
     const toEl   = document.getElementById('mfilt-to');
@@ -1322,8 +1345,17 @@ function _syncGeoButtons() {
     btn.classList.toggle('on', btn.dataset.gp === geoPreset));
 }
 
+let _geoPresetLookupPreset = null;
+let _geoPresetLookupCountryMap = null;
+let _geoPresetLookupCodes = null;
+
 function geoPresetCodes(preset) {
-  return getDisplayGeoPresetCodes(preset);
+  if (_geoPresetLookupPreset !== preset || _geoPresetLookupCountryMap !== COUNTRY_MAP) {
+    _geoPresetLookupCodes = getDisplayGeoPresetCodes(preset);
+    _geoPresetLookupPreset = preset;
+    _geoPresetLookupCountryMap = COUNTRY_MAP;
+  }
+  return _geoPresetLookupCodes;
 }
 
 function geoPresetOk(cc) {
@@ -1346,9 +1378,9 @@ function setGeoPreset(preset) {
 function _updateTally() {
   const el = document.getElementById('ev-tally');
   if (!el) return;
-  const today = new Date().toISOString().split('T')[0];
-  const con = visibleConcerts().filter(c => c.date >= today && geoDisplayOk(c.country||'') && scoreOkArtist(c.artist) && !isHidden(c.artist) && dateMatchesPreset(c.date));
-  const fst = festivals.filter(f => f.date >= today && (f.score||0) > 0 && geoDisplayOk(f.country||'') && scoreOkFest(f) && dateMatchesPreset(f.date));
+  const today = _isoDateOnly(new Date());
+  const con = showShows ? visibleConcerts().filter(c => c.date >= today && geoDisplayOk(c.country||'') && scoreOkArtist(c.artist) && !isHidden(c.artist) && dateMatchesPreset(c.date)) : [];
+  const fst = showFests ? festivals.filter(f => (f.score||0) > 0 && geoDisplayOk(f.country||'') && scoreOkFest(f) && eventDateMatchesPreset(f)) : [];
   const total = con.length + fst.length;
   el.textContent = total ? `${total} events` : '';
 }
@@ -1384,7 +1416,7 @@ function isHidden(a) { if (!(a in hiddenArtists)) return false; const u = hidden
 function renderCalendar() {
   expireHidden();
   const renderToken = ++_calendarRenderToken;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   // Show score filter when artists can be ranked or festivals have scores.
   const hasArtistScore = hasArtistPlayData() || ARTISTS.length > 0;
@@ -1754,6 +1786,19 @@ function createCalendarMonthSeparator(month) {
   return sep;
 }
 
+function bindKeyboardClick(node) {
+  if (!node) return node;
+  node.setAttribute('role', 'button');
+  node.tabIndex = 0;
+  node.onkeydown = event => {
+    if (event.target !== node || event.repeat || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    node.click();
+  };
+  return node;
+}
+
 function bindArtistDetailTrigger(node, artistName, options = {}) {
   if (!node || !artistName) return node;
   const { title = 'Open artist card' } = options;
@@ -1766,7 +1811,7 @@ function bindArtistDetailTrigger(node, artistName, options = {}) {
     if (typeof openArtistDetail === 'function') openArtistDetail(artistName);
     else focusArtist(artistName);
   };
-  return node;
+  return bindKeyboardClick(node);
 }
 
 function createCalendarScoreRow(artistName) {
@@ -1944,6 +1989,7 @@ function buildCalendarEventRow(ev, ctx) {
         event.stopPropagation();
         openExternalUrl(ev.url);
       };
+      bindKeyboardClick(vLink);
       sub.appendChild(vLink);
       if (loc) sub.appendChild(document.createTextNode(' · ' + loc));
     } else {
@@ -1965,6 +2011,7 @@ function buildCalendarEventRow(ev, ctx) {
       chip.className = 'ev-artist-chip mine';
       chip.textContent = `Festival · ${fest.name}`;
       chip.onclick = e => { e.stopPropagation(); openFestDetail(fest.id); };
+      bindKeyboardClick(chip);
       metaRow.appendChild(chip);
     }
     if (artistTourCount > 1) {
@@ -1998,13 +2045,14 @@ function buildCalendarEventRow(ev, ctx) {
   row.appendChild(dayblock);
   row.appendChild(main);
   row.appendChild(actions);
+  if (row.onclick) bindKeyboardClick(row);
   return row;
 }
 
 renderCalendar = window.renderCalendar = function renderCalendarOptimized() {
   expireHidden();
   const renderToken = ++_calendarRenderToken;
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
 
   const hasArtistScore = hasArtistPlayData() || ARTISTS.length > 0;
   const scoreRow = document.getElementById('score-filter-row');

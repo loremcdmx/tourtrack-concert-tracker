@@ -43,7 +43,10 @@ function applyScopePresetValues(set, preset) {
 }
 
 function _isoDateOnly(date) {
-  return date.toISOString().split('T')[0];
+  const year = String(date.getFullYear()).padStart(4, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function _shiftIsoDate(baseIso, days) {
@@ -89,63 +92,76 @@ function presetUpcomingWeekendBounds(todayIso) {
   return { from: _isoDateOnly(start), to: _isoDateOnly(end) };
 }
 
-function dateMatchesNamedPreset(dateStr, filter, ctx = {}) {
-  const today = ctx.today || _isoDateOnly(new Date());
-  if (!dateStr) return false;
-  if (filter === 'all') return dateStr >= today;
-  if (filter === '7') return dateStr >= today && dateStr <= _shiftIsoDate(today, 7);
-  if (filter === '14') return dateStr >= today && dateStr <= _shiftIsoDate(today, 14);
-  if (filter === '30') return dateStr >= today && dateStr <= _shiftIsoDate(today, 30);
-  if (filter === '90') return dateStr >= today && dateStr <= _shiftIsoDate(today, 90);
-  if (filter === '180') return dateStr >= today && dateStr <= _shiftIsoDate(today, 180);
-  if (filter === 'year') {
-    const { from, to } = presetYearBounds(0, new Date(today + 'T12:00:00'));
-    return dateStr >= (today > from ? today : from) && dateStr <= to;
+function _isValidIsoDateOnly(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(value + 'T12:00:00');
+  return Number.isFinite(date.getTime()) && _isoDateOnly(date) === value;
+}
+
+function _dateRangeOverlaps(start, end, from, to) {
+  return end >= from && (!to || start <= to) && (!to || from <= to);
+}
+
+function _dateRangeMatchesSeason(start, end, filter, today) {
+  if (end < today) return false;
+  const upcomingStart = start > today ? start : today;
+  const firstYear = Number(upcomingStart.slice(0, 4));
+  const lastYear = Number(end.slice(0, 4));
+  const seasons = {
+    spring: ['03-01', '05-31'],
+    summer: ['06-01', '08-31'],
+    autumn: ['09-01', '11-30'],
+  };
+
+  for (let year = firstYear; year <= lastYear; year += 1) {
+    const yearIso = String(year).padStart(4, '0');
+    if (filter === 'winter') {
+      // The January/February and December windows join across New Year.
+      const februaryEnd = _shiftIsoDate(`${yearIso}-03-01`, -1);
+      if (_dateRangeOverlaps(upcomingStart, end, `${yearIso}-01-01`, februaryEnd)
+        || _dateRangeOverlaps(upcomingStart, end, `${yearIso}-12-01`, `${yearIso}-12-31`)) return true;
+    } else {
+      const [from, to] = seasons[filter];
+      if (_dateRangeOverlaps(upcomingStart, end, `${yearIso}-${from}`, `${yearIso}-${to}`)) return true;
+    }
   }
-  if (filter === 'nextyear') {
-    const { from, to } = presetYearBounds(1, new Date(today + 'T12:00:00'));
-    return dateStr >= from && dateStr <= to;
-  }
-  if (filter === 'thismonth') {
-    const { from, to } = presetMonthBounds(0, new Date(today + 'T12:00:00'));
-    return dateStr >= (today > from ? today : from) && dateStr <= to;
-  }
-  if (filter === 'nextmonth') {
-    const { from, to } = presetMonthBounds(1, new Date(today + 'T12:00:00'));
-    return dateStr >= from && dateStr <= to;
-  }
-  if (filter === 'thisquarter') {
-    const { from, to } = presetQuarterBounds(0, new Date(today + 'T12:00:00'));
-    return dateStr >= (today > from ? today : from) && dateStr <= to;
-  }
-  if (filter === 'nextquarter') {
-    const { from, to } = presetQuarterBounds(1, new Date(today + 'T12:00:00'));
-    return dateStr >= from && dateStr <= to;
-  }
-  if (filter === 'weekend') {
-    const { from, to } = presetUpcomingWeekendBounds(today);
-    return dateStr >= from && dateStr <= to;
-  }
-  if (filter === 'spring') {
-    const month = parseInt(dateStr.slice(5, 7), 10);
-    return month >= 3 && month <= 5;
-  }
-  if (filter === 'summer') {
-    const month = parseInt(dateStr.slice(5, 7), 10);
-    return month >= 6 && month <= 8;
-  }
-  if (filter === 'autumn') {
-    const month = parseInt(dateStr.slice(5, 7), 10);
-    return month >= 9 && month <= 11;
-  }
-  if (filter === 'winter') {
-    const month = parseInt(dateStr.slice(5, 7), 10);
-    return month === 12 || month <= 2;
-  }
+  return false;
+}
+
+function dateRangeMatchesNamedPreset(startDate, endDate, filter, ctx = {}) {
+  if (!_isValidIsoDateOnly(startDate)) return false;
+  const end = _isValidIsoDateOnly(endDate) && endDate >= startDate ? endDate : startDate;
+  const today = _isValidIsoDateOnly(ctx.today) ? ctx.today : _isoDateOnly(new Date());
+
   if (filter === 'range') {
-    const from = ctx.rangeFrom || today;
-    const to = ctx.rangeTo || _shiftIsoDate(today, 365 * 3);
-    return dateStr >= from && dateStr <= to;
+    const from = _isValidIsoDateOnly(ctx.rangeFrom) ? ctx.rangeFrom : today;
+    const to = _isValidIsoDateOnly(ctx.rangeTo) ? ctx.rangeTo : _shiftIsoDate(today, 365 * 3);
+    return _dateRangeOverlaps(startDate, end, from, to);
   }
-  return dateStr >= today;
+  if (['spring', 'summer', 'autumn', 'winter'].includes(filter)) {
+    return _dateRangeMatchesSeason(startDate, end, filter, today);
+  }
+  if (['7', '14', '30', '90', '180'].includes(filter)) {
+    return _dateRangeOverlaps(startDate, end, today, _shiftIsoDate(today, Number(filter)));
+  }
+
+  const anchor = new Date(today + 'T12:00:00');
+  let bounds;
+  if (filter === 'year') bounds = presetYearBounds(0, anchor);
+  else if (filter === 'nextyear') bounds = presetYearBounds(1, anchor);
+  else if (filter === 'thismonth') bounds = presetMonthBounds(0, anchor);
+  else if (filter === 'nextmonth') bounds = presetMonthBounds(1, anchor);
+  else if (filter === 'thisquarter') bounds = presetQuarterBounds(0, anchor);
+  else if (filter === 'nextquarter') bounds = presetQuarterBounds(1, anchor);
+  else if (filter === 'weekend') bounds = presetUpcomingWeekendBounds(today);
+
+  if (bounds) {
+    const from = bounds.from > today ? bounds.from : today;
+    return _dateRangeOverlaps(startDate, end, from, bounds.to);
+  }
+  return end >= today;
+}
+
+function dateMatchesNamedPreset(dateStr, filter, ctx = {}) {
+  return dateRangeMatchesNamedPreset(dateStr, dateStr, filter, ctx);
 }

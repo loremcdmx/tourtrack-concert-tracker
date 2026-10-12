@@ -127,8 +127,8 @@ function buildDatabaseTab() {
   const hist = getOnboardHistory();
   const pl = hist[0]; // most recent
   const artistsOnTour = Object.keys(allTourData).length;
-  const today = new Date().toISOString().split('T')[0];
-  const in90 = new Date(Date.now() + 90*86400000).toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
+  const in90 = _shiftIsoDate(today, 90);
   const endingSoon = Object.entries(allTourData).filter(([,evs]) =>
     evs.length >= 5 && evs[evs.length-1].date >= today && evs[evs.length-1].date <= in90).length;
   const topFests = festivals.filter(f => f.score > 0).slice(0,5);

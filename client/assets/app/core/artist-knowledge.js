@@ -399,7 +399,7 @@ async function recordBandsintownKnowledge(artist, patch = {}) {
 
 async function recordConcertCoverageKnowledge(artist, shows, context = '') {
   const list = Array.isArray(shows) ? shows.slice() : [];
-  const today = new Date().toISOString().split('T')[0];
+  const today = _isoDateOnly(new Date());
   const dates = list.map(show => show?.date).filter(Boolean).sort();
   return mergeArtistKnowledge(artist, {
     coverage: {
