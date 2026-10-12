@@ -50,7 +50,7 @@ function openFestDetail(festId) {
         </div>
         <div style="margin-top:8px">
           ${f.url ? `<a class="fd-tkt-btn" href="${f.url}" target="_blank">🎟 Tickets →</a>` : ''}
-          <button class="fd-map-btn" onclick="closeFestDetail();clearMapLayers();renderFestMap('${f.id}')">🗺 View on map</button>
+          <button class="fd-map-btn" onclick="closeFestDetail();setWorkspaceView('map');clearMapLayers();renderFestMap('${f.id}')">🗺 View on map</button>
         </div>
       </div>
     </div>`;

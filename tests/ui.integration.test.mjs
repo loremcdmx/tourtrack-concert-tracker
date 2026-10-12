@@ -1382,6 +1382,39 @@ test('festival rows open the overlay and ticket links use openExternalUrl', { co
   assert.deepEqual(openedUrls, ['https://tickets.example/alphafest']);
 });
 
+test('festival View on map opens the visible workspace while background rendering preserves Agenda', { concurrency: false }, async () => {
+  for (const width of [390, 1440]) {
+    await setViewport(page, width, 900);
+    await page.evaluate(installFixture, {
+      artists: ['Atlas'], artistPlays: { atlas: 12 },
+      festivals: [makeFestival('Atlas Festival', 5, 'Mexico City', 'MX', 19.43, -99.13, {
+        id: 'agenda-map-festival', score: 80, matched: [{ artist: 'Atlas', plays: 12 }],
+      })],
+    });
+    const before = await page.evaluate(() => {
+      setWorkspaceView('agenda');
+      renderFestMap(null);
+      openFestDetail('agenda-map-festival');
+      return { view: document.body.dataset.workspaceView, open: document.getElementById('fd-overlay').classList.contains('open') };
+    });
+    assert.deepEqual(before, { view: 'agenda', open: true });
+    await page.evaluate(() => document.querySelector('.fd-map-btn').click());
+    const after = await page.evaluate(() => ({
+      view: document.body.dataset.workspaceView,
+      open: document.getElementById('fd-overlay').classList.contains('open'),
+      selected: focusedFest,
+      mapVisible: document.querySelector('.map-panel').getBoundingClientRect().width > 0,
+      mapSize: lmap.getSize().x,
+      markerCount: festMarkers.length,
+    }));
+    assert.equal(after.view, 'map', `The festival map action must open Map at ${width}px`);
+    assert.equal(after.open, false);
+    assert.equal(after.selected, 'agenda-map-festival');
+    assert.equal(after.mapVisible, true);
+    assert.ok(after.mapSize > 0 && after.markerCount > 0, 'Map geometry and festival markers must be ready');
+  }
+});
+
 test('concert rows focus the selected artist', { concurrency: false }, async () => {
   await page.evaluate(installFixture, {
     artists: ['Nova'],

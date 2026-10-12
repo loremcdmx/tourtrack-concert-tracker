@@ -11,7 +11,7 @@ const CACHE_READ_TIMEOUT_MS = 300;
 const TILE_FETCH_TIMEOUT_MS = 8000;
 const CACHE_WRITE_TIMEOUT_MS = 1500;
 const tileRequests = new Map();
-const tileCooldowns = new Map();
+let tileCooldownUntil = 0;
 const tileLatestPuts = new Map();
 const tileReconcileRequests = new Map();
 let tilePutVersion = 0;
@@ -208,24 +208,25 @@ function staleTileAllowed(cached) {
       .test(cached.headers.get('cache-control') || '');
 }
 
-function tileCooldownResponse(request) {
+function tileCooldownResponse() {
   const now = Date.now();
-  for (const [url, until] of tileCooldowns) if (until <= now) tileCooldowns.delete(url);
-  const until = tileCooldowns.get(request.url);
-  if (!until) return null;
+  if (tileCooldownUntil <= now) {
+    tileCooldownUntil = 0;
+    return null;
+  }
   return new Response(null, { status: 429, headers: {
-    'Cache-Control': 'no-store', 'Retry-After': String(Math.max(1, Math.ceil((until - now) / 1000))),
+    'Cache-Control': 'no-store', 'Retry-After': String(Math.max(1, Math.ceil((tileCooldownUntil - now) / 1000))),
   } });
 }
 
-function rememberTileCooldown(request, response) {
+function rememberTileCooldown(response) {
   const now = Date.now();
   const retryAfter = (response.headers.get('retry-after') || '').trim();
   const delay = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - now;
   const until = now + (Number.isFinite(delay) ? Math.max(0, delay) : 60000);
-  tileCooldowns.delete(request.url);
-  tileCooldowns.set(request.url, until);
-  while (tileCooldowns.size > MAX_TILES) tileCooldowns.delete(tileCooldowns.keys().next().value);
+  // OSM limits clients by IP. New tile URLs share the pause, and a late reply
+  // from an already-running request must not shorten a longer active pause.
+  tileCooldownUntil = Math.max(tileCooldownUntil, until);
 }
 
 async function fetchMapTile(request) {
@@ -262,7 +263,7 @@ async function loadMapTile(request, event) {
     if (cached && Number(cached.headers.get(FRESH_UNTIL)) > Date.now()) return cached;
   } catch (_) { /* Missing, failed or stalled storage must not delay the network. */ }
   if (request.signal?.aborted) throw tileAbortError();
-  const cooldown = tileCooldownResponse(request);
+  const cooldown = tileCooldownResponse();
   if (cooldown) return cooldown;
   let response;
   try {
@@ -271,7 +272,7 @@ async function loadMapTile(request, event) {
     if (!request.signal?.aborted && staleTileAllowed(cached)) return cached;
     throw error;
   }
-  if (response.status === 429) rememberTileCooldown(request, response);
+  if (response.status === 429) rememberTileCooldown(response);
   if ((response.status === 408 || response.status >= 500) && staleTileAllowed(cached)) return cached;
   // Delivery never waits for CacheStorage writes. waitUntil keeps the bounded
   // background task alive without turning storage failures into blank tiles.

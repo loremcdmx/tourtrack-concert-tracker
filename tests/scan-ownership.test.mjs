@@ -21,7 +21,7 @@ function fixture(files = ['scan/runtime.js']) {
     window: {}, activeProf: 'Main', playlistId: 'A', getActivePlaylistSessionId: () => context.playlistId,
     isPlaylistSessionTransitioning: () => false, ARTISTS: ['Muse', 'Sting'], TRACKED_ARTISTS: [], SCANNED_ARTISTS: [],
     scanAborted: false, countryHash: () => 'world', concerts: [], festivals: [], fetchErrors: {}, cacheTimestamp: 0,
-    API_KEY: 'offline', dbgVisible: true, _mapFirstFit: false, netErrStreak: 0, netErrTotal: 0,
+    API_KEY: 'offline', INTERNAL_PROXY_TEMPLATE: '', dbgVisible: true, _mapFirstFit: false, netErrStreak: 0, netErrTotal: 0,
     circuitOpen: false, dbgBannerDismissed: false, includeCountries: new Set(),
     document: { getElementById(id) {
       if (!nodes.has(id)) nodes.set(id, { style: {}, classList: { remove() {} } });
@@ -163,4 +163,32 @@ test('festival JSON completed after invalidation is ignored, including final sco
   await stop;
   assert.equal(ingested, 0);
   assert.equal(scored, 0);
+});
+
+test('a scope change during Add-only refresh releases its baseline before Replace results', async () => {
+  const f = fixture(['scan/runtime.js', 'scan/actions.js', 'scan/pipeline.js']);
+  const gate = deferred();
+  let scope = 'world';
+  let requested = 0;
+  const oldShow = { id: 'old-gb', artist: 'Muse', date: '2026-10-04', country: 'GB', venue: 'Old venue' };
+  Object.assign(f.context, {
+    countryHash: () => scope, concerts: [oldShow], confirm: () => true,
+    _normText: value => String(value || '').toLowerCase(), _venueCore: value => value,
+    _cityCore: value => value, _normalizedUrlKey: value => value,
+    async fetchConcerts() { requested++; await gate.promise; return []; },
+  });
+  f.context.DB.entries = async () => [['muse', { ts: 1, shows: [oldShow] }]];
+  const merge = f.context.mergeRescan();
+  await until(() => requested === 2);
+  assert.equal(f.context.window._mergeMode, true);
+  // Settings' Search scope picker changes countryHash synchronously.
+  scope = 'include:MX';
+  gate.resolve();
+  await merge;
+  assert.equal(f.context.window._mergeMode, false);
+  assert.equal(f.context.window._mergeBaseKeys, null);
+  assert.equal(f.context.window._mergeBaseByArtist, null);
+  f.context.fetchConcerts = async () => [];
+  await f.context.fetchAll(true);
+  assert.equal(f.context.concerts.length, 0, 'Replace results must not restore the former GB baseline');
 });

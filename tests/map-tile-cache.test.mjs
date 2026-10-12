@@ -614,14 +614,19 @@ test('a failed replacement put preserves the old tile for a later offline reques
   assert.equal(harness.fetchCalls.length, 2);
 });
 
-test('429 cooldown honors Retry-After without stale fallback or automatic network retries', { timeout: 4000 }, async () => {
+test('429 cooldown honors provider Retry-After across tile URLs while keeping fresh cache hits available', { timeout: 4000 }, async () => {
   for (const scenario of [
     { retryAfter: '2', deadline: 2000 },
     { retryAfter: new Date(NOW + 3000).toUTCString(), deadline: 3000 },
     { retryAfter: 'invalid', deadline: 60_000 },
   ]) {
     const storage = memoryStorage();
-    await seedStaleTile(storage);
+    const cache = await seedStaleTile(storage);
+    const freshUrl = 'https://tile.openstreetmap.org/3/5/2.png';
+    const otherUrl = 'https://tile.openstreetmap.org/3/6/2.png';
+    const freshBody = new Uint8Array([...PNG, 42]);
+    await cache.put(new Request(freshUrl, { mode: 'cors' }), tileResponse({ body: freshBody,
+      headers: { [FRESH_UNTIL]: String(NOW + WEEK) } }));
     let requests = 0;
     const harness = workerHarness({ storage, fetchImpl: async () => ++requests === 1
       ? tileResponse({ status: 429, headers: { 'retry-after': scenario.retryAfter } })
@@ -634,15 +639,54 @@ test('429 cooldown honors Retry-After without stale fallback or automatic networ
     await first.arrayBuffer();
     await second.arrayBuffer();
     assert.equal(harness.fetchCalls.length, 1);
+    const other = await harness.serve(otherUrl);
+    assert.equal(other.status, 429, 'Panning to an uncached tile must retain the provider cooldown');
+    assert.equal(harness.fetchCalls.length, 1, 'A new tile URL must not bypass Retry-After');
+    const fresh = await harness.serve(freshUrl);
+    assert.equal(fresh.status, 200, 'A cached fresh tile remains available during provider backoff');
+    assert.deepEqual(new Uint8Array(await fresh.arrayBuffer()), freshBody);
+    assert.equal(harness.fetchCalls.length, 1, 'Serving a fresh tile must not contact the throttled provider');
     await harness.advance(scenario.deadline - 1);
-    assert.equal((await harness.serve()).status, 429);
+    const paused = await harness.serve(otherUrl);
+    assert.equal(paused.status, 429);
+    assert.equal(paused.headers.get('retry-after'), '1', 'The remaining pause must count down across every tile URL');
     assert.equal(harness.fetchCalls.length, 1, 'Panning or retrying inside Retry-After must not hit the provider again');
     await harness.advance(1);
     assert.equal(harness.fetchCalls.length, 1, 'Cooldown expiry alone must not prefetch anything');
-    assert.equal((await harness.serve()).status, 200);
+    assert.equal((await harness.serve(otherUrl)).status, 200);
     assert.equal(harness.fetchCalls.length, 2, 'A visible-tile request after the deadline may retry');
     await harness.settleBackground();
   }
+});
+
+test('a late shorter 429 response cannot shorten an active provider cooldown', { timeout: 3000 }, async () => {
+  const longReply = deferred();
+  const shortReply = deferred();
+  const otherUrl = 'https://tile.openstreetmap.org/3/5/2.png';
+  const retryUrl = 'https://tile.openstreetmap.org/3/6/2.png';
+  const harness = workerHarness({ fetchImpl: async request => request.url === TILE_URL
+    ? longReply.promise : request.url === otherUrl ? shortReply.promise : tileResponse() });
+  const first = harness.serve();
+  const second = harness.serve(otherUrl);
+  await drainMicrotasks();
+  assert.equal(harness.fetchCalls.length, 2, 'Both requests started before the first rate-limit reply');
+  longReply.resolve(tileResponse({ status: 429, headers: { 'retry-after': new Date(NOW + 60_000).toUTCString() } }));
+  assert.equal((await first).status, 429);
+  await harness.advance(1000);
+  shortReply.resolve(tileResponse({ status: 429, headers: { 'retry-after': '2' } }));
+  assert.equal((await second).status, 429);
+  await harness.advance(2000);
+  const paused = await harness.serve(retryUrl);
+  assert.equal(paused.status, 429, 'The late two-second reply must not replace the earlier one-minute pause');
+  assert.equal(paused.headers.get('retry-after'), '57');
+  assert.equal(harness.fetchCalls.length, 2);
+  await harness.advance(56_999);
+  assert.equal((await harness.serve(retryUrl)).status, 429);
+  assert.equal(harness.fetchCalls.length, 2, 'No requests before the longer Retry-After deadline');
+  await harness.advance(1);
+  assert.equal((await harness.serve(retryUrl)).status, 200);
+  assert.equal(harness.fetchCalls.length, 3, 'The requested tile can retry exactly at the longer deadline');
+  await harness.settleBackground();
 });
 
 test('registration timeout remains settled after a late controller change and cannot duplicate layer readiness', async () => {

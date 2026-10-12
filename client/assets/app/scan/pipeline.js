@@ -7,6 +7,8 @@ async function fetchAll(forceRefresh = false) {
 
 async function _fetchAllForRun(forceRefresh, run) {
   if (!isScanRunCurrent(run)) return;
+  const mergeState = window._mergeMode
+    ? { keys: window._mergeBaseKeys, byArtist: window._mergeBaseByArtist } : null;
   const scanArtists = run.artists;
   setScannedArtists(scanArtists);
   if (!TRACKED_ARTISTS.length) setTrackedArtists(scanArtists);
@@ -400,6 +402,14 @@ async function _fetchAllForRun(forceRefresh, run) {
       if (festivals.length) scoreFestivals();
       concerts = deduplicateConcerts(concerts);
       finalizeScan(true, C.cached, C.fresh, run);
+    }
+    // Changing the search scope invalidates ownership before finalizeScan.
+    // Release only this job's baseline so the next scan keeps its chosen mode.
+    if (mergeState && window._mergeBaseKeys === mergeState.keys
+        && window._mergeBaseByArtist === mergeState.byArtist) {
+      window._mergeMode = false;
+      window._mergeBaseKeys = null;
+      window._mergeBaseByArtist = null;
     }
     clearScanRuntime(runtime);
   }
