@@ -24,6 +24,7 @@ async function _fetchAllForRun(forceRefresh, run) {
     cHash,
   } = scan;
   const C = createScanCounters();
+  C.run = run;
   const runtime = installScanRuntime(createScanRuntime(), run);
   try {
 
@@ -57,6 +58,7 @@ async function _fetchAllForRun(forceRefresh, run) {
     let bitResults = new Map(); // artist → shows[]
     if (!forceRefresh && !scanAborted) {
       setProgress('Phase 0: BIT pre-flight…', 2);
+      if (typeof ScanProgress !== 'undefined') ScanProgress.detail(run, 'Checking available artist tour information.');
       bitResults = await bitPreFlightScan(scanArtists, run);
       if (!isScanRunCurrent(run)) return;
       // Add BIT shows immediately so the UI can show partial results quickly
@@ -82,6 +84,7 @@ async function _fetchAllForRun(forceRefresh, run) {
     const geoSweepCovered = new Set(); // artists whose shows came from geo sweep
     if (!scanAborted && shouldUseGeoSweep()) {
       setProgress(`Phase 0.5: Geo sweep (${[...includeCountries].join(',')})…`, 18);
+      if (typeof ScanProgress !== 'undefined') ScanProgress.detail(run, 'Checking concerts in your selected countries.');
       try {
         const geoShows = await geoSweepScan(today, run);
         if (!isScanRunCurrent(run)) return;
@@ -129,9 +132,11 @@ async function _fetchAllForRun(forceRefresh, run) {
     // ── Per-artist task ─────────────────────────────────────────────────
     async function processArtist(artist) {
       if (!isScanRunCurrent(run)) return;
+      if (typeof ScanProgress !== 'undefined') ScanProgress.detail(run, `Checking ${artist}`);
       // Phase 1a: skip artists already handled by geo sweep
       if (shouldSkipTM(artist)) {
         C.skipped++; C.done++;
+        if (typeof ScanProgress !== 'undefined') ScanProgress.count(run, C.done);
         if (C.done % 5 === 0) updateProgress(C, total);
         return;
       }
@@ -151,6 +156,7 @@ async function _fetchAllForRun(forceRefresh, run) {
           if (cached && (now - cached.ts) < cacheTtl && cached.cHash === cHash) {
             concerts.push(...cached.shows.filter(s => s.date >= today));
             C.cached++; C.done++;
+            if (typeof ScanProgress !== 'undefined') ScanProgress.count(run, C.done);
             if (C.done % 5 === 0) updateProgress(C, total);
             return;
           }
@@ -212,6 +218,7 @@ async function _fetchAllForRun(forceRefresh, run) {
             ).catch(() => {});
           }
           C.fresh++; C.done++;
+          if (typeof ScanProgress !== 'undefined') ScanProgress.count(run, C.done, { remote: true });
           noteArtistScanSuccess(runtime);
           if (fetchErrors[artist]) { delete fetchErrors[artist]; updateErrorTab(); }
           // ── Progressive render: update calendar+map every time new shows found ──
@@ -232,6 +239,7 @@ async function _fetchAllForRun(forceRefresh, run) {
           // artist immediately — every further attempt is guaranteed to fail the same way.
           if (window._hardQuotaHit || scanAborted) {
             C.error++; C.done++;
+            if (typeof ScanProgress !== 'undefined') ScanProgress.count(run, C.done, { remote: true });
             updateErrorTab();
             return;
           }
@@ -241,7 +249,11 @@ async function _fetchAllForRun(forceRefresh, run) {
             const reason = isNet ? 'network error' : is429 ? '429 rate limit' : e.message;
             dblog('warn', `"${artist}": ${reason} — attempt ${attempt}/${MAX_TRIES}, retry in ${Math.round(wait)}ms`);
             noteArtistRetry(runtime, { isNet, is429 });
+            if (typeof ScanProgress !== 'undefined') ScanProgress.pause(run,
+              isNet ? 'Network request failed. Waiting before retrying.' : is429 ? 'Waiting for Ticketmaster before retrying.' : `Waiting before retrying ${artist}.`,
+              { key: `artist:${artist}`, until: Date.now() + wait });
             await sleep(wait);
+            if (typeof ScanProgress !== 'undefined') ScanProgress.resume(run, `artist:${artist}`);
             if (!isScanRunCurrent(run)) return;
           } else {
             // Final attempt failed
@@ -249,6 +261,7 @@ async function _fetchAllForRun(forceRefresh, run) {
             dblog('error', `"${artist}": FAILED after ${MAX_TRIES} tries — ${lastErr}`);
             fetchErrors[artist] = { attempts: (fetchErrors[artist]?.attempts || 0) + MAX_TRIES, lastErr, resolved: false, pass: 'Pass1' };
             C.error++; C.done++;
+            if (typeof ScanProgress !== 'undefined') ScanProgress.count(run, C.done, { remote: true });
             await noteArtistFailure(runtime);
             if (!isScanRunCurrent(run)) return;
             updateErrorTab();
@@ -279,6 +292,8 @@ async function _fetchAllForRun(forceRefresh, run) {
     // so total throughput stays under the TM 100 req/min ceiling while
     // overlapping network latency with rate-limit sleep on the other worker.
     const CONCURRENCY = 2;
+    if (typeof ScanProgress !== 'undefined') ScanProgress.step(run, { stage: 'artists', title: 'Checking your artists',
+      total, unit: 'artists', detail: 'Reading saved results and checking concerts.', next: 'Festivals follow.' });
     const t0 = Date.now();
 
     let artistCursor = 0;
@@ -307,12 +322,15 @@ async function _fetchAllForRun(forceRefresh, run) {
       } else {
         dblog('info', `Pass 2: quick retry of ${failedArtists.length} failed artist${failedArtists.length !== 1 ? 's' : ''}`);
         setProgress(`↺ Quick retry: ${failedArtists.length} artists…`, 84);
+        if (typeof ScanProgress !== 'undefined') ScanProgress.step(run, { stage: 'retry', title: 'Retrying artist searches',
+          total: failedArtists.length, unit: 'artists', next: 'Festivals follow.' });
 
         for (let fi = 0; fi < failedArtists.length; fi++) {
           if (!isScanRunCurrent(run)) break;
           await window._rateLimitedWait?.();
           if (!isScanRunCurrent(run)) return;
           const artist = failedArtists[fi];
+          if (typeof ScanProgress !== 'undefined') ScanProgress.detail(run, `Retrying ${artist}`);
           const idbKey = artist.toLowerCase().trim();
           setProgress(`↺ Retry [${fi+1}/${failedArtists.length}]: ${artist}`, 84 + (fi / failedArtists.length) * 10);
           try {
@@ -343,6 +361,7 @@ async function _fetchAllForRun(forceRefresh, run) {
             if (fetchErrors[artist]) { fetchErrors[artist].attempts++; fetchErrors[artist].lastErr = e.message; fetchErrors[artist].pass = 'Pass2'; }
             dblog('warn', `Pass2: "${artist}" — ${e.message}`);
           }
+          if (typeof ScanProgress !== 'undefined') ScanProgress.count(run, fi + 1, { remote: true });
           updateErrorTab();
         }
 
@@ -356,6 +375,8 @@ async function _fetchAllForRun(forceRefresh, run) {
     updateErrorTab();
 
     if (!scanAborted) {
+      if (typeof ScanProgress !== 'undefined') ScanProgress.step(run, { stage: 'festivals', title: 'Checking festivals',
+        detail: 'Checking saved festival results.', next: 'Results are saved after this step.' });
       setProgress(`Checking festivals…`, 88);
       let festFromCache = false;
       if (!forceRefresh) {
@@ -427,47 +448,14 @@ function updateProgress(C, total) {
   const bitNote  = C.bit      ? ` · 🎵${C.bit} BIT`  : '';
   const geoNote  = C.geoSweep ? ` · 🗺${C.geoSweep} geo` : '';
 
-  // ── Self-correcting ETA using a 60-second rolling window ──────────────
-  // Every call to updateProgress records a completion event in a ring buffer.
-  // ETA = pending / (completions_in_last_60s / 60s)
-  // This adapts automatically to cache hits (fast), rate-limit cooldowns (slow),
-  // BIT skips (fast), and proxy overhead (slow).
-  const now = Date.now();
-  if (!updateProgress._times) updateProgress._times = [];
-  updateProgress._times.push(now);
-  // Trim events older than 60 seconds
-  const cutoff = now - 60000;
-  while (updateProgress._times.length && updateProgress._times[0] < cutoff)
-    updateProgress._times.shift();
-
-  let etaNote = '';
-  const tmPending = total - C.done;
-  if (tmPending > 5) {
-    const windowEvents = updateProgress._times.length;
-    if (windowEvents >= 3) {
-      // Actual rate: events completed in the observation window
-      const windowMs = now - updateProgress._times[0];
-      const ratePerMs = windowEvents / Math.max(windowMs, 1000); // artists/ms
-      const etaSec = Math.ceil(tmPending / (ratePerMs * 1000));
-      if (etaSec < 3600) {
-        // Format as Xm Ys when over 90s, otherwise just Xs
-        etaNote = etaSec >= 90
-          ? ` · ~${Math.floor(etaSec/60)}m ${etaSec%60}s left`
-          : ` · ~${etaSec}s left`;
-      }
-    } else {
-      // Not enough data yet — fall back to a conservative static estimate
-      // (0.9s/artist is more honest than 0.75 before we have real numbers)
-      const etaSec = Math.ceil(tmPending * 0.9);
-      etaNote = etaSec < 3600
-        ? ` · ~${Math.floor(etaSec/60)}m left`
-        : '';
-    }
-  }
-  setProgress(`[${C.done}/${total}] ↩${C.cached} cached · ↻${C.fresh} fresh${errNote}${skipNote}${bitNote}${geoNote}${etaNote}`, (C.done / total) * 80);
+  // Display calls do not represent work completions. ScanProgress receives
+  // each completed remote artist separately, so cache bursts cannot fake ETA.
+  setProgress(`[${C.done}/${total}] ↩${C.cached} cached · ↻${C.fresh} fresh${errNote}${skipNote}${bitNote}${geoNote}`, (C.done / total) * 80);
 }
 function finalizeScan(aborted, nCached = 0, nFresh = 0, run = null) {
   if (run && !isScanRunOwned(run)) return;
+  if (typeof ScanProgress !== 'undefined' && run) ScanProgress.step(run, { stage: 'finishing', title: 'Saving your results',
+    detail: 'Arranging concerts and festival matches.' });
   window._scanActive = false;  // allow showOnboard() again once scan is truly done
 
   // Merge mode cleanup: run a full dedup over the combined baseline+fresh array,

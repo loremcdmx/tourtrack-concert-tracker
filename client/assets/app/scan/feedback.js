@@ -1,14 +1,22 @@
 'use strict';
 
 function setProgress(msg, pct) {
-  document.getElementById('loadbar-fill').style.width = pct + '%';
-  document.getElementById('hd-progress').textContent = msg;
-  if (!scanAborted && msg) document.getElementById('hd-msg').textContent = msg;
+  if (typeof document === 'undefined') return;
+  const fill = document.getElementById('loadbar-fill');
+  if (fill && Number.isFinite(pct)) fill.style.width = pct + '%';
+  const progress = document.getElementById('hd-progress');
+  if (progress) progress.textContent = msg;
+  const cardActive = typeof ScanProgress !== 'undefined' && ScanProgress.isActive();
+  const message = document.getElementById('hd-msg');
+  if (!cardActive && !scanAborted && msg && message) message.textContent = msg;
 }
 
 function setStatus(msg, live) {
-  document.getElementById('hd-msg').textContent = msg;
-  document.getElementById('pulse').className = 'pulse' + (live ? ' live' : '');
+  if (typeof document === 'undefined') return;
+  const message = document.getElementById('hd-msg');
+  if (message) message.textContent = msg;
+  const pulse = document.getElementById('pulse');
+  if (pulse) pulse.className = 'pulse' + (live ? ' live' : '');
 }
 
 function softNotice(msg, tone = 'warn', opts = {}) {

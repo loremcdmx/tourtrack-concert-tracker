@@ -121,6 +121,67 @@ header { min-height:88px; height:auto; padding:18px 28px; gap:26px; background:v
 .btn-rescan,.btn-rescan-fests { color:var(--text); border-color:var(--border2); }
 .btn-rescan:hover,.btn-rescan-fests:hover { background:var(--s2); border-color:var(--accent); color:var(--accent); }
 .workspace-nav { display:none; }
+
+/* Scan feedback stays in the workspace while results continue to arrive. */
+.scan-status[hidden] { display:none; }
+.scan-status {
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto auto;
+  align-items:center;
+  gap:12px 24px;
+  margin:0 18px 14px;
+  padding:18px 22px 14px;
+  border:1px solid var(--border2);
+  border-left:4px solid var(--accent);
+  border-radius:6px;
+  background:var(--s1);
+  color:var(--text);
+}
+.scan-status-copy { min-width:0; }
+.scan-status h2 { margin:0; font:600 1.75rem/1.05 var(--font-display); }
+.scan-status-copy p { margin:6px 0 0; color:var(--muted2); font-size:.82rem; line-height:1.4; overflow-wrap:anywhere; }
+.scan-status-numbers { text-align:right; min-width:0; }
+#scan-count { font:600 1.65rem/1.1 var(--font-display); font-variant-numeric:tabular-nums; }
+.scan-eta { margin-top:5px; font-size:.83rem; line-height:1.4; color:var(--accent); }
+.scan-status-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.scan-status-actions button,.sset-debug-log-btn {
+  min-height:40px;
+  padding:9px 13px;
+  border:1px solid var(--border2);
+  border-radius:6px;
+  background:var(--s2);
+  color:var(--text);
+  font-size:.8rem;
+  cursor:pointer;
+}
+.scan-status-actions button:hover,.sset-debug-log-btn:hover { border-color:var(--accent); }
+#scan-status-stop { border-color:var(--accent); background:transparent; }
+.scan-progress-track { grid-column:1 / -1; height:8px; border-radius:4px; overflow:hidden; background:var(--bg); }
+#scan-progress-fill { width:0; height:100%; background:var(--accent); transition:width .25s ease; border-radius:inherit; }
+.scan-progress-track.is-indeterminate #scan-progress-fill { width:24% !important; animation:scan-progress-sweep 2s ease-in-out infinite; }
+.scan-status-footer { grid-column:1 / -1; display:flex; justify-content:space-between; gap:12px; color:var(--muted2); font-size:.75rem; line-height:1.4; }
+.scan-status[data-state="paused"] .scan-progress-track.is-indeterminate #scan-progress-fill { animation:none; }
+.scan-status[data-state="error"],.scan-status[data-state="partial"] { border-left-color:var(--red); }
+.scan-status[data-state="error"] #scan-progress-fill,.scan-status[data-state="partial"] #scan-progress-fill { background:var(--red); }
+#hd-progress,#stop-btn,#loadbar { display:none !important; }
+.sset-debug-log-btn { align-self:flex-start; }
+@keyframes scan-progress-sweep { from { transform:translateX(-100%); } to { transform:translateX(420%); } }
+@media(max-width:760px) {
+  .scan-status { grid-template-columns:minmax(0,1fr) auto; margin:0 12px 10px; padding:13px 14px 11px; gap:10px 12px; }
+  .scan-status-copy { grid-column:1 / -1; }
+  .scan-status h2 { font-size:1.55rem; }
+  .scan-status-copy p { font-size:.78rem; }
+  .scan-status-numbers { text-align:left; }
+  #scan-count { font-size:1.45rem; }
+  .scan-eta { font-size:.77rem; }
+  .scan-status-actions button,.sset-debug-log-btn { min-height:44px; padding:9px 11px; }
+  .scan-status-footer { flex-wrap:wrap; gap:4px 10px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  #scan-progress-fill { transition:none; }
+  .scan-progress-track.is-indeterminate #scan-progress-fill { animation:none; }
+}
 .layout { margin:0 18px 18px; border:1px solid var(--border); border-radius:16px; min-height:0; }
 .cal-panel { width:440px; min-width:320px; background:var(--s1); }
 .agenda-heading { padding:24px 22px 20px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
