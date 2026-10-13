@@ -338,45 +338,40 @@ async function fetchConcerts(artist, today, existingShows = null, run = getScanC
 }
 
 // ── bitFetch ──────────────────────────────────────────────────────
-// Bandsintown's API sets correct CORS headers — no proxy needed.
-// Using raw fetch() keeps BIT calls completely separate from the TM
-// rate-limit pipeline so they can run in parallel without burning quota.
+// Keep the approved app id on the server and retain the deadline until the
+// response body finishes. These requests do not use Ticketmaster's quota.
 async function bitFetch(url, ms = 5000) {
   const ctrl = new AbortController();
   const tid = setTimeout(() => ctrl.abort(), ms);
   try {
-    const r = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(tid);
-    return r;
+    const response = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
+    const data = response.ok ? await response.json() : null;
+    return { response, data };
   } catch(e) {
-    clearTimeout(tid);
     if (e.name === 'AbortError') throw new Error('timeout');
-    const err = new Error('net:' + (e.message || 'Failed to fetch'));
-    err.isNet = true;
-    throw err;
+    throw e;
+  } finally {
+    clearTimeout(tid);
   }
 }
 
 // Bandsintown fallback — called ONLY for artists with 0 TM results
-// API is free, no key required, CORS-friendly from browser
+// null means unknown/unavailable; only a successful array can confirm no shows.
 async function fetchBIT(artist, today, run = getScanContext()) {
-  if (!isScanRunCurrent(run)) return [];
+  if (!isScanRunCurrent(run) || window.__SERVER_CONFIG__?.bandsintownManaged !== true) return null;
   // Circuit breaker — skip if BIT is globally unreachable this session
-  if (window._bitBlocked) return [];
+  if (window._bitBlocked) return null;
   try {
     const name = encodeURIComponent(artist);
-    const url = `https://rest.bandsintown.com/artists/${name}/events?app_id=tourtrack&date=upcoming`;
-    const r = await bitFetch(url, 4000); // BIT-specific fetch — no TM proxy, no rate limit
-    if (!isScanRunCurrent(run)) return [];
-    if (r.status === 403 || r.status === 401 || r.status === 503) {
+    const target = `https://rest.bandsintown.com/artists/${name}/events?app_id=__SERVER__&date=upcoming`;
+    const { response: r, data } = await bitFetch(`/api/proxy?url=${encodeURIComponent(target)}`, 4000);
+    if (!isScanRunCurrent(run)) return null;
+    if ([401, 403, 429, 501, 503].includes(r.status)) {
       window._bitBlocked = true;
       dblog('warn', `BIT API: HTTP ${r.status} — disabling Bandsintown for this session`);
-      return [];
+      return null;
     }
-    if (!r.ok) return [];
-    const data = await r.json();
-    if (!isScanRunCurrent(run)) return [];
-    if (!Array.isArray(data)) return [];
+    if (!r.ok || !Array.isArray(data)) return null;
     const shows = [];
     for (const ev of data) {
       const show = buildConcertFromBandsintownEvent(artist, ev, today);
@@ -393,7 +388,7 @@ async function fetchBIT(artist, today, run = getScanContext()) {
     if (shows.length) dblog('ok', `${artist}: +${shows.length} shows (Bandsintown fallback)`);
     return shows;
   } catch(e) {
-    if (!isScanRunCurrent(run)) return [];
+    if (!isScanRunCurrent(run)) return null;
     // Network-level block ("Failed to fetch") — BIT is unreachable, stop trying
     const isNetBlock = e.message?.includes('Failed to fetch') ||
                        e.message?.includes('NetworkError') ||
@@ -403,6 +398,6 @@ async function fetchBIT(artist, today, run = getScanContext()) {
       window._bitBlocked = true;
       dblog('warn', 'BIT API: network blocked — disabling Bandsintown for this session');
     }
-    return [];
+    return null;
   }
 }

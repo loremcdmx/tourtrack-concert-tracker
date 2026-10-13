@@ -599,13 +599,62 @@ async function spFetchAllTracks(token, pid) {
 }
 
 async function spFetchPlaylistImport(pid, opts = {}) {
-  return spFetchServerJson(`/api/spotify/playlists/${encodeURIComponent(pid)}/import`, {
-    credentials: 'same-origin',
-    signal: opts.signal,
-  }, {
-    label: 'Spotify playlist import',
-    timeoutMs: SPOTIFY_IMPORT_TIMEOUT_MS,
-  });
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (opts.signal?.aborted) abortFromCaller();
+  else opts.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  const requestStep = params => spFetchServerJson(`/api/spotify/playlists/${encodeURIComponent(pid)}/import?${new URLSearchParams(params)}`, {
+    credentials: 'same-origin', signal: controller.signal,
+  }, { label: 'Spotify playlist import', timeoutMs: 50000 });
+  const incomplete = () => new Error('Spotify returned an incomplete playlist import. Your current playlist is unchanged; try again.');
+  try {
+    const metadata = await requestStep({ step: 'metadata' });
+    const pagination = metadata?.pagination;
+    const total = pagination?.total;
+    if (metadata?.playlist?.id !== pid || !Number.isSafeInteger(total) || total < 0
+        || pagination.pageSize !== 50 || !['items', 'tracks'].includes(pagination.endpoint) || !pagination.snapshotId) throw incomplete();
+    const common = { total: String(total), endpoint: pagination.endpoint, snapshot: pagination.snapshotId };
+    const pages = new Array(Math.ceil(total / 50));
+    let cursor = 0;
+    let loaded = 0;
+    let failure = null;
+    opts.onProgress?.(0, total);
+    async function worker() {
+      while (!failure && !controller.signal.aborted && cursor < pages.length) {
+        const index = cursor++;
+        const offset = index * 50;
+        try {
+          const page = await requestStep({ step: 'page', offset: String(offset), ...common });
+          const summary = page?.importSummary;
+          const skipped = summary?.skippedItems;
+          const expected = Math.min(50, total - offset);
+          if (page?.playlistId !== pid || page.offset !== offset || page.totalItems !== total || page.snapshotId !== pagination.snapshotId
+              || page.source !== metadata.source || !Array.isArray(page.tracks) || summary?.totalItems !== expected
+              || summary.importedTracks !== page.tracks.length
+              || !['unavailable', 'episodes', 'local'].every(key => Number.isSafeInteger(skipped?.[key]) && skipped[key] >= 0)
+              || page.tracks.length + skipped.unavailable + skipped.episodes + skipped.local !== expected) throw incomplete();
+          pages[index] = page;
+          loaded += expected;
+          opts.onProgress?.(loaded, total);
+        } catch (error) {
+          if (!failure) { failure = error; controller.abort(); }
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, pages.length) }, worker));
+    if (failure) throw failure;
+    if (controller.signal.aborted) throw new DOMException('Import canceled', 'AbortError');
+    const verified = await requestStep({ step: 'verify', ...common });
+    if (verified?.verified !== true || verified.playlistId !== pid || verified.totalItems !== total
+        || verified.snapshotId !== pagination.snapshotId || verified.source !== metadata.source) throw incomplete();
+    const tracks = pages.flatMap(page => page.tracks);
+    const skippedItems = { unavailable: 0, episodes: 0, local: 0 };
+    for (const page of pages) for (const key of Object.keys(skippedItems)) skippedItems[key] += page.importSummary.skippedItems[key];
+    return { source: metadata.source, playlist: metadata.playlist, tracks,
+      importSummary: { totalItems: total, importedTracks: tracks.length, skippedItems } };
+  } finally {
+    opts.signal?.removeEventListener('abort', abortFromCaller);
+  }
 }
 
 async function spFetchServerJson(url, fetchOptions = {}, opts = {}) {
@@ -686,19 +735,22 @@ function runFestivalRefresh({ force = false, background = false } = {}) {
         buildFestPanel(); renderMap();
       }
       setStatus(background ? 'Refreshing festivals in background…' : 'Fetching festivals…', false);
-      await fetchFestivalsData(run);
+      const discovery = await fetchFestivalsData(run);
       if (!isScanRunOwned(run)) return false;
       const stopped = scanAborted;
+      const complete = !stopped && discovery?.complete === true;
       festivals = mergeOngoingFestivals(baseline, festivals);
       if (ARTISTS.length) scoreFestivals();
-      await DB.put('meta', 'festivals', { data: festivals, ts: stopped ? 0 : Date.now(), cHash: run.cHash, ver: FEST_VER });
+      await DB.put('meta', 'festivals', { data: festivals, ts: complete ? Date.now() : 0,
+        cHash: run.cHash, ver: FEST_VER, complete, discovery });
       if (!isScanRunOwned(run)) return false;
       persistFestivalData();
       await persistActivePlaylistSession();
       if (!isScanRunOwned(run)) return false;
       buildCalChips(); renderCalendar(); buildFestPanel(); renderMap();
-      setStatus(festivals.length + (stopped ? ' festivals — stopped (partial results)' : ' festivals imported'), true);
-      return true;
+      setStatus(festivals.length + (stopped ? ' festivals — stopped (partial results)'
+        : complete ? ' festivals imported' : ' festivals — partial results'), complete);
+      return complete;
     } catch (error) {
       if (isScanRunCurrent(run)) {
         setStatus('Festival import failed: ' + error.message, false);

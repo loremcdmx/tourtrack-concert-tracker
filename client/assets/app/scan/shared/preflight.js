@@ -19,21 +19,16 @@ function stopScan() {
 // ═══════════════════════════════════════════════════════════════
 // BIT PRE-FLIGHT SCAN
 // ═══════════════════════════════════════════════════════════════
-// The key insight here is that Bandsintown is CORS-friendly, has no enforced
-// rate limit for reasonable usage, and requires no API key. Instead of calling
-// it only as a last-resort fallback after TM fails, we use it as an upfront
-// oracle: run all artists in parallel BEFORE the TM scan, collect their shows
-// directly, and use the results to decide who even needs a TM query at all.
+// Query only when the server has an approved app id. Failed or unavailable
+// lookups do not confirm an empty result and must not enter the result cache.
 //
-// An artist that BIT says has 0 upcoming events almost certainly isn't touring.
-// Combined with totalUpcoming===0 from TM's attraction data, this lets us skip
-// the TM event fetch for those artists entirely, dramatically reducing quota use.
-//
-// Returns: Map<artistName, shows[]>  (empty array = confirmed not touring on BIT)
+// Supplemental results remain separate from Ticketmaster coverage.
+// Returns: Map<artistName, shows[]>; an empty array confirms no matching BIT
+// events for this country scope. Missing artists have unknown coverage.
 const TTL_BIT_PREFLIGHT = 12 * 3600e3; // 12h — tour status changes slowly
 
 async function bitPreFlightScan(artists, run = getScanContext()) {
-  if (!isScanRunCurrent(run)) return new Map();
+  if (!isScanRunCurrent(run) || window.__SERVER_CONFIG__?.bandsintownManaged !== true) return new Map();
   if (window._bitBlocked) {
     dblog('warn', 'BIT pre-flight: skipped (BIT is blocked this session)');
     return new Map();
@@ -41,15 +36,18 @@ async function bitPreFlightScan(artists, run = getScanContext()) {
 
   const results = new Map(); // artist → shows[]
   const toCheck = [];
+  const cHash = run.cHash || countryHash();
+  const cacheKeyFor = artist => `bit_pf_v2_${encodeURIComponent(cHash)}:${artist.toLowerCase().trim()}`;
 
   // Load IDB cache first — avoids re-checking artists we already know about
   for (const artist of artists) {
-    const cacheKey = 'bit_pf_' + artist.toLowerCase().trim();
+    const cacheKey = cacheKeyFor(artist);
     try {
       const cached = await DB.get('meta', cacheKey);
       if (!isScanRunCurrent(run)) return results;
-      if (cached && (Date.now() - cached.ts) < TTL_BIT_PREFLIGHT) {
-        results.set(artist, cached.shows || []);
+      if (cached?.version === 2 && cached.cHash === cHash && Array.isArray(cached.shows)
+          && (Date.now() - cached.ts) < TTL_BIT_PREFLIGHT) {
+        results.set(artist, cached.shows);
         continue;
       }
     } catch(e) {}
@@ -71,15 +69,15 @@ async function bitPreFlightScan(artists, run = getScanContext()) {
 
   // Worker coroutine — each of the 8 runs independently until the queue is empty
   async function worker() {
-    while (idx < toCheck.length && isScanRunCurrent(run)) {
+    while (idx < toCheck.length && isScanRunCurrent(run) && !window._bitBlocked) {
       const artist = toCheck[idx++];
-      const shows = await fetchBIT(artist, today, run).catch(() => []);
+      const shows = await fetchBIT(artist, today, run).catch(() => null);
       if (!isScanRunCurrent(run)) return;
-      results.set(artist, shows);
-
-      // Persist to IDB so subsequent smart scans don't re-check
-      const cacheKey = 'bit_pf_' + artist.toLowerCase().trim();
-      DB.put('meta', cacheKey, { ts: Date.now(), shows }).catch(() => {});
+      if (Array.isArray(shows)) {
+        results.set(artist, shows);
+        // Cache only confirmed results, including a genuine empty array.
+        DB.put('meta', cacheKeyFor(artist), { version: 2, cHash, ts: Date.now(), shows }).catch(() => {});
+      }
 
       checked++;
       if (checked % 10 === 0 || checked === toCheck.length) {
@@ -89,7 +87,7 @@ async function bitPreFlightScan(artists, run = getScanContext()) {
     }
   }
 
-  // 8 parallel workers — BIT handles this fine, no shared rate limiter needed
+  // Stop dispatching when the provider refuses this session's access.
   await Promise.all(Array.from({ length: 8 }, worker));
   if (!isScanRunCurrent(run)) return results;
 

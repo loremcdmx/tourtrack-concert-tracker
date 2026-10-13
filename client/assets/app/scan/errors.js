@@ -65,7 +65,7 @@ async function retrySingleArtist(artist) {
   try {
     const shows = await fetchConcerts(artist, today);
     let finalShows = shows;
-    if (!shows.length) finalShows = await fetchBIT(artist, today);
+    if (!shows.length) finalShows = (await fetchBIT(artist, today)) || [];
     const upcoming = finalShows.filter(s => s.date >= today);
     concerts.push(...upcoming);
     concerts = deduplicateConcerts(concerts);

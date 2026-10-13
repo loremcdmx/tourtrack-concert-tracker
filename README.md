@@ -38,6 +38,14 @@ SESSION_SECRET=replace_with_a_long_random_secret
 
 Register the same redirect URI in the Spotify developer dashboard before testing login.
 
+Bandsintown is optional and requires an issued app ID approved for the intended
+artist coverage. Set `BANDSINTOWN_APP_ID` in the server/deployment environment
+only when Bandsintown has granted that access; multi-artist aggregation requires
+their approval. The client receives only a configured/not-configured flag.
+Requests use the same-origin proxy, with the credential supplied by the server.
+Without that access, discovery continues through Ticketmaster. Provider failures
+are not cached as confirmation that an artist has no upcoming concerts.
+
 Spotify no longer accepts `localhost` in redirect URIs. Register
 `http://127.0.0.1:3002/api/auth/spotify/callback` exactly. The tracker can stay
 open at `http://localhost:3002`: local login uses the loopback IP for OAuth and

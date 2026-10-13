@@ -1205,7 +1205,7 @@ test('cached festival count and instant resume retain ongoing festivals and drop
   const state = await page.evaluate(async data => {
     await DB.clear('artists');
     await DB.put('artists', 'alpha', { ts: Date.now(), cHash: countryHash(), shows: [] });
-    await DB.put('meta', 'festivals', { ts: Date.now(), cHash: countryHash(), ver: FEST_VER, data });
+    await DB.put('meta', 'festivals', { ts: Date.now(), cHash: countryHash(), ver: FEST_VER, complete: true, data });
     localStorage.setItem(ONBOARD_CACHE_SUMMARY_KEY, JSON.stringify({
       artistCount: 1,
       concertCount: 0,
