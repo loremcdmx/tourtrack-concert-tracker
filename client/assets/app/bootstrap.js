@@ -65,7 +65,14 @@ if (ARTISTS.length) {
 updateArtistCount();
 
 if (concerts.length || festivals.length) {
-  if (festivals.length && ARTISTS.length) scoreFestivals();
+  if (festivals.length && ARTISTS.length) {
+    const bootstrapScoringRun = getScanContext();
+    hydrateAndScoreFestivals().then(scored => {
+      if (!scored || !isScanRunOwned(bootstrapScoringRun)) return;
+      persistData();
+      buildCalChips(); renderCalendar(); renderMap();
+    }).catch(error => dblog('warn', `Cached festival matching failed: ${error?.message || error}`));
+  }
   setStatus(`${concerts.length} concerts · ${festivals.length} festivals · cached ${cacheAge()}`, true);
   buildCalChips();
   renderCalendar();

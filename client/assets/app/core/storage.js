@@ -334,9 +334,16 @@ function _commitPlaylistSession(snapshot) {
   if (typeof focusedFest !== 'undefined') focusedFest = null;
   window._mergeMode = false; window._mergeBaseKeys = null; window._mergeBaseByArtist = null;
   // Scores belong to this playlist, even when discovery facts were reused.
-  if (festivals.length && typeof scoreFestivals === 'function') scoreFestivals();
+  if (festivals.length && typeof hydrateAndScoreFestivals !== 'function' && typeof scoreFestivals === 'function') scoreFestivals();
   persistData();
   persistArtistTrackState().catch(() => {});
+  if (festivals.length && typeof hydrateAndScoreFestivals === 'function') {
+    const scoringRun = typeof getScanContext === 'function' ? getScanContext() : null;
+    return hydrateAndScoreFestivals().then(scored => {
+      if (scored && (!scoringRun || isScanRunOwned(scoringRun))) persistData();
+      return scored;
+    });
+  }
 }
 
 async function _activatePlaylistSession(id, imported, { isCurrent = () => true } = {}) {
@@ -373,7 +380,7 @@ async function _activatePlaylistSession(id, imported, { isCurrent = () => true }
     // A quota/storage error must leave the previous globals and mirror intact.
     await _writePlaylistSession(next);
     if (!current()) return result;
-    _commitPlaylistSession(next);
+    await _commitPlaylistSession(next);
     return { committed: true, resumed: !!existing, playlistId: id };
   } finally {
     _playlistSessionTransitionDepth -= 1;
@@ -989,7 +996,8 @@ async function applyLoadedState(data, filename, { isCurrent = () => true, cancel
     favoriteArtists = new Set(prepared.data.favoriteArtists || []);
     artistPreset = prepared.data.artistPreset || 'all';
     resetActivePlaylistSessionContext();
-    _commitPlaylistSession(prepared.session);
+    await _commitPlaylistSession(prepared.session);
+    if (!current()) return false;
     const textarea = document.getElementById('artists-ta');
     if (textarea) textarea.value = ARTISTS.map(name => {
       const plays = ARTIST_PLAYS[name.toLowerCase()] || 0;

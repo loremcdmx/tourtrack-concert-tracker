@@ -57,6 +57,9 @@ function mergeOngoingFestivals(snapshot, list = festivals, today = _isoDateOnly(
 async function fetchFestivalsData(run = getScanContext()) {
   const result = { complete: false, requests: 0, totalQueries: 0, completedQueries: 0, failedQueries: [], partitions: 0 };
   if (!isScanRunCurrent(run)) return result;
+  if (typeof hydrateFestivalScoringKnowledge === 'function') {
+    if (!(await hydrateFestivalScoringKnowledge({ isCurrent: () => isScanRunCurrent(run) }))) return result;
+  }
   const today = _isoDateOnly(new Date());
   const geoTargets = buildFestivalGeoTargets();
   const alwaysSweep = buildAlwaysSweepFestivalCountries();

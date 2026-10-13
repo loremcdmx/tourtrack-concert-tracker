@@ -305,3 +305,65 @@ test('IndexedDB writes resolve after commit, and entries pair keys and values in
   assert.equal(advanced, 2);
   assert.deepEqual(plain(await entries), [['muse', { shows: [1] }], ['sting', { shows: [2] }]]);
 });
+
+test('persisted Łaszewo alias restores festival matches after bootstrap reload and cold history selection', async () => {
+  const f = fixture();
+  await f.context.activateImportedPlaylistSession(imported(A, 'Łaszewo'));
+  f.context.concerts = [];
+  f.context.festivals = [{ id: 'alias-festival', name: 'Alias Festival', date: '2027-01-01', lineup: ['laszewo'],
+    matched: [{ artist: 'Łaszewo' }], score: 100 }];
+  f.context.persistData();
+  await f.context.persistActivePlaylistSession();
+  f.records.set('artistKnowledge:aszewo', { artist: 'Łaszewo', normalized: 'aszewo', aliases: ['laszewo'] });
+
+  const withScoring = shared => {
+    const state = fixture(shared);
+    state.context.window.setTimeout = () => {};
+    for (const file of ['scan/shared/matching.js', 'core/artist-knowledge.js', 'scan/festivals/scoring.js']) {
+      vm.runInContext(readFileSync(new URL(`../client/assets/app/${file}`, import.meta.url), 'utf8'), state.context);
+    }
+    return state;
+  };
+  const reloaded = withScoring(f);
+  reloaded.context.restore();
+  reloaded.context.scoreFestivals();
+  assert.equal(reloaded.context.festivals[0].matched.length, 0, 'Cold sync scoring cannot see the persisted alias');
+  const noop = () => {};
+  Object.assign(reloaded.context, {
+    document: { getElementById: () => null }, APP_VERSION: 'fixture', spotifyAuthFlash: null,
+    handleSpotifyAuthReturnFlag: noop, profInit: noop, restoreProxySettings: noop,
+    applyPlaylistLinkProductMode: noop, renderSpotifyAccessButton: noop, renderOnboardSpotifyAuth: noop,
+    installOnboardCardDelegates: noop, refreshSpotifyAccount: async () => {}, initMap: noop,
+    updateArtistCount: noop, setStatus: noop, buildCalChips: noop, renderCalendar: noop, renderMap: noop,
+    hideOnboard: noop, dblog: noop,
+    getScanContext: () => ({}), isScanRunOwned: () => true,
+  });
+  vm.runInContext(readFileSync(new URL('../client/assets/app/bootstrap.js', import.meta.url), 'utf8'), reloaded.context);
+  for (let i = 0; i < 80; i++) await Promise.resolve();
+  assert.equal(reloaded.context.festivals[0].matched[0]?.artist, 'Łaszewo');
+  await reloaded.context.persistActivePlaylistSession();
+
+  await reloaded.context.activateImportedPlaylistSession(imported(B, 'Sting'));
+  const history = withScoring(reloaded);
+  history.context.restore();
+  assert.equal((await history.context.resumePlaylistSession(A)).committed, true);
+  assert.equal(history.context.festivals[0].matched[0]?.artist, 'Łaszewo', 'History must hydrate before scoring its saved lineup');
+
+  const late = withScoring(f);
+  late.context.restore();
+  const gate = Promise.withResolvers();
+  const get = late.mockDB.get;
+  late.mockDB.get = async (store, key) => {
+    if (store === 'artistKnowledge') await gate.promise;
+    return get(store, key);
+  };
+  const scoring = late.context.hydrateAndScoreFestivals();
+  await Promise.resolve();
+  await late.context.activateImportedPlaylistSession(imported(B, 'Sting'));
+  const newer = [{ id: 'newer', matched: [{ artist: 'unchanged-new-session' }], score: 9 }];
+  late.context.festivals = newer;
+  gate.resolve();
+  assert.equal(await scoring, false);
+  assert.equal(late.context.festivals, newer);
+  assert.equal(newer[0].matched[0].artist, 'unchanged-new-session');
+});

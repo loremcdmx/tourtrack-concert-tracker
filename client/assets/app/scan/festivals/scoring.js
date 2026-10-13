@@ -1,5 +1,28 @@
 'use strict';
 
+async function hydrateFestivalScoringKnowledge({ isCurrent = () => true, score = false } = {}) {
+  const artists = ARTISTS;
+  const names = [...(Array.isArray(artists) ? artists : [])];
+  const savedFestivals = festivals;
+  const run = typeof getScanContext === 'function' ? getScanContext() : null;
+  const playlistId = typeof getActivePlaylistSessionId === 'function' ? getActivePlaylistSessionId() : '';
+  const profile = typeof activeProf !== 'undefined' ? activeProf : 'Main';
+  const current = () => isCurrent() && ARTISTS === artists && festivals === savedFestivals
+    && names.length === ARTISTS.length && names.every((name, index) => name === ARTISTS[index])
+    && playlistId === (typeof getActivePlaylistSessionId === 'function' ? getActivePlaylistSessionId() : '')
+    && profile === (typeof activeProf !== 'undefined' ? activeProf : 'Main')
+    && (!run || typeof isScanRunOwned !== 'function' || isScanRunOwned(run));
+  if (!current()) return false;
+  if (typeof hydrateArtistKnowledge === 'function') await hydrateArtistKnowledge(names);
+  if (!current()) return false;
+  if (score) scoreFestivals();
+  return true;
+}
+
+function hydrateAndScoreFestivals(options = {}) {
+  return hydrateFestivalScoringKnowledge({ ...options, score: true });
+}
+
 function festivalPlayWeight(plays) {
   if (!plays || plays <= 0) return 0;
   if (plays === 1) return 2;
