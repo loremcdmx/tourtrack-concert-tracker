@@ -172,15 +172,15 @@ function renderOnboardSpotifyAuth() {
 
   let message = '';
   let tone = '';
-  if (spotifyAuthFlash && spotifyAuthFlash.message) {
-    message = spotifyAuthFlash.message;
-    tone = spotifyAuthFlash.tone || '';
-  } else if (spotifyAccountState.error) {
+  if (spotifyAccountState.error) {
     message = spotifyAccountState.error;
     tone = 'error';
+  } else if (spotifyAuthFlash && spotifyAuthFlash.message) {
+    message = spotifyAuthFlash.message;
+    tone = spotifyAuthFlash.tone || '';
   } else if (spotifyAccountState.connected) {
     const name = spotifyAccountState.user?.displayName || 'Spotify';
-    message = `${name} connected. Paste a playlist link or choose one below.`;
+    message = `Connected as ${name}.`;
     tone = 'ok';
   } else {
     message = 'Connect Spotify to browse your playlists, or paste any playlist link.';
@@ -189,6 +189,7 @@ function renderOnboardSpotifyAuth() {
   status.textContent = message;
   status.dataset.tone = tone;
   renderSpotifyPlaylistChoices();
+  renderOnboardMainPlaylist();
   renderSpotifyAccessButton();
   renderOnboardSetupNotice();
 }
@@ -469,6 +470,85 @@ function samePlaylistUrl(a, b) {
 }
 
 const ONBOARD_CACHE_SUMMARY_KEY = 'tt_onboard_cache_summary';
+const ONBOARD_PREFERRED_PLAYLIST_KEY = 'tt_preferred_playlist';
+
+function normalizeOnboardPlaylist(item) {
+  const id = spExtractId(item?.url || item?.id || '');
+  if (!id) return null;
+  return { ...item, id, url: `https://open.spotify.com/playlist/${id}` };
+}
+
+function readPreferredOnboardPlaylist() {
+  try {
+    return normalizeOnboardPlaylist(JSON.parse(localStorage.getItem(ONBOARD_PREFERRED_PLAYLIST_KEY) || 'null'));
+  } catch (_) { return null; }
+}
+
+function getPreferredOnboardPlaylist() {
+  const history = getOnboardHistory();
+  const explicit = readPreferredOnboardPlaylist();
+  if (explicit) {
+    const current = history.find(item => samePlaylistUrl(item.url, explicit.url));
+    return normalizeOnboardPlaylist({ ...explicit, ...current });
+  }
+  // Offer the owner's usual playlist only where it has actually been used or
+  // found in this account. New visitors start with their own music.
+  const usual = history.find(item => isPinnedPlaylistSelection(item.url));
+  const accountUsual = spotifyAccountState.connected
+    ? spotifyAccountState.playlists.find(item => getOnboardSpotifyPlaylistId(item) === PINNED_PLAYLIST.id)
+    : null;
+  return normalizeOnboardPlaylist(usual || accountUsual || history[0]);
+}
+
+function setPreferredOnboardPlaylist(url) {
+  const item = getOnboardHistory().find(entry => samePlaylistUrl(entry.url, url));
+  const playlist = normalizeOnboardPlaylist(item);
+  if (!playlist) return false;
+  try {
+    localStorage.setItem(ONBOARD_PREFERRED_PLAYLIST_KEY, JSON.stringify(playlist));
+  } catch (_) {
+    onboardSetStatus('Could not remember your main playlist. Check browser storage and try again.', 'var(--red)');
+    return false;
+  }
+  renderOnboardHistory();
+  renderSpotifyPlaylistChoices();
+  return true;
+}
+
+function clearPreferredOnboardPlaylist() {
+  try { localStorage.removeItem(ONBOARD_PREFERRED_PLAYLIST_KEY); }
+  catch (_) { onboardSetStatus('Could not change your main playlist. Check browser storage and try again.', 'var(--red)'); return; }
+  renderOnboardHistory();
+  renderSpotifyPlaylistChoices();
+  const recent = document.getElementById('onboard-history-wrap');
+  if (recent) recent.open = true;
+}
+
+function onboardMainPlaylistPreferenceAction() {
+  if (readPreferredOnboardPlaylist()) return clearPreferredOnboardPlaylist();
+  return setPreferredOnboardPlaylist(getPreferredOnboardPlaylist()?.url || '');
+}
+
+function renderOnboardMainPlaylist() {
+  const wrap = document.getElementById('onboard-main-playlist');
+  const root = document.getElementById('onboard-main-playlist-card');
+  if (!wrap || !root) return;
+  const playlist = !isScenarioAProductMode() && getPreferredOnboardPlaylist();
+  wrap.hidden = !playlist;
+  root.replaceChildren();
+  if (!playlist) return;
+  const label = document.getElementById('onboard-main-playlist-label');
+  const explicit = readPreferredOnboardPlaylist();
+  const usual = isPinnedPlaylistSelection(playlist.url);
+  if (label) label.textContent = explicit || usual ? 'Your main playlist' : 'Pick up where you left off';
+  const reset = document.getElementById('onboard-main-playlist-reset');
+  if (reset) {
+    reset.hidden = !getOnboardHistory().some(item => samePlaylistUrl(item.url, playlist.url));
+    reset.textContent = explicit ? 'Change main' : 'Make main';
+  }
+  const card = createOnboardSavedPlaylistCard(playlist, true);
+  root.appendChild(card);
+}
 
 function markOnboardManualIntent() {
   window.__ttOnboardManualIntent = true;
@@ -528,7 +608,7 @@ function clearOnboardCacheSummary() {
 
 function getDefaultOnboardPlaylistUrl() {
   if (isScenarioAProductMode()) return PINNED_PLAYLIST.url;
-  return getOnboardHistory()[0]?.url || '';
+  return getPreferredOnboardPlaylist()?.url || '';
 }
 
 function focusOnboardPlaylistInput(selectText = false) {
@@ -604,10 +684,10 @@ function installOnboardCardDelegates() {
 
   const triggerFromTarget = target => {
     if (!target?.closest) return false;
-    if (target.closest('.onboard-pl-del')) return false;
+    if (target.closest('.onboard-pl-del, .onboard-pl-pin')) return false;
 
     const card = target.closest('.onboard-pl');
-    if (!card || !root.contains(card)) return false;
+    if (!card || card.disabled || !root.contains(card)) return false;
 
     if (card.closest('#onboard-auth-list')) {
       const playlistId = card.dataset.playlistId || '';
@@ -627,6 +707,8 @@ function installOnboardCardDelegates() {
   const handle = event => {
     if (event.type === 'pointerup' && event.pointerType === 'mouse') return;
     if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    // Native buttons already turn touch and keyboard input into one click.
+    if (event.type !== 'click' && event.target?.closest?.('button.onboard-pl')) return;
 
     if (triggerFromTarget(event.target)) {
       event.preventDefault();
@@ -649,11 +731,10 @@ function syncOnboardPrimaryAction() {
     return;
   }
   const raw = (inp?.value || '').trim();
-  const latestUrl = getOnboardHistory()[0]?.url || '';
-  if (samePlaylistUrl(raw, latestUrl)) {
-    btn.textContent = 'Open last result';
+  if (getOnboardHistory().some(item => samePlaylistUrl(raw, item.url))) {
+    btn.textContent = 'Open saved playlist';
   } else {
-    btn.textContent = 'Scan playlist';
+    btn.textContent = 'Open playlist';
   }
 }
 
@@ -895,8 +976,7 @@ async function instantResume(opts = {}) {
   } catch(e) {
     if (!current()) return false;
     if (btn) { btn.disabled = false; btn.textContent = '▶ Resume session'; }
-    const statusEl = document.getElementById('onboard-status-text');
-    if (statusEl) statusEl.textContent = '⚠ Resume failed: ' + e.message;
+    onboardSetStatus('Resume failed: ' + e.message, 'var(--red)');
     // Fall back to showing the import panel
     if (importPanelEl) importPanelEl.style.display = '';
     const resumeEl = document.getElementById('onboard-resume');
@@ -980,6 +1060,29 @@ function tsAgo(ts) {
   return `${Math.round(h/24)}d ago`;
 }
 
+function createOnboardSavedPlaylistCard(playlist, main = false) {
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = `onboard-pl${main ? ' onboard-pl-main' : ''}`;
+  card.dataset.playlistUrl = playlist.url || '';
+  card.dataset.playlistName = playlist.name || 'playlist';
+  const artists = (playlist.topArtists || []).slice(0, 4);
+  const parts = [];
+  if (Number.isFinite(playlist.trackCount)) parts.push(`${playlist.trackCount.toLocaleString('en-US')} tracks`);
+  if (Number.isFinite(playlist.artistCount)) parts.push(`${playlist.artistCount.toLocaleString('en-US')} artists`);
+  if (playlist.ts) parts.push(`Saved ${tsAgo(playlist.ts)}`);
+  card.innerHTML = `
+    <canvas class="onboard-pl-canvas" width="68" height="68" aria-hidden="true"></canvas>
+    <div class="onboard-pl-body">
+      <div class="onboard-pl-name">${esc2(playlist.name || 'Your playlist')}</div>
+      <div class="onboard-pl-meta">${parts.join(' &middot; ')}</div>
+      ${main && artists.length ? `<div class="onboard-pl-chips">${artists.map(name => `<span class="onboard-pl-chip">${esc2(name)}</span>`).join('')}</div>` : ''}
+    </div>
+    <span class="onboard-pl-arrow">${main ? 'Open playlist' : 'Open'}</span>`;
+  _drawPlaylistMosaic(card.querySelector('canvas'), artists);
+  return card;
+}
+
 function renderOnboardHistory() {
   if (isScenarioAProductMode()) {
     const wrap = document.getElementById('onboard-history-wrap');
@@ -990,43 +1093,44 @@ function renderOnboardHistory() {
     if (ql) ql.style.display = '';
     return;
   }
-  const list = getOnboardHistory();
+  renderOnboardMainPlaylist();
+  const preferred = getPreferredOnboardPlaylist();
+  const all = getOnboardHistory();
+  const list = all.filter(item => !preferred || !samePlaylistUrl(item.url, preferred.url));
   const wrap = document.getElementById('onboard-history-wrap');
   const hist = document.getElementById('onboard-history');
   if (!wrap || !hist) return;
+  hist.replaceChildren();
+  const label = document.getElementById('onboard-history-label');
+  if (label) label.textContent = `Recent on this device (${list.length})`;
   if (!list.length) { wrap.style.display = 'none'; } else {
     wrap.style.display = '';
     hist.innerHTML = '';
-    list.forEach((p, i) => {
-      const el = document.createElement('div');
-      el.className = 'onboard-pl';
-      el.setAttribute('role', 'button');
-      el.tabIndex = 0;
-      el.dataset.playlistUrl = p.url || '';
-      el.dataset.playlistName = p.name || 'playlist';
-      const ago = tsAgo(p.ts);
-      const artists = (p.topArtists || []).slice(0, 4);
-      const chips = artists.map(a => `<span class="onboard-pl-chip">${esc2(a)}</span>`).join('');
-      el.innerHTML = `
-        <canvas class="onboard-pl-canvas" width="68" height="68"
-          style="width:68px;height:68px;flex-shrink:0;display:block"></canvas>
-        <div class="onboard-pl-body">
-          <div class="onboard-pl-name">${esc2(p.name)}</div>
-          <div class="onboard-pl-meta">${p.artistCount||'?'} artists &middot; ${p.trackCount||'?'} tracks &middot; ${ago}</div>
-          ${chips ? `<div class="onboard-pl-chips">${chips}</div>` : ''}
-        </div>
-        <div class="onboard-pl-arrow">&#x2192;</div>
-        <button class="onboard-pl-del" title="Remove from history" onclick="removeOnboardHistory(event,${i})">&#xd7;</button>`;
-      // Draw mosaic on the canvas
-      _drawPlaylistMosaic(el.querySelector('canvas'), artists);
-      bindOnboardCardAction(el, () => {
-        startOnboardPlaylistUrl(p.url, p.name || 'playlist');
-      }, { ignoredSelector: '.onboard-pl-del' });
-      hist.appendChild(el);
+    list.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'onboard-history-item';
+      row.appendChild(createOnboardSavedPlaylistCard(p));
+      const actions = document.createElement('div');
+      actions.className = 'onboard-history-actions';
+      const pin = document.createElement('button');
+      pin.type = 'button';
+      pin.className = 'onboard-pl-pin';
+      pin.textContent = 'Make main';
+      pin.setAttribute('aria-label', `Make ${p.name || 'playlist'} your main playlist on this device`);
+      pin.addEventListener('click', () => setPreferredOnboardPlaylist(p.url));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'onboard-pl-del';
+      remove.textContent = '×';
+      remove.title = 'Remove from history';
+      remove.setAttribute('aria-label', `Remove ${p.name || 'playlist'} from history`);
+      remove.addEventListener('click', event => removeOnboardHistory(event, all.indexOf(p)));
+      actions.append(pin, remove);
+      row.appendChild(actions);
+      hist.appendChild(row);
     });
   }
   // Hide quick-load card if this playlist is already in history (avoid duplication)
-  const alreadyInHistory = list.some(p => samePlaylistUrl(p.url || '', PINNED_PLAYLIST.url));
   const ql = document.getElementById('onboard-quickload');
   if (ql) ql.style.display = 'none';
 }
@@ -1053,6 +1157,8 @@ function onboardSetStatus(msg, color) {
   if (!el) return;
   el.textContent = msg || '';
   el.style.color = color || '';
+  const wrap = document.getElementById('onboard-status');
+  if (wrap) wrap.hidden = !msg;
 }
 
 let _minTracksFilter = 1; // global: min track count for artist to be included in scan

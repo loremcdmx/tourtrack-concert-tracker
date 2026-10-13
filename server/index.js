@@ -958,41 +958,75 @@ async function fetchSpotifyUserPlaylists(accessToken) {
   const items = [];
   let nextUrl = 'https://api.spotify.com/v1/me/playlists?limit=50';
   let pageCount = 0;
+  let expectedTotal = null;
+  const visited = new Set();
+  const playlistIds = new Set();
+  const controller = new AbortController();
+  const incomplete = () => spotifyRequestError('Spotify returned an incomplete or changed playlist list. Try again.', 502, 'INCOMPLETE_IMPORT');
+  const timeout = setTimeout(() => controller.abort(
+    spotifyRequestError('Loading Spotify playlists timed out. Try again.', 504, 'INCOMPLETE_IMPORT')
+  ), 15000);
 
-  while (nextUrl && pageCount < 6) {
-    pageCount += 1;
-    const data = await spotifyApiFetch(nextUrl, { accessToken, json: true });
-    if (!Array.isArray(data?.items)) {
-      throw spotifyRequestError('Spotify returned an invalid playlist list.', 502, 'INCOMPLETE_IMPORT');
-    }
-
-    for (const item of data.items) {
-      if (!item || !item.id) continue;
-      const trackCount = item.items?.total ?? item.tracks?.total;
-      if (!Number.isSafeInteger(trackCount) || trackCount < 0) {
-        throw spotifyRequestError('Spotify returned an invalid playlist item count.', 502, 'INCOMPLETE_IMPORT');
+  try {
+    while (nextUrl !== null) {
+      controller.signal.throwIfAborted();
+      let pageUrl;
+      try { pageUrl = new URL(nextUrl); } catch (_) { throw incomplete(); }
+      const offsetRaw = pageUrl.searchParams.get('offset') || '0';
+      const limitRaw = pageUrl.searchParams.get('limit') || '20';
+      const offset = Number(offsetRaw);
+      const limit = Number(limitRaw);
+      if (pageUrl.protocol !== 'https:' || pageUrl.hostname !== 'api.spotify.com'
+          || pageUrl.pathname !== '/v1/me/playlists' || pageUrl.username || pageUrl.password || pageUrl.port || pageUrl.hash
+          || !/^\d+$/.test(offsetRaw) || !Number.isSafeInteger(offset) || offset !== items.length
+          || !/^\d+$/.test(limitRaw) || !Number.isSafeInteger(limit) || limit < 1 || limit > 50
+          || visited.has(pageUrl.href) || pageCount >= 100) throw incomplete();
+      visited.add(pageUrl.href);
+      pageCount += 1;
+      const data = await spotifyApiFetch(pageUrl.href, { accessToken, signal: controller.signal, json: true });
+      controller.signal.throwIfAborted();
+      if (!Array.isArray(data?.items) || data.items.length > limit
+          || (data.offset !== undefined && data.offset !== offset)
+          || (data.limit !== undefined && data.limit !== limit)
+          || (data.next !== null && (typeof data.next !== 'string' || !data.next))) throw incomplete();
+      if (data.total !== undefined) {
+        if (!Number.isSafeInteger(data.total) || data.total < 0 || data.total > 5000
+            || (expectedTotal !== null && data.total !== expectedTotal)) throw incomplete();
+        expectedTotal = data.total;
       }
-      items.push({
-        id: item.id,
-        name: item.name || 'Untitled playlist',
-        url: item.external_urls && item.external_urls.spotify
-          ? item.external_urls.spotify
-          : `https://open.spotify.com/playlist/${item.id}`,
-        ownerName: item.owner && (item.owner.display_name || item.owner.id)
-          ? item.owner.display_name || item.owner.id
-          : '',
-        imageUrl: item.images && item.images[0] ? item.images[0].url : '',
-        images: simplifySpotifyImages(item.images),
-        trackCount,
-        collaborative: Boolean(item.collaborative),
-        public: item.public,
-      });
+
+      for (const item of data.items) {
+        if (!item || typeof item.id !== 'string' || !item.id.trim() || playlistIds.has(item.id)) throw incomplete();
+        playlistIds.add(item.id);
+        const trackCount = item.items?.total ?? item.tracks?.total;
+        if (!Number.isSafeInteger(trackCount) || trackCount < 0) {
+          throw spotifyRequestError('Spotify returned an invalid playlist item count.', 502, 'INCOMPLETE_IMPORT');
+        }
+        items.push({
+          id: item.id,
+          name: item.name || 'Untitled playlist',
+          url: item.external_urls && item.external_urls.spotify
+            ? item.external_urls.spotify
+            : `https://open.spotify.com/playlist/${item.id}`,
+          ownerName: item.owner && (item.owner.display_name || item.owner.id)
+            ? item.owner.display_name || item.owner.id
+            : '',
+          imageUrl: item.images && item.images[0] ? item.images[0].url : '',
+          images: simplifySpotifyImages(item.images),
+          trackCount,
+          collaborative: Boolean(item.collaborative),
+          public: item.public,
+        });
+      }
+      if (items.length > 5000 || (expectedTotal !== null && items.length > expectedTotal)
+          || (data.next !== null && data.items.length === 0)) throw incomplete();
+      nextUrl = data.next;
     }
-
-    nextUrl = data.next || null;
+    if (expectedTotal !== null && items.length !== expectedTotal) throw incomplete();
+    return items;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return items;
 }
 
 function normalizeSpotifyImportTrack(track) {

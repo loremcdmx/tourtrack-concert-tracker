@@ -192,4 +192,27 @@ function relayoutMapLabels() {
   });
 }
 
-if (document.fonts) document.fonts.ready.then(scheduleMapLabelLayout);
+function invalidateMapLabelFontMeasurements() {
+  for (const marker of [...tourMarkers, ...festMarkers]) {
+    const data = marker._ctLayout;
+    if (!data) continue;
+    // A compact group is a replacement icon. Measure the full original label
+    // again after a font swap, never the group's fixed 48-by-28 rectangle.
+    if (data.compact) {
+      const popup = marker.getPopup();
+      const autoPan = popup?.options.autoPan;
+      if (popup) popup.options.autoPan = false;
+      marker.setIcon(data.icon);
+      if (data.popup !== undefined) marker.setPopupContent(data.popup);
+      if (popup) popup.options.autoPan = autoPan;
+      data.compact = false;
+    }
+    data.footprint = null;
+  }
+  scheduleMapLabelLayout();
+}
+
+if (document.fonts) {
+  document.fonts.ready.then(invalidateMapLabelFontMeasurements);
+  document.fonts.addEventListener('loadingdone', invalidateMapLabelFontMeasurements);
+}

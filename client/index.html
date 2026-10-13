@@ -6,9 +6,9 @@
 <title>ConcertTracker</title>
 <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.min.css?v=1.9.4"/>
 <script defer src="/assets/vendor/leaflet/leaflet.min.js?v=1.9.4"></script>
-<link rel="stylesheet" href="/assets/vendor/fonts/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/styles.css?v=2.31.0068">
-<link rel="stylesheet" href="/assets/design.css?v=2.31.0068">
+<link rel="stylesheet" href="/assets/vendor/fonts/identity-fonts.css?v=1">
+<link rel="stylesheet" href="/assets/styles.css?v=2.31.0074">
+<link rel="stylesheet" href="/assets/design.css?v=2.31.0074">
 </head>
 <body>
 <header>
@@ -16,7 +16,7 @@
   <div class="hd-status">
     <div class="pulse" id="pulse"></div>
     <span class="hd-msg" id="hd-msg">Not loaded yet</span>
-    <span style="font-family:'DM Mono',monospace;font-size:.46rem;color:var(--muted2);flex-shrink:0;margin-left:4px" id="app-ver-badge"></span>
+    <span style="font-family:var(--font-body);font-size:.46rem;color:var(--muted2);flex-shrink:0;margin-left:4px" id="app-ver-badge"></span>
   </div>
 
   <!-- ── Profile switcher ── -->
@@ -159,8 +159,34 @@
 
     <!-- ▸ NEW IMPORT PANEL — default state or when no IDB data -->
     <div id="onboard-import-panel">
-      <div class="onboard-title" id="onboard-main-title">Find your music, live.</div>
-      <div class="onboard-sub" id="onboard-sub-text">Paste a Spotify playlist link to find its artists on tour and at festivals. Each playlist keeps its own results on this device.</div>
+      <div class="onboard-title" id="onboard-main-title">Choose your playlist.</div>
+      <div class="onboard-sub" id="onboard-sub-text">Find its artists on tour and at festivals. Saved results stay on this device.</div>
+      <section class="onboard-main-playlist" id="onboard-main-playlist" hidden aria-label="Quick playlist access">
+        <div class="onboard-section-heading">
+          <span id="onboard-main-playlist-label">Your main playlist</span>
+          <button type="button" class="inline-link" id="onboard-main-playlist-reset" onclick="onboardMainPlaylistPreferenceAction()">Make main</button>
+        </div>
+        <div id="onboard-main-playlist-card"></div>
+      </section>
+      <details id="onboard-history-wrap" class="onboard-recent" style="display:none">
+        <summary id="onboard-history-label">Recent on this device</summary>
+        <div class="onboard-history" id="onboard-history"></div>
+      </details>
+      <div class="onboard-link-label"><label for="onboard-url">Open a playlist link</label></div>
+      <div class="onboard-input-wrap">
+        <input class="onboard-input" id="onboard-url" aria-label="Spotify playlist link" inputmode="url" placeholder="https://open.spotify.com/playlist/…"
+          spellcheck="false" autocomplete="off" oninput="syncOnboardPrimaryAction()"
+          onkeydown="if(event.key==='Enter')handleOnboardPrimaryAction()">
+        <button class="onboard-btn" id="onboard-btn" onclick="handleOnboardPrimaryAction()">Open playlist</button>
+      </div>
+      <details class="onboard-import-options">
+        <summary>Options for a new scan</summary>
+        <div class="onboard-mintracks-row">
+          <span class="onboard-mintracks-label">Artist cutoff</span>
+          <div class="onboard-mintracks-chips" id="onboard-mintracks-chips" style="display:none"></div>
+          <span class="onboard-mintracks-hint" id="onboard-mintracks-hint">Include every artist</span>
+        </div>
+      </details>
       <div class="onboard-auth-wrap" id="onboard-auth-wrap" style="display:none">
         <div class="onboard-auth-row">
           <button class="onboard-auth-btn" id="onboard-auth-btn" onclick="onboardSpotifyAuthAction()">Continue with Spotify</button>
@@ -168,7 +194,10 @@
         </div>
         <div class="onboard-auth-status" id="onboard-auth-status"></div>
         <div class="onboard-auth-list-wrap" id="onboard-auth-list-wrap" style="display:none">
-          <div class="onboard-history-label">Your Spotify playlists</div>
+          <div class="onboard-section-heading"><span>Your Spotify playlists</span><span id="onboard-playlist-count" role="status" aria-live="polite"></span></div>
+          <div id="onboard-playlist-search-wrap" hidden>
+            <input type="search" class="onboard-input onboard-playlist-search" id="onboard-playlist-search" aria-label="Search your Spotify playlists" placeholder="Search by playlist or owner" autocomplete="off" oninput="renderSpotifyPlaylistChoices()">
+          </div>
           <div class="onboard-auth-list" id="onboard-auth-list"></div>
         </div>
         <hr class="onboard-divider onboard-auth-divider">
@@ -181,20 +210,8 @@
         </div>
         <hr class="onboard-divider onboard-auth-divider">
       </div>
-      <div class="onboard-input-wrap">
-        <input class="onboard-input" id="onboard-url" aria-label="Spotify playlist link" inputmode="url" placeholder="https://open.spotify.com/playlist/…"
-          spellcheck="false" autocomplete="off"
-          onkeydown="if(event.key==='Enter')handleOnboardPrimaryAction()">
-        <button class="onboard-btn" id="onboard-btn" onclick="handleOnboardPrimaryAction()">Scan playlist</button>
-      </div>
-      <!-- Min tracks filter -->
-      <div class="onboard-mintracks-row">
-        <span class="onboard-mintracks-label">Artist cutoff</span>
-        <div class="onboard-mintracks-chips" id="onboard-mintracks-chips" style="display:none"></div>
-        <span class="onboard-mintracks-hint" id="onboard-mintracks-hint">Include every artist</span>
-      </div>
-      <div class="onboard-status" id="onboard-status">
-        <span id="onboard-status-text" role="status" aria-live="polite">Paste a playlist link to get started.</span>
+      <div class="onboard-status" id="onboard-status" hidden>
+        <span id="onboard-status-text" role="status" aria-live="polite"></span>
       </div>
       <div id="playlist-error-actions" class="playlist-error-actions" hidden>
         <button type="button" class="inline-link" id="playlist-login-action" onclick="onboardSpotifyAuthAction({reconnect:true})">Connect Spotify</button>
@@ -217,7 +234,7 @@
             <button onclick="document.getElementById('onboard-minilog-wrap').style.display='none'"
               style="background:none;border:none;color:var(--muted2);font-size:.65rem;cursor:pointer;padding:0 2px">✕</button>
           </div>
-          <div id="onboard-minilog" style="font-family:'DM Mono',monospace;font-size:.54rem;line-height:1.7;
+          <div id="onboard-minilog" style="font-family:var(--font-body);font-size:.54rem;line-height:1.7;
             color:var(--muted);background:var(--s1);border:1px solid var(--border);border-radius:6px;
             padding:8px 10px;max-height:120px;overflow-y:auto;word-break:break-all"></div>
         </div>
@@ -225,11 +242,6 @@
       <!-- keep legacy element so old code doesn't crash -->
       <div id="onboard-prog" style="display:none"><div id="onboard-prog-fill-legacy"></div></div>
       <!-- Proxy row -->
-      <div id="onboard-history-wrap" style="display:none">
-        <hr class="onboard-divider">
-        <div class="onboard-history-label">Previously imported</div>
-        <div class="onboard-history" id="onboard-history"></div>
-      </div>
       <!-- Quick shortcut — always visible -->
       <div class="onboard-quickload" id="onboard-quickload">
         <hr class="onboard-divider">
@@ -421,7 +433,7 @@
             <span class="mfilt-step-val" id="mfilt-max-val">30</span>
             <button class="mfilt-step-btn" onclick="setMapMaxArtists(MAP_MAX_ARTISTS + 5)">+</button>
           </div>
-          <span style="font-family:'DM Mono',monospace;font-size:.48rem;color:var(--muted2);margin-left:5px">on map</span>
+          <span style="font-family:var(--font-body);font-size:.48rem;color:var(--muted2);margin-left:5px">on map</span>
         </div>
       </div>
 
@@ -461,7 +473,7 @@
           <span class="msb-all-cnt" id="msb-all-cnt"></span>
         </button>
         <div id="map-cap-notice" style="display:none;margin:0 10px 4px;padding:5px 8px;
-          font-family:'DM Mono',monospace;font-size:.52rem;color:#ffaa3c;
+          font-family:var(--font-body);font-size:.52rem;color:#ffaa3c;
           background:rgba(255,170,60,.07);border:1px solid rgba(255,170,60,.2);
           border-radius:6px;line-height:1.5;"></div>
         <!-- Visible-now panel — shows what's rendered in the current viewport -->
@@ -564,7 +576,7 @@
       style="position:absolute;top:12px;right:12px;z-index:820;
         background:rgba(8,8,10,.92);border:1px solid rgba(200,255,95,.35);
         border-radius:8px;padding:6px 12px;cursor:pointer;
-        font-family:'DM Mono',monospace;font-size:.58rem;
+        font-family:var(--font-body);font-size:.58rem;
         color:var(--accent);backdrop-filter:blur(4px);
         transition:border-color .15s,background .15s"
       onmouseenter="this.style.borderColor='var(--accent)';this.style.background='rgba(200,255,95,.08)'"
@@ -584,7 +596,7 @@
     <!-- MAP LEGEND -->
     <div id="map-legend" style="position:absolute;bottom:42px;right:12px;z-index:10;
       background:rgba(8,8,10,.92);border:1px solid rgba(255,255,255,.08);border-radius:8px;
-      padding:8px 10px;font-family:'DM Mono',monospace;font-size:.5rem;
+      padding:8px 10px;font-family:var(--font-body);font-size:.5rem;
       color:var(--muted);line-height:1.8;pointer-events:none;
       backdrop-filter:blur(4px);transition:opacity .2s">
       <div style="letter-spacing:.08em;text-transform:uppercase;font-size:.42rem;color:var(--muted2);margin-bottom:4px">Legend</div>
@@ -933,45 +945,45 @@
   </div>
 </div>
 </div>
-<script defer src="/config.js?v=2.31.0068"></script>
-<script defer src="/assets/app/core/runtime.js?v=2.31.0068"></script>
-<script defer src="/assets/app/core/profiles.js?v=2.31.0068"></script>
-<script defer src="/assets/app/core/storage.js?v=2.31.0068"></script>
-<script defer src="/assets/app/core/filter-presets.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/actions.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/shared/network.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/shared/geo.js?v=2.31.0068"></script>
-    <script defer src="/assets/app/scan/shared/matching.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/shared/concert-records.js?v=2.31.0068"></script>
-<script defer src="/assets/app/core/artist-knowledge.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/shared/preflight.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/settings/panel.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/settings/scope.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/feedback.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/errors.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/runtime.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/pipeline.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/providers.js?v=2.31.0068"></script>
-    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.31.0068"></script>
-    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/festivals/scoring.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/festivals.js?v=2.31.0068"></script>
-<script defer src="/assets/app/scan/concerts.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/calendar.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/tile-cache.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/base.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/drawer.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/match.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/sidebar.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/focus.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/label-layout.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/labels.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/map/render.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/overlays.js?v=2.31.0068"></script>
-<script defer src="/assets/app/integrations/spotify.js?v=2.31.0068"></script>
-<script defer src="/assets/app/integrations/playlist-import.js?v=2.31.0068"></script>
-<script defer src="/assets/app/ui/workspace.js?v=2.31.0068"></script>
-<script defer src="/assets/app/bootstrap.js?v=2.31.0068"></script>
+<script defer src="/config.js?v=2.31.0074"></script>
+<script defer src="/assets/app/core/runtime.js?v=2.31.0074"></script>
+<script defer src="/assets/app/core/profiles.js?v=2.31.0074"></script>
+<script defer src="/assets/app/core/storage.js?v=2.31.0074"></script>
+<script defer src="/assets/app/core/filter-presets.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/actions.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/shared/network.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/shared/geo.js?v=2.31.0074"></script>
+    <script defer src="/assets/app/scan/shared/matching.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/shared/concert-records.js?v=2.31.0074"></script>
+<script defer src="/assets/app/core/artist-knowledge.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/shared/preflight.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/settings/panel.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/settings/scope.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/feedback.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/errors.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/runtime.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/pipeline.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/providers.js?v=2.31.0074"></script>
+    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.31.0074"></script>
+    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/festivals/scoring.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/festivals.js?v=2.31.0074"></script>
+<script defer src="/assets/app/scan/concerts.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/calendar.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/tile-cache.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/base.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/drawer.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/match.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/sidebar.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/focus.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/label-layout.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/labels.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/map/render.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/overlays.js?v=2.31.0074"></script>
+<script defer src="/assets/app/integrations/spotify.js?v=2.31.0074"></script>
+<script defer src="/assets/app/integrations/playlist-import.js?v=2.31.0074"></script>
+<script defer src="/assets/app/ui/workspace.js?v=2.31.0074"></script>
+<script defer src="/assets/app/bootstrap.js?v=2.31.0074"></script>
 </body>
 </html>

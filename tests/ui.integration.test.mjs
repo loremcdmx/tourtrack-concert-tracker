@@ -2426,6 +2426,65 @@ test('dense mixed tour and festival labels do not overlap and preserve all event
   }
 });
 
+test('map font loading remeasures original labels behind compact groups without losing or overlapping events', { concurrency: false }, async () => {
+  await page.evaluate(async () => {
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    await document.fonts.ready;
+  });
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture({ tourCount: 30, festivalCount: 0 });
+  const expectedIds = fixture.concerts.map(event => event.id);
+  await installDenseMap(page, fixture);
+  await page.evaluate(() => {
+    const style = document.createElement('style');
+    style.textContent = '.test-map-font-label { display:inline-block; width:max-content; white-space:nowrap; padding:4px 8px; font:400 22px/1 "CTDelayedMapFont",monospace; background:#123; color:#fff; }';
+    document.head.appendChild(style);
+    window.__testFontProbe = document.createElement('div');
+    window.__testFontProbe.className = 'test-map-font-label';
+    window.__testFontProbe.textContent = 'Font width MMMMM 01';
+    window.__testFontProbe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+    document.getElementById('map').appendChild(window.__testFontProbe);
+    for (const marker of tourMarkers) {
+      const previous = marker._ctLayout;
+      marker.setIcon(L.divIcon({ className: '', iconSize: [1, 1], iconAnchor: [0, 0],
+        html: '<div class="test-map-font-label">Font width MMMMM 01</div>' }));
+      _mapRegisterLabel(marker, previous.id, previous.priority, previous.items);
+    }
+    relayoutMapLabels();
+  });
+  const before = await page.evaluate(() => ({
+    width: window.__testFontProbe.getBoundingClientRect().width,
+    compact: tourMarkers.filter(marker => marker._ctLayout.compact).length,
+    points: tourMarkers.map(marker => [marker.getLatLng().lat, marker.getLatLng().lng]),
+    widths: tourMarkers.map(marker => marker._ctLayout.footprint.width),
+  }));
+  assert.ok(before.compact > 0, 'A real compact replacement icon must exist before the font loads');
+  assert.ok(before.widths.every(width => Math.abs(width - before.width) < 1));
+  await page.evaluate(async () => {
+    const face = new FontFace('CTDelayedMapFont', 'url(/assets/vendor/fonts/JTUSjIg69CK48gW7PXoo9WlhyyTh89Y.woff2)');
+    document.fonts.add(face);
+    await document.fonts.load('400 22px "CTDelayedMapFont"');
+    await document.fonts.ready;
+  });
+  await settleUi(page, 100);
+  await page.evaluate(() => relayoutMapLabels());
+  const after = await page.evaluate(() => ({
+    width: window.__testFontProbe.getBoundingClientRect().width,
+    compact: tourMarkers.filter(marker => marker._ctLayout.compact).length,
+    points: tourMarkers.map(marker => [marker.getLatLng().lat, marker.getLatLng().lng]),
+    widths: tourMarkers.map(marker => marker._ctLayout.footprint.width),
+  }));
+  assert.ok(Math.abs(after.width - before.width) > 5, 'The loaded local font must materially change actual text width');
+  assert.ok(after.widths.every(width => Math.abs(width - after.width) < 1),
+    'Every cache must contain the loaded-font original label width, including compact owners');
+  assert.ok(after.widths.every(width => width > 48), 'Compact group dimensions must never replace the original footprint');
+  assert.ok(after.compact > 0, 'The dense layout must still exercise compact icons after remeasurement');
+  assert.deepEqual(after.points, before.points, 'Font loading must preserve venue coordinates');
+  const snapshot = await page.evaluate(mapLabelSnapshot);
+  assertMapLabelsDoNotOverlap(snapshot, 'local font swapped');
+  assertMapEventCoverage(snapshot, expectedIds);
+});
+
 test('mixed overflow groups list every event and preserve the festival and tour button actions', { concurrency: false }, async () => {
   await setViewport(page, 375, 812);
   const fixture = denseMapFixture();
@@ -3228,6 +3287,63 @@ function spotifyAccountUiSnapshot() {
     status: status.textContent, tone: status.dataset.tone,
   };
 }
+
+test('main playlist survives another import and reload; account selection restores it without Spotify calls', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'My main listening', [['Alpha'], ['Alpha']]),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Another playlist', [['Beta']]),
+  });
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(() => localStorage.removeItem('tt_preferred_playlist'));
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  const event = makeConcert('Alpha', 4, 'Main Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'main-playlist-show' });
+  await page.evaluate(async (url, show) => {
+    concerts = [show]; persistData(); await persistActivePlaylistSession();
+    if (!setPreferredOnboardPlaylist(url)) throw new Error('Could not set main playlist');
+  }, importUrl(IMPORT_IDS.a), event);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), true);
+  await settleUi(page, 560);
+  const callsBefore = (await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls;
+  await page.navigate(baseUrl);
+  await page.waitFor(() => SPOTIFY_PLAYLIST_META?.id === '2'.repeat(22));
+  await page.evaluate(() => { openPlaylistImport(); });
+  await seedKnownSpotifyAccount(page);
+  assert.equal(await page.evaluate(() => getPreferredOnboardPlaylist().id), IMPORT_IDS.a);
+  assert.equal(await page.evaluate(() => document.querySelector('#onboard-main-playlist-card button').dataset.playlistUrl), importUrl(IMPORT_IDS.a));
+  await page.evaluate(id => document.querySelector(`#onboard-auth-list button[data-playlist-id="${id}"]`).click(), IMPORT_IDS.a);
+  await page.waitFor(() => getActivePlaylistSessionId() === '1'.repeat(22) && concerts.some(show => show.id === 'main-playlist-show'));
+  assert.deepEqual((await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls, callsBefore);
+  assert.equal(await page.evaluate(() => document.getElementById('onboard').classList.contains('hidden')), true);
+  await page.evaluate(() => localStorage.removeItem('tt_preferred_playlist'));
+});
+
+test('playlist choice exposes all 30 account playlists, filters by owner, and fits desktop and phone', { concurrency: false }, async () => {
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(() => {
+    localStorage.removeItem('tt_preferred_playlist');
+    Object.assign(spotifyAccountState, { loaded:true, connected:true, loading:false, playlistsLoaded:true,
+      playlistsLoading:false, pendingPlaylistId:'', user:{ displayName:'Another listener' },
+      playlists:Array.from({length:30}, (_, i) => ({id:String(i+1).padStart(22,'0'), name:`Listening ${i+1}`, ownerName:i===29?'Distant Owner':'Another listener', trackCount:i+1})) });
+    renderOnboardSpotifyAuth(); renderOnboardHistory();
+  });
+  assert.equal(await page.evaluate(() => document.getElementById('onboard-main-playlist').hidden), true);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#onboard-auth-list button').length), 30);
+  for (const [width,height] of [[1440,900],[390,844],[320,740]]) {
+    await setViewport(page,width,height);
+    const bounds = await page.evaluate(() => ({ viewport:innerWidth, scroll:document.documentElement.scrollWidth,
+      search:document.getElementById('onboard-playlist-search').getBoundingClientRect().toJSON(),
+      list:document.getElementById('onboard-auth-list').getBoundingClientRect().toJSON() }));
+    assert.ok(bounds.scroll <= bounds.viewport+1);
+    assert.ok(bounds.search.width >= 200 && bounds.search.right <= bounds.viewport+1);
+    assert.ok(bounds.list.height <= 281);
+  }
+  await page.evaluate(() => {
+    const search=document.getElementById('onboard-playlist-search'); search.value='distant owner';
+    search.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#onboard-auth-list button').length), 1);
+  assert.equal(await page.evaluate(() => document.getElementById('onboard-playlist-count').textContent), '1 of 30 playlists');
+});
 
 // Exercise the real response reader and account handlers. Only fetch is offline;
 // a short deadline makes an unfinished response body fail without a long wait.

@@ -876,11 +876,11 @@ async function testUrl(url, label) {
 // State mirrored from onboard filter panel (applied before entering app)
 const DEFAULT_ONBOARD_TITLE = isScenarioAProductMode()
   ? 'Pinned playlist import'
-  : 'Find your music, live.';
+  : 'Choose your playlist.';
 const DEFAULT_ONBOARD_SUB =
   isScenarioAProductMode()
     ? `${PINNED_PLAYLIST.name}: scan ${PINNED_PLAYLIST.trackCount} tracks, keep artists with ${scenarioAFixedMinTracks()}+ repeats, then show worldwide tour dates.`
-    : 'Paste a Spotify playlist link to find its artists on tour and at festivals. Each playlist keeps its own results on this device.';
+    : 'Find its artists on tour and at festivals. Saved results stay on this device.';
 const spotifyAccountState = {
   loaded: false,
   loading: false,
@@ -993,8 +993,11 @@ function getOnboardSpotifyPlaylistId(item) {
   return raw;
 }
 
+let _onboardSpotifySelectionGeneration = 0;
+
 function startOnboardSpotifyPlaylistSelection(item) {
   if (!item) return;
+  const selectionGeneration = ++_onboardSpotifySelectionGeneration;
 
   if (typeof markOnboardManualIntent === 'function') markOnboardManualIntent();
 
@@ -1018,21 +1021,38 @@ function startOnboardSpotifyPlaylistSelection(item) {
   syncOnboardPrimaryAction();
 
   const launchImport = () => {
+    if (selectionGeneration !== _onboardSpotifySelectionGeneration
+        || spotifyAccountState.pendingPlaylistId !== normalizedId) return;
+    if (inp?.value !== url) {
+      spotifyAccountState.pendingPlaylistId = '';
+      if (typeof onboardHideProgress === 'function') onboardHideProgress();
+      renderSpotifyPlaylistChoices();
+      return;
+    }
+    let importGeneration = null;
+    const current = () => selectionGeneration === _onboardSpotifySelectionGeneration
+      && (importGeneration === null || typeof _playlistImportGeneration === 'undefined'
+        || importGeneration === _playlistImportGeneration);
+    const finish = () => {
+      if (!current()) return;
+      if (spotifyAccountState.pendingPlaylistId === normalizedId) spotifyAccountState.pendingPlaylistId = '';
+      if (typeof onboardHideProgress === 'function') onboardHideProgress();
+      renderSpotifyPlaylistChoices();
+    };
     try {
-      const task = typeof onboardImport === 'function' ? onboardImport() : null;
+      const task = typeof handleOnboardPrimaryAction === 'function' ? handleOnboardPrimaryAction() : null;
+      importGeneration = typeof _playlistImportGeneration === 'undefined' ? null : _playlistImportGeneration;
       Promise.resolve(task).catch(error => {
-        spotifyAccountState.pendingPlaylistId = '';
-        renderSpotifyPlaylistChoices();
+        if (!current()) return;
         if (typeof onboardSetStatus === 'function') {
           onboardSetStatus(error?.message || 'Playlist import failed.', '#ff7070');
         }
-      });
+      }).finally(finish);
     } catch (error) {
-      spotifyAccountState.pendingPlaylistId = '';
-      renderSpotifyPlaylistChoices();
-      if (typeof onboardSetStatus === 'function') {
+      if (current() && typeof onboardSetStatus === 'function') {
         onboardSetStatus(error?.message || 'Playlist import failed.', '#ff7070');
       }
+      finish();
     }
   };
 
@@ -1044,7 +1064,12 @@ function startOnboardSpotifyPlaylistSelection(item) {
 function renderSpotifyPlaylistChoices() {
   const wrap = document.getElementById('onboard-auth-list-wrap');
   const list = document.getElementById('onboard-auth-list');
+  const searchWrap = document.getElementById('onboard-playlist-search-wrap');
+  const search = document.getElementById('onboard-playlist-search');
+  const count = document.getElementById('onboard-playlist-count');
   if (!wrap || !list) return;
+  if (searchWrap) searchWrap.hidden = true;
+  if (count) count.textContent = '';
 
   if (!SERVER_MANAGED_SPOTIFY_LOGIN || !spotifyAccountState.connected) {
     wrap.style.display = 'none';
@@ -1065,12 +1090,30 @@ function renderSpotifyPlaylistChoices() {
     return;
   }
 
-  if (!spotifyAccountState.playlists.length) {
+  const playlists = Array.isArray(spotifyAccountState.playlists) ? spotifyAccountState.playlists : [];
+  if (searchWrap) searchWrap.hidden = false;
+  const query = String(search?.value || '').trim().toLowerCase();
+  const preferred = typeof getPreferredOnboardPlaylist === 'function' ? getPreferredOnboardPlaylist() : null;
+  const preferredId = preferred ? getOnboardSpotifyPlaylistId(preferred) : '';
+  const matching = playlists.filter(item => `${item.name || ''}\n${item.ownerName || ''}`.toLowerCase().includes(query));
+  if (preferredId) {
+    const index = matching.findIndex(item => getOnboardSpotifyPlaylistId(item) === preferredId);
+    if (index > 0) matching.unshift(...matching.splice(index, 1));
+  }
+  if (count) count.textContent = query
+    ? `${matching.length} of ${playlists.length} ${playlists.length === 1 ? 'playlist' : 'playlists'}`
+    : `${playlists.length} ${playlists.length === 1 ? 'playlist' : 'playlists'}`;
+
+  if (!playlists.length) {
     list.innerHTML = '<div class="onboard-auth-empty">No playlists found on this Spotify account yet.</div>';
     return;
   }
+  if (!matching.length) {
+    list.innerHTML = '<div class="onboard-auth-empty">No playlists match your search.</div>';
+    return;
+  }
 
-  spotifyAccountState.playlists.slice(0, 12).forEach(item => {
+  matching.forEach(item => {
     const playlistId = getOnboardSpotifyPlaylistId(item);
     const card = document.createElement('button');
     card.type = 'button';
@@ -1079,6 +1122,7 @@ function renderSpotifyPlaylistChoices() {
     card.dataset.playlistUrl = item.url || `https://open.spotify.com/playlist/${item.id}`;
     card.dataset.playlistName = item.name || 'playlist';
     const isActive = !!playlistId && spotifyAccountState.pendingPlaylistId === playlistId;
+    card.disabled = isActive;
     if (isActive) card.classList.add('is-active');
 
     if (item.imageUrl) {
