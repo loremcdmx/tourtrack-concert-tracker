@@ -876,7 +876,10 @@ async function instantResume(opts = {}) {
 
     cacheTimestamp = Date.now();
 
-    if (festivals.length && ARTISTS.length) scoreFestivals();
+    if (festivals.length && ARTISTS.length) {
+      if (!(await hydrateAndScoreFestivals({ isCurrent: current }))) return false;
+    }
+    if (!current()) return false;
     persistData();
     clearOnboardManualIntent();
 
