@@ -2426,6 +2426,65 @@ test('dense mixed tour and festival labels do not overlap and preserve all event
   }
 });
 
+test('map font loading remeasures original labels behind compact groups without losing or overlapping events', { concurrency: false }, async () => {
+  await page.evaluate(async () => {
+    importArtistMediaSeed = async () => ({ imported: 0, hydrated: 0 });
+    await document.fonts.ready;
+  });
+  await setViewport(page, 375, 812);
+  const fixture = denseMapFixture({ tourCount: 30, festivalCount: 0 });
+  const expectedIds = fixture.concerts.map(event => event.id);
+  await installDenseMap(page, fixture);
+  await page.evaluate(() => {
+    const style = document.createElement('style');
+    style.textContent = '.test-map-font-label { display:inline-block; width:max-content; white-space:nowrap; padding:4px 8px; font:400 22px/1 "CTDelayedMapFont",monospace; background:#123; color:#fff; }';
+    document.head.appendChild(style);
+    window.__testFontProbe = document.createElement('div');
+    window.__testFontProbe.className = 'test-map-font-label';
+    window.__testFontProbe.textContent = 'Font width MMMMM 01';
+    window.__testFontProbe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+    document.getElementById('map').appendChild(window.__testFontProbe);
+    for (const marker of tourMarkers) {
+      const previous = marker._ctLayout;
+      marker.setIcon(L.divIcon({ className: '', iconSize: [1, 1], iconAnchor: [0, 0],
+        html: '<div class="test-map-font-label">Font width MMMMM 01</div>' }));
+      _mapRegisterLabel(marker, previous.id, previous.priority, previous.items);
+    }
+    relayoutMapLabels();
+  });
+  const before = await page.evaluate(() => ({
+    width: window.__testFontProbe.getBoundingClientRect().width,
+    compact: tourMarkers.filter(marker => marker._ctLayout.compact).length,
+    points: tourMarkers.map(marker => [marker.getLatLng().lat, marker.getLatLng().lng]),
+    widths: tourMarkers.map(marker => marker._ctLayout.footprint.width),
+  }));
+  assert.ok(before.compact > 0, 'A real compact replacement icon must exist before the font loads');
+  assert.ok(before.widths.every(width => Math.abs(width - before.width) < 1));
+  await page.evaluate(async () => {
+    const face = new FontFace('CTDelayedMapFont', 'url(/assets/vendor/fonts/JTUSjIg69CK48gW7PXoo9WlhyyTh89Y.woff2)');
+    document.fonts.add(face);
+    await document.fonts.load('400 22px "CTDelayedMapFont"');
+    await document.fonts.ready;
+  });
+  await settleUi(page, 100);
+  await page.evaluate(() => relayoutMapLabels());
+  const after = await page.evaluate(() => ({
+    width: window.__testFontProbe.getBoundingClientRect().width,
+    compact: tourMarkers.filter(marker => marker._ctLayout.compact).length,
+    points: tourMarkers.map(marker => [marker.getLatLng().lat, marker.getLatLng().lng]),
+    widths: tourMarkers.map(marker => marker._ctLayout.footprint.width),
+  }));
+  assert.ok(Math.abs(after.width - before.width) > 5, 'The loaded local font must materially change actual text width');
+  assert.ok(after.widths.every(width => Math.abs(width - after.width) < 1),
+    'Every cache must contain the loaded-font original label width, including compact owners');
+  assert.ok(after.widths.every(width => width > 48), 'Compact group dimensions must never replace the original footprint');
+  assert.ok(after.compact > 0, 'The dense layout must still exercise compact icons after remeasurement');
+  assert.deepEqual(after.points, before.points, 'Font loading must preserve venue coordinates');
+  const snapshot = await page.evaluate(mapLabelSnapshot);
+  assertMapLabelsDoNotOverlap(snapshot, 'local font swapped');
+  assertMapEventCoverage(snapshot, expectedIds);
+});
+
 test('mixed overflow groups list every event and preserve the festival and tour button actions', { concurrency: false }, async () => {
   await setViewport(page, 375, 812);
   const fixture = denseMapFixture();
