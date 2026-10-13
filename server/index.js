@@ -197,14 +197,19 @@ function spotifyConfigured() {
   return Boolean(clientId && clientSecret);
 }
 
+function getBandsintownAppId() {
+  return (process.env.BANDSINTOWN_APP_ID || '').trim();
+}
+
 function appConfig(req = null) {
   const tmKeys = getTicketmasterKeys();
   const spotifyReady = spotifyConfigured();
   return {
-    appVersion: '2.31.0066',
+    appVersion: '2.31.0067',
     internalProxyTemplate: '/api/proxy?url={url}',
     ticketmasterManaged: tmKeys.length > 0,
     ticketmasterPlaceholder: TICKETMASTER_PLACEHOLDER,
+    bandsintownManaged: Boolean(getBandsintownAppId()),
     spotifyManaged: spotifyReady,
     spotifyLoginManaged: spotifyReady,
     localSetupAllowed: !!req && isLocalRequest(req),
@@ -732,7 +737,7 @@ function buildReturnUrl(pathName, params = {}) {
   return `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
 }
 
-async function requestSpotifyToken(formParams) {
+async function requestSpotifyToken(formParams, { signal } = {}) {
   const { clientId, clientSecret } = getSpotifyCredentials();
   if (!clientId || !clientSecret) {
     const error = new Error('Spotify credentials are not configured on the server.');
@@ -742,6 +747,9 @@ async function requestSpotifyToken(formParams) {
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), SPOTIFY_UPSTREAM_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   let upstream;
   let rawBody;
   try {
@@ -756,6 +764,7 @@ async function requestSpotifyToken(formParams) {
     });
     rawBody = await upstream.text();
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     if (error && error.name === 'AbortError') {
       const timeoutError = new Error(`Spotify token request timed out after ${Math.round(SPOTIFY_UPSTREAM_TIMEOUT_MS / 1000)}s.`);
       timeoutError.status = 504;
@@ -764,6 +773,7 @@ async function requestSpotifyToken(formParams) {
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 
   let payload = {};
@@ -789,7 +799,7 @@ async function requestSpotifyToken(formParams) {
   return payload;
 }
 
-async function getSpotifyAppTokenPayload() {
+async function getSpotifyAppTokenPayload(options = {}) {
   if (
     spotifyAppTokenCache &&
     spotifyAppTokenCache.expiresAt > Date.now() + 60 * 1000
@@ -801,7 +811,7 @@ async function getSpotifyAppTokenPayload() {
     };
   }
 
-  const payload = await requestSpotifyToken({ grant_type: 'client_credentials' });
+  const payload = await requestSpotifyToken({ grant_type: 'client_credentials' }, options);
   spotifyAppTokenCache = {
     accessToken: payload.access_token,
     tokenType: payload.token_type || 'Bearer',
@@ -882,9 +892,9 @@ function simplifySpotifyImages(images) {
     : [];
 }
 
-async function fetchSpotifyProfile(accessToken) {
+async function fetchSpotifyProfile(accessToken, options = {}) {
   const data = await spotifyApiFetch('https://api.spotify.com/v1/me', {
-    accessToken, json: true,
+    accessToken, json: true, signal: options.signal,
   });
   if (typeof data?.id !== 'string' || !data.id.trim()) {
     throw spotifyRequestError('Spotify returned invalid account metadata.', 502, 'INCOMPLETE_IMPORT');
@@ -897,7 +907,7 @@ async function fetchSpotifyProfile(accessToken) {
   };
 }
 
-async function refreshSpotifyUserSession(req, res, session) {
+async function refreshSpotifyUserSession(req, res, session, options = {}) {
   if (!session) return null;
   if (session.expiresAt > Date.now() + 60 * 1000) return session;
 
@@ -905,7 +915,7 @@ async function refreshSpotifyUserSession(req, res, session) {
     const payload = await requestSpotifyToken({
       grant_type: 'refresh_token',
       refresh_token: session.refreshToken,
-    });
+    }, options);
     const nextSession = {
       ...session,
       accessToken: payload.access_token,
@@ -917,8 +927,9 @@ async function refreshSpotifyUserSession(req, res, session) {
     };
     if (!nextSession.user) {
       try {
-        nextSession.user = await fetchSpotifyProfile(nextSession.accessToken);
+        nextSession.user = await fetchSpotifyProfile(nextSession.accessToken, options);
       } catch (error) {
+        if (options.signal?.aborted) throw options.signal.reason || error;
         nextSession.user = null;
       }
     }
@@ -936,11 +947,11 @@ async function refreshSpotifyUserSession(req, res, session) {
   }
 }
 
-async function getSpotifyUserSession(req, res) {
+async function getSpotifyUserSession(req, res, options = {}) {
   const cookies = parseCookies(req);
   const session = sanitizeSpotifySession(openJson(cookies[SPOTIFY_SESSION_COOKIE]));
   if (!session) return null;
-  return refreshSpotifyUserSession(req, res, session);
+  return refreshSpotifyUserSession(req, res, session, options);
 }
 
 async function fetchSpotifyUserPlaylists(accessToken) {
@@ -1010,6 +1021,94 @@ function normalizeSpotifyImportTrack(track) {
 
 const PLAYLIST_IMPORT_PAGE_SIZE = 50;
 const PLAYLIST_IMPORT_CONCURRENCY = 3;
+const PLAYLIST_IMPORT_REQUEST_BUDGET_MS = 45000;
+
+function spotifyPlaylistDescriptor(playlist, playlistId) {
+  if (!playlist || playlist.id !== playlistId) {
+    throw spotifyRequestError('Spotify returned invalid playlist metadata.', 502, 'INCOMPLETE_IMPORT');
+  }
+  const endpoint = playlist.items && typeof playlist.items === 'object' ? 'items'
+    : playlist.tracks && typeof playlist.tracks === 'object' ? 'tracks' : '';
+  if (!endpoint) throw spotifyRequestError('Spotify did not expose this playlist to the current app or account.', 403, 'PLAYLIST_ACCESS_DENIED');
+  const total = playlist[endpoint].total;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw spotifyRequestError('Spotify returned an invalid playlist item count.', 502, 'INCOMPLETE_IMPORT');
+  }
+  return { endpoint, total, snapshotId: playlist.snapshot_id || '', pageSize: PLAYLIST_IMPORT_PAGE_SIZE };
+}
+
+function spotifyImportPlaylistMetadata(playlist, total) {
+  return { id: playlist.id, name: playlist.name || 'Untitled playlist', external_urls: playlist.external_urls || {},
+    images: simplifySpotifyImages(playlist.images), owner: playlist.owner || {}, tracks: { total }, items: { total },
+    ...(playlist.snapshot_id ? { snapshot_id: playlist.snapshot_id } : {}) };
+}
+
+function normalizeSpotifyImportPage(page, { endpoint, total }, offset) {
+  const expected = Math.min(PLAYLIST_IMPORT_PAGE_SIZE, total - offset);
+  if (!page || !Array.isArray(page.items) || page.total !== total || page.items.length !== expected
+      || (page.offset !== undefined && page.offset !== offset)
+      || (page.limit !== undefined && page.limit !== PLAYLIST_IMPORT_PAGE_SIZE)
+      || (offset + expected < total ? typeof page.next !== 'string' || !page.next : page.next !== null)) {
+    throw spotifyRequestError('Spotify playlist pages were incomplete or changed during import. Try again.', 502, 'INCOMPLETE_IMPORT');
+  }
+  const tracks = [];
+  const skippedItems = { unavailable: 0, episodes: 0, local: 0 };
+  const itemKey = endpoint === 'items' ? 'item' : 'track';
+  for (const item of page.items) {
+    if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, itemKey)) {
+      throw spotifyRequestError('Spotify returned an invalid playlist item.', 502, 'INCOMPLETE_IMPORT');
+    }
+    const track = item[itemKey];
+    if (track != null && (typeof track !== 'object' || Array.isArray(track)
+        || (track.type && !['track', 'episode'].includes(track.type))
+        || (track.type !== 'episode' && !item.is_local && !track.is_local && !Array.isArray(track.artists)))) {
+      throw spotifyRequestError('Spotify returned an unsupported playlist item.', 502, 'INCOMPLETE_IMPORT');
+    }
+    if (!track) { skippedItems.unavailable++; continue; }
+    if (track.type === 'episode') { skippedItems.episodes++; continue; }
+    if (item.is_local || track.is_local) { skippedItems.local++; continue; }
+    const normalized = normalizeSpotifyImportTrack(track);
+    if (!normalized.artists.length) { skippedItems.unavailable++; continue; }
+    tracks.push(normalized);
+  }
+  return { tracks, importSummary: { totalItems: page.items.length, importedTracks: tracks.length, skippedItems } };
+}
+
+async function fetchSpotifyPlaylistImportStep(accessToken, playlistId, params, signal) {
+  const step = params.get('step');
+  const playlistUrl = `https://api.spotify.com/v1/playlists/${playlistId}`;
+  const fetchJson = url => spotifyApiFetch(url, { accessToken, signal, json: true });
+  if (step === 'metadata') {
+    const playlist = await fetchJson(playlistUrl);
+    const pagination = spotifyPlaylistDescriptor(playlist, playlistId);
+    if (!pagination.snapshotId) throw spotifyRequestError('Spotify did not provide a consistent playlist snapshot. Try again.', 502, 'INCOMPLETE_IMPORT');
+    return { playlist: spotifyImportPlaylistMetadata(playlist, pagination.total), pagination };
+  }
+  const totalRaw = params.get('total');
+  const offsetRaw = params.get('offset');
+  const total = Number(totalRaw);
+  const endpoint = params.get('endpoint');
+  const snapshotId = params.get('snapshot');
+  if (!/^\d+$/.test(totalRaw || '') || !Number.isSafeInteger(total) || total < 0
+      || !['items', 'tracks'].includes(endpoint) || !snapshotId || snapshotId.length > 512) {
+    throw spotifyRequestError('Invalid playlist import continuation.', 400, 'INVALID_IMPORT_PAGE');
+  }
+  if (step === 'verify') {
+    const playlist = await fetchJson(playlistUrl);
+    const actual = spotifyPlaylistDescriptor(playlist, playlistId);
+    if (actual.snapshotId !== snapshotId || actual.total !== total || actual.endpoint !== endpoint) {
+      throw spotifyRequestError('This playlist changed during import. Try again to load a consistent copy.', 502, 'INCOMPLETE_IMPORT');
+    }
+    return { verified: true, playlistId, totalItems: total, snapshotId };
+  }
+  const offset = Number(offsetRaw);
+  if (step !== 'page' || !/^\d+$/.test(offsetRaw || '') || !Number.isSafeInteger(offset) || offset < 0
+      || offset % PLAYLIST_IMPORT_PAGE_SIZE || offset >= Math.max(1, total)) {
+    throw spotifyRequestError('Invalid playlist import page.', 400, 'INVALID_IMPORT_PAGE');
+  }
+  const page = await fetchJson(`${playlistUrl}/${endpoint}?limit=${PLAYLIST_IMPORT_PAGE_SIZE}&offset=${offset}`);
+  return { playlistId, offset, totalItems: total, snapshotId, ...normalizeSpotifyImportPage(page, { endpoint, total }, offset) };
+}
 
 async function fetchSpotifyPlaylistImport(accessToken, playlistId, { signal } = {}) {
   if (!/^[A-Za-z0-9]{22}$/.test(playlistId)) {
@@ -1200,6 +1299,27 @@ async function handleProxy(req, res, requestUrl) {
     return;
   }
 
+  const isBandsintown = targetUrl.hostname === 'rest.bandsintown.com';
+  let bandsintownTimeout = null;
+  let bandsintownController = null;
+  if (isBandsintown) {
+    // An issued app_id is an access credential; never substitute a guessed ID
+    // or accept a client override when the deployment has no approved access.
+    const appId = getBandsintownAppId();
+    if (!appId) {
+      sendJson(res, 501, { error: 'Bandsintown access is not configured on this server.', code: 'BANDSINTOWN_NOT_CONFIGURED' });
+      return;
+    }
+    if (req.method !== 'GET' || targetUrl.protocol !== 'https:' || targetUrl.username || targetUrl.password
+        || targetUrl.port || !/^\/artists\/[^/]+\/events$/.test(targetUrl.pathname)) {
+      sendJson(res, 403, { error: 'Bandsintown proxy target is not allowed.' });
+      return;
+    }
+    targetUrl.searchParams.set('app_id', appId);
+    bandsintownController = new AbortController();
+    bandsintownTimeout = setTimeout(() => bandsintownController.abort(), 5000);
+  }
+
   try {
     const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await readRequestBody(req);
     const init = {
@@ -1208,6 +1328,10 @@ async function handleProxy(req, res, requestUrl) {
       body,
       redirect: 'follow',
     };
+    if (isBandsintown) {
+      init.signal = bandsintownController.signal;
+      init.redirect = 'error';
+    }
 
     let result;
     if (targetUrl.hostname === 'app.ticketmaster.com') {
@@ -1219,7 +1343,30 @@ async function handleProxy(req, res, requestUrl) {
       };
     }
 
-    const payload = Buffer.from(await result.response.arrayBuffer());
+    let payload = Buffer.from(await result.response.arrayBuffer());
+    if (isBandsintown) {
+      // Bandsintown echoes app_id in event, artist and ticket URLs. Do not
+      // expose the deployment credential in a successful or failed response.
+      let data;
+      try { data = JSON.parse(payload.toString('utf8')); }
+      catch {
+        sendJson(res, result.response.ok ? 502 : result.response.status,
+          { error: 'Bandsintown returned an invalid response.' });
+        return;
+      }
+      const appId = getBandsintownAppId();
+      payload = Buffer.from(JSON.stringify(data, (key, value) => {
+        if (typeof value !== 'string') return value;
+        try {
+          const url = new URL(value);
+          if (url.searchParams.has('app_id')) {
+            url.searchParams.delete('app_id');
+            value = url.toString();
+          }
+        } catch {}
+        return value.split(appId).join('[redacted]');
+      }));
+    }
     sendText(res, result.response.status, payload, {
       ...responseHeaders(result.response.headers),
       'Cache-Control': result.response.headers.get('cache-control') || 'no-store',
@@ -1227,8 +1374,15 @@ async function handleProxy(req, res, requestUrl) {
       ...(result.exhaustedServerPool ? { 'X-Tourtrack-TM-State': 'all-keys-exhausted' } : {}),
     });
   } catch (error) {
+    if (isBandsintown) {
+      sendJson(res, bandsintownController.signal.aborted ? 504 : 502,
+        { error: 'Bandsintown request failed.' });
+      return;
+    }
     console.error('Proxy request failed:', error);
     sendJson(res, 502, { error: 'Upstream request failed.', detail: error.message });
+  } finally {
+    if (bandsintownTimeout) clearTimeout(bandsintownTimeout);
   }
 }
 
@@ -1463,7 +1617,10 @@ async function handleSpotifyPlaylistImport(req, res, playlistId) {
     return;
   }
   const controller = new AbortController();
-  const abortOnDisconnect = () => controller.abort();
+  let disconnected = false;
+  const abortOnDisconnect = () => { disconnected = true; controller.abort(); };
+  const budgetError = spotifyRequestError('Spotify import request timed out. Your current playlist is unchanged; try again.', 504, 'IMPORT_TIMEOUT');
+  const budgetTimer = setTimeout(() => controller.abort(budgetError), PLAYLIST_IMPORT_REQUEST_BUDGET_MS);
   const onResponseClose = () => {
     if (!res.writableEnded) abortOnDisconnect();
   };
@@ -1474,7 +1631,7 @@ async function handleSpotifyPlaylistImport(req, res, playlistId) {
   if (req.aborted || res.destroyed) abortOnDisconnect();
   try {
     controller.signal.throwIfAborted();
-    const session = await getSpotifyUserSession(req, res);
+    const session = await getSpotifyUserSession(req, res, { signal: controller.signal });
     controller.signal.throwIfAborted();
     let accessToken = '';
     let source = 'app';
@@ -1483,18 +1640,23 @@ async function handleSpotifyPlaylistImport(req, res, playlistId) {
       accessToken = session.accessToken;
       source = 'user';
     } else {
-      const payload = await getSpotifyAppTokenPayload();
+      const payload = await getSpotifyAppTokenPayload({ signal: controller.signal });
       accessToken = payload.access_token;
     }
 
     controller.signal.throwIfAborted();
-    const payload = await fetchSpotifyPlaylistImport(accessToken, playlistId, { signal: controller.signal });
+    const params = new URL(req.url, 'http://127.0.0.1').searchParams;
+    const payload = params.has('step')
+      ? await fetchSpotifyPlaylistImportStep(accessToken, playlistId, params, controller.signal)
+      : await fetchSpotifyPlaylistImport(accessToken, playlistId, { signal: controller.signal });
+    controller.signal.throwIfAborted();
     // The same route can return private content selected by a user cookie.
     // Keep imports out of shared/CDN caches, including app-token responses.
     sendJson(res, 200, { source, ...payload });
   } catch (error) {
-    if (!controller.signal.aborted) sendSpotifyError(res, error, 'Failed to load Spotify playlist.');
+    if (!disconnected) sendSpotifyError(res, error, 'Failed to load Spotify playlist.');
   } finally {
+    clearTimeout(budgetTimer);
     req.removeListener('aborted', abortOnDisconnect);
     res.removeListener('close', onResponseClose);
   }
@@ -1694,6 +1856,7 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       ok: true,
       ticketmasterManaged: config.ticketmasterManaged,
+      bandsintownManaged: config.bandsintownManaged,
       spotifyManaged: config.spotifyManaged,
       spotifyLoginManaged: config.spotifyLoginManaged,
       localSetupAllowed: config.localSetupAllowed,

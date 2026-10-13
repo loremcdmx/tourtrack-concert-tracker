@@ -9,6 +9,7 @@ import { test } from 'node:test';
 
 const serverPath = fileURLToPath(new URL('../server/index.js', import.meta.url));
 const source = readFileSync(serverPath, 'utf8');
+const actionsSource = readFileSync(new URL('../client/assets/app/scan/actions.js', import.meta.url), 'utf8');
 const nativeRequire = createRequire(import.meta.url);
 const playlistId = 'abcdefghijklmnopqrstuv';
 const playlistUrl = `https://api.spotify.com/v1/playlists/${playlistId}`;
@@ -122,6 +123,133 @@ function playlistProvider({ endpoint = 'items', entries = [], snapshot = 'stable
       next: nextOffset < entries.length ? `${playlistUrl}/${endpoint}?offset=${nextOffset}&limit=50` : null });
   };
 }
+
+function pagedImportClient(server, cookie, progress = []) {
+  const requests = [];
+  const context = vm.createContext({ URLSearchParams, AbortController, DOMException, setTimeout, clearTimeout,
+    SPOTIFY_SERVER_TIMEOUT_MS: 15000,
+    fetch: async (url, options) => {
+      requests.push(String(url));
+      const pending = beginRequest(server.context, String(url), { cookie });
+      const abort = () => pending.res.emit('close');
+      if (options.signal.aborted) abort();
+      else options.signal.addEventListener('abort', abort, { once: true });
+      try {
+        await pending.pending;
+        if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        return new Response(pending.res.body, { status: pending.res.status, headers: { 'Content-Type': 'application/json' } });
+      } finally { options.signal.removeEventListener('abort', abort); }
+    },
+  });
+  const start = actionsSource.indexOf('async function spFetchPlaylistImport(');
+  const end = actionsSource.indexOf('function spBuildArtistMap(', start);
+  vm.runInContext(actionsSource.slice(start, end), context);
+  return { context, requests, run: () => context.spFetchPlaylistImport(playlistId, { onProgress: (done, total) => progress.push([done, total]) }) };
+}
+
+test('client pages 201 real-route tracks in order with progress and complete co-artist credits before verification', async () => {
+  const entries = Array.from({ length: 201 }, (_, index) => ({ item: { ...track(index),
+    artists: [{ id: 'artist-1', name: 'Artist' }, { id: `guest-${index}`, name: `Guest ${index}` }] } }));
+  const server = harness(playlistProvider({ entries, pageHook: async offset => {
+    await new Promise(resolve => setTimeout(resolve, offset === 0 ? 8 : 1));
+  } }));
+  const progress = [];
+  const client = pagedImportClient(server, sessionCookie(server.context), progress);
+  const result = await client.run();
+  assert.equal(result.tracks.length, 201);
+  assert.deepEqual(Array.from(result.tracks, item => item.id), entries.map(item => item.item.id));
+  assert.equal(result.tracks[200].artists[1].name, 'Guest 200');
+  assert.equal(result.importSummary.totalItems, 201);
+  assert.equal(client.requests.length, 7, 'metadata + five pages + verify');
+  assert.equal(new URL(client.requests.at(-1), 'http://local').searchParams.get('step'), 'verify');
+  assert.deepEqual(progress[0], [0, 201]);
+  assert.deepEqual(progress.at(-1), [201, 201]);
+  assert.equal(progress.length, 6);
+  assert.ok(server.calls.every(call => call.options.headers.Authorization === 'Bearer fixture-user-access'));
+});
+
+test('client rejects a failed page, aborts peers and performs no snapshot verification or partial success', async () => {
+  const entries = Array.from({ length: 201 }, (_, index) => ({ item: track(index) }));
+  const base = playlistProvider({ entries });
+  let aborted = 0;
+  const server = harness(async (url, options) => {
+    if (url.includes('/items?')) {
+      const offset = Number(new URL(url).searchParams.get('offset'));
+      if (offset === 0) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+        return json({ error: { message: 'Rate limited' } }, 429);
+      }
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+        aborted++; reject(options.signal.reason);
+      }, { once: true }));
+    }
+    return base(url, options);
+  });
+  const client = pagedImportClient(server, sessionCookie(server.context));
+  await assert.rejects(client.run(), /Rate limited/);
+  assert.equal(aborted, 2);
+  assert.equal(client.requests.some(url => url.includes('step=verify')), false);
+  assert.equal(server.calls.filter(call => call.url === playlistUrl).length, 1);
+});
+
+test('client rejects a playlist changed after all pages and never returns its partial candidate', async () => {
+  const entries = Array.from({ length: 101 }, (_, index) => ({ item: track(index) }));
+  const server = harness(playlistProvider({ entries, snapshot: read => read === 1 ? 'before' : 'after' }));
+  const client = pagedImportClient(server, sessionCookie(server.context));
+  await assert.rejects(client.run(), /changed during import/);
+  assert.equal(client.requests.filter(url => url.includes('step=page')).length, 3);
+});
+
+test('paged import validates continuation before any content call and never widens user permissions', async () => {
+  for (const query of ['step=page&total=101&endpoint=items&snapshot=s&offset=1',
+    'step=page&total=bad&endpoint=items&snapshot=s&offset=0', 'step=unknown']) {
+    const server = harness(() => assert.fail('Invalid page must not reach Spotify'));
+    const res = await request(server.context, `/api/spotify/playlists/${playlistId}/import?${query}`, { cookie: sessionCookie(server.context) });
+    assert.equal(res.status, 400);
+    assert.equal(server.calls.length, 0);
+  }
+  const denied = harness(() => json({ error: { message: 'Not the owner or collaborator' } }, 403));
+  const res = await request(denied.context, `/api/spotify/playlists/${playlistId}/import?step=page&total=101&endpoint=items&snapshot=s&offset=0`,
+    { cookie: sessionCookie(denied.context) });
+  assert.equal(res.status, 403);
+  assert.equal(res.json().code, 'PLAYLIST_ACCESS_DENIED');
+});
+
+test('45-second import budget also aborts refresh and profile body without clearing the user session', async () => {
+  for (const stage of ['refresh', 'profile']) {
+    let aborted = 0;
+    const server = harness(async (url, options) => {
+      if (url === 'https://accounts.spotify.com/api/token' && stage === 'profile') {
+        return json({ access_token: 'refreshed', expires_in: 3600 });
+      }
+      if (stage === 'profile') return hangingJsonBody(options, () => {}, () => { aborted++; });
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+        aborted++; reject(options.signal.reason);
+      }, { once: true }));
+    });
+    server.context.setTimeout = (fn, ms) => setTimeout(fn, ms === 45000 ? 8 : ms);
+    const res = await request(server.context, `/api/spotify/playlists/${playlistId}/import?step=metadata`,
+      { cookie: sessionCookie(server.context, { expired: true, withoutUser: true }) });
+    assert.equal(res.status, 504, stage);
+    assert.equal(res.json().code, 'IMPORT_TIMEOUT', stage);
+    assert.equal(aborted, 1, stage);
+    assert.equal(String(res.getHeader('set-cookie') || '').includes('Max-Age=0'), false);
+  }
+});
+
+test('legacy aggregate import obeys the same total budget and returns no incomplete tracks', async () => {
+  const entries = Array.from({ length: 101 }, (_, index) => ({ item: track(index) }));
+  const base = playlistProvider({ entries });
+  let aborted = 0;
+  const server = harness(async (url, options) => url.includes('/items?')
+    ? hangingJsonBody(options, () => {}, () => { aborted++; }) : base(url, options));
+  server.context.setTimeout = (fn, ms) => setTimeout(fn, ms === 45000 ? 8 : ms);
+  const res = await request(server.context, `/api/spotify/playlists/${playlistId}/import`, { cookie: sessionCookie(server.context) });
+  assert.equal(res.status, 504);
+  assert.equal(res.json().code, 'IMPORT_TIMEOUT');
+  assert.equal(aborted, 1);
+  assert.equal('tracks' in res.json(), false);
+});
 
 test('modern /items imports every page in original order with at most three workers', async () => {
   const entries = Array.from({ length: 201 }, (_, index) => ({ item: track(index) }));

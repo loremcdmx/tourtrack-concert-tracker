@@ -180,7 +180,7 @@ async function _fetchAllForRun(forceRefresh, run) {
         try {
           const shows = await fetchConcerts(artist, today, existingShows, run);
           if (!isScanRunCurrent(run)) return;
-          const finalShows = shows.length ? shows : await fetchBIT(artist, today, run);
+          const finalShows = shows.length ? shows : (await fetchBIT(artist, today, run)) || [];
           if (!isScanRunCurrent(run)) return;
           const upcomingFresh = finalShows.filter(s => s.date >= today);
 
@@ -318,7 +318,7 @@ async function _fetchAllForRun(forceRefresh, run) {
           try {
             const shows = await fetchConcerts(artist, today, null, run);
             if (!isScanRunCurrent(run)) return;
-            const finalShows = shows.length ? shows : await fetchBIT(artist, today, run);
+            const finalShows = shows.length ? shows : (await fetchBIT(artist, today, run)) || [];
             if (!isScanRunCurrent(run)) return;
             const upcomingFresh = finalShows.filter(s => s.date >= today);
             if (window._mergeMode) {
@@ -362,7 +362,7 @@ async function _fetchAllForRun(forceRefresh, run) {
         try {
           const fc = await DB.get('meta', 'festivals');
           if (!isScanRunCurrent(run)) return;
-          if (fc && (now - fc.ts) < TTL_FEST && fc.cHash === cHash && fc.ver === FEST_VER) {
+          if (fc && fc.complete === true && (now - fc.ts) < TTL_FEST && fc.cHash === cHash && fc.ver === FEST_VER) {
             festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, fc.data, today);
             festFromCache = true;
             dblog('info', `Festivals: from cache (${festivals.length}), age ${Math.round((now-fc.ts)/3600e3)}h`);
@@ -374,11 +374,17 @@ async function _fetchAllForRun(forceRefresh, run) {
       if (!festFromCache) {
         setProgress(`Fetching festivals…`, 90);
         try {
-          await fetchFestivalsData(run);
+          const discovery = await fetchFestivalsData(run);
           if (!isScanRunCurrent(run)) return;
+          runtime.festivalIncomplete = discovery?.complete !== true;
           festivals = mergeOngoingFestivals(ongoingFestivalSnapshot, festivals);
-          DB.put('meta', 'festivals', { ts: scanAborted ? 0 : now, cHash, data: festivals, ver: FEST_VER }).catch(() => {});
-        } catch(e) { if (!isScanRunCurrent(run)) return; dblog('error', `Festival fetch: ${e.message}`); }
+          DB.put('meta', 'festivals', { ts: runtime.festivalIncomplete ? 0 : Date.now(), cHash,
+            data: festivals, ver: FEST_VER, complete: !runtime.festivalIncomplete, discovery }).catch(() => {});
+        } catch(e) {
+          if (!isScanRunCurrent(run)) return;
+          runtime.festivalIncomplete = true;
+          dblog('error', `Festival fetch: ${e.message}`);
+        }
       }
     }
 
@@ -393,7 +399,7 @@ async function _fetchAllForRun(forceRefresh, run) {
     if (festivals.length) scoreFestivals();
     concerts = deduplicateConcerts(concerts);
     dblog('info', `Done: ${concerts.length} concerts, ${festivals.length} festivals`);
-    finalizeScan(scanAborted, C.cached, C.fresh, run);
+    finalizeScan(scanAborted || runtime.festivalIncomplete, C.cached, C.fresh, run);
   } finally {
     // Quota abort keeps the same owner. Persist partial data only after its
     // workers drain; a session handoff invalidates ownership and skips this.

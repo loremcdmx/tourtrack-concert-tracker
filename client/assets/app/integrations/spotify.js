@@ -1043,6 +1043,7 @@ function esc2(s) {
 let _onboardTimerInt = null;
 let _onboardStartTs  = 0;
 let _onboardAborted  = false;
+let _onboardProgressIsMeasured = false;
 
 function onboardSetStatus(msg, color) {
   const el = document.getElementById('onboard-status-text');
@@ -1109,6 +1110,7 @@ function onboardLog(msg, type) {
 }
 
 function onboardShowProgress(label) {
+  _onboardProgressIsMeasured = false;
   document.getElementById('onboard')?.classList.add('onboard-loading');
   const wrap = document.getElementById('onboard-prog-wrap');
   if (wrap) wrap.classList.add('visible');
@@ -1132,7 +1134,7 @@ function onboardShowProgress(label) {
     if (elapsed >= 5 && logWrap) logWrap.style.display = '';
     const currentFill = document.getElementById('onboard-prog-fill');
     const pct = currentFill ? parseFloat(currentFill.style.width) : 0;
-    if (currentFill && Number.isFinite(pct) && pct < 68) {
+    if (!_onboardProgressIsMeasured && currentFill && Number.isFinite(pct) && pct < 68) {
       const nextPct = Math.min(68, pct + (elapsed < 12 ? 1.6 : 0.7));
       currentFill.style.width = `${nextPct}%`;
     }
@@ -1156,13 +1158,14 @@ function onboardHideProgress() {
 }
 
 function onboardSetProgress(done, total) {
+  _onboardProgressIsMeasured = total > 0;
   const fill = document.getElementById('onboard-prog-fill');
   const lbl = document.getElementById('onboard-prog-label');
   const pct = total ? Math.round(done / total * 100) : 28;
   if (fill) fill.style.width = `${Math.max(8, Math.min(100, pct))}%`;
   if (lbl) {
     lbl.textContent = total
-      ? `Imported ${done} / ${total} tracks`
+      ? `Read ${done} / ${total} playlist items`
       : 'Preparing artist list...';
   }
 }

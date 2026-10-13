@@ -179,7 +179,11 @@ async function importPlaylistByLink(opts = {}) {
     spotifyAccountState.pendingPlaylistId = pid;
     renderSpotifyPlaylistChoices();
     const minTracks = isScenarioAProductMode() ? scenarioAFixedMinTracks() : _playlistImportMinTracks;
-    const payload = await spFetchPlaylistImport(pid, { signal: controller.signal });
+    const payload = await spFetchPlaylistImport(pid, { signal: controller.signal, onProgress: (done, total) => {
+      if (!current()) return;
+      if (isOnboard) onboardSetProgress(done, total);
+      else spSetProgress(done, total);
+    } });
     if (!current()) return false;
     const tracks = Array.isArray(payload?.tracks) ? payload.tracks : [];
     if (!tracks.length) throw new Error('This playlist has no available music tracks to scan.');
@@ -214,7 +218,7 @@ async function importPlaylistByLink(opts = {}) {
     const skipped = summary?.skippedItems ? Object.values(summary.skippedItems).reduce((sum, count) => sum + (Number(count) || 0), 0) : 0;
     const message = `${playlistMeta.name} · ${tracks.length} tracks · ${artists.length} artists${skipped ? ` · ${skipped} unavailable, local or podcast items skipped` : ''}`;
     if (isOnboard) { onboardClearProgress(); onboardSetStatus(saveWarning || `${message}. Starting concert scan…`, saveWarning ? 'var(--red)' : 'var(--accent)'); }
-    else document.getElementById('hero-status-text').textContent = message;
+    else { spClearProgress(); document.getElementById('hero-status-text').textContent = message; }
     buildCalChips(); renderCalendar(); renderMap();
     // Retain a cancellable handoff so a new link/cancel cannot start this scan.
     _playlistImportScanTimer = setTimeout(() => {
