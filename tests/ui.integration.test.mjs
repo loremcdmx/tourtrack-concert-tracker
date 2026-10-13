@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -625,6 +625,284 @@ afterEach(async () => {
     await page.close();
     page = null;
   }
+});
+
+test('scan progress stays visible with measured ETA and a usable Stop on desktop and narrow phones while debug stays closed', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, { artists: ['Muse', 'Sting', 'Atlas', 'Phoenix', 'Metric', 'Placebo'] });
+  const initialDebug = await page.evaluate(() => ({ visible: dbgVisible,
+    closed: document.getElementById('dbg-panel').classList.contains('off') }));
+  assert.deepEqual(initialDebug, { visible: false, closed: true });
+  await page.evaluate(() => {
+    markOnboardManualIntent(); hideOnboard(); closeSettings();
+    window.__testProgressJob = withTrackedScanJob('concert-scan', async run => {
+      window.__testProgressRun = run;
+      ScanProgress.step(run, { stage: 'concerts', title: 'Searching for concerts', detail: 'Checking your selected artists.',
+        total: run.artists.length, unit: 'artists', next: 'Next: festival matching' });
+      dblog('info', 'Offline managed scan started');
+      for (let done = 1; done <= 3; done++) {
+        await new Promise(resolve => setTimeout(resolve, done === 1 ? 10 : 1600));
+        if (!isScanRunCurrent(run)) return false;
+        ScanProgress.count(run, done, { remote: true });
+      }
+      await new Promise(resolve => { window.__testReleaseProgressJob = resolve; });
+      return isScanRunCurrent(run);
+    });
+  });
+  await page.waitFor(() => ScanProgress.snapshot()?.done === 3 && ScanProgress.snapshot()?.etaSeconds !== null,
+    { timeoutMs: 6000 });
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 812 }]) {
+    await setViewport(page, viewport.width, viewport.height);
+    const view = await page.evaluate(() => {
+      const card = document.getElementById('scan-status');
+      const stop = document.getElementById('scan-status-stop');
+      const bounds = card.getBoundingClientRect();
+      const button = stop.getBoundingClientRect();
+      const hit = document.elementFromPoint(button.left + button.width / 2, button.top + button.height / 2);
+      const bar = document.getElementById('scan-progress-track');
+      return { visible: !card.hidden && bounds.width > 0 && bounds.height > 0,
+        left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom,
+        buttonLeft: button.left, buttonRight: button.right, buttonHeight: button.height,
+        stopUsable: !stop.hidden && !stop.disabled && (hit === stop || stop.contains(hit)),
+        stopTag: stop.tagName, stopTabIndex: stop.tabIndex,
+        title: document.getElementById('scan-title').textContent, count: document.getElementById('scan-count').textContent,
+        eta: document.getElementById('scan-eta').textContent,
+        role: bar.getAttribute('role'), value: bar.getAttribute('aria-valuenow'), max: bar.getAttribute('aria-valuemax'),
+        debugClosed: !dbgVisible && document.getElementById('dbg-panel').classList.contains('off'),
+        width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth };
+    });
+    assert.equal(view.visible, true, `${viewport.width}px: scan progress must be visible`);
+    assert.ok(view.left >= 0 && view.right <= view.width + 1 && view.top >= 0 && view.bottom <= view.height,
+      `${viewport.width}px: scan progress must fit the viewport: ${JSON.stringify(view)}`);
+    assert.ok(view.scrollWidth <= view.width + 1, `${viewport.width}px: scan progress must not cause horizontal overflow`);
+    assert.ok(view.buttonLeft >= view.left && view.buttonRight <= view.right && view.stopUsable,
+      `${viewport.width}px: Stop must fit and receive a real pointer hit`);
+    assert.ok(view.buttonHeight >= (viewport.width <= 390 ? 44 : 36));
+    assert.deepEqual([view.stopTag, view.stopTabIndex], ['BUTTON', 0]);
+    assert.deepEqual([view.role, view.value, view.max], ['progressbar', '3', '6']);
+    assert.match(view.title, /concerts/i);
+    assert.match(view.count, /3\s*\/\s*6\s+artists/);
+    assert.match(view.eta, /About .+ for this step/);
+    assert.equal(view.debugClosed, true, 'Starting and updating a scan must not open the debug log');
+    if (process.env.TOURTRACK_SCAN_SCREENSHOT_DIR && [1440, 390].includes(viewport.width)) {
+      const screenshotDir = path.resolve(process.env.TOURTRACK_SCAN_SCREENSHOT_DIR);
+      const relative = path.relative(ROOT, screenshotDir);
+      assert.ok(relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), 'Visual QA screenshots must stay outside the public repository');
+      mkdirSync(screenshotDir, { recursive: true });
+      const screenshot = await page.browser.send('Page.captureScreenshot', { format: 'png' }, page.sessionId);
+      writeFileSync(path.join(screenshotDir, viewport.width === 1440 ? 'progress-desktop.png' : 'progress-phone.png'),
+        Buffer.from(screenshot.data, 'base64'));
+    }
+  }
+  await page.evaluate(() => {
+    ScanProgress.step(window.__testProgressRun, { stage: 'concerts', title: 'Searching for concerts',
+      total: 2544, unit: 'artists', next: 'Next: festival matching' });
+    ScanProgress.count(window.__testProgressRun, 2144);
+  });
+  for (const width of [320, 390, 1440]) {
+    await setViewport(page, width, 844);
+    const large = await page.evaluate(() => {
+      const card = document.getElementById('scan-status').getBoundingClientRect();
+      const stop = document.getElementById('scan-status-stop');
+      const button = stop.getBoundingClientRect();
+      const hit = document.elementFromPoint(button.left + button.width / 2, button.top + button.height / 2);
+      return { count: document.getElementById('scan-count').textContent,
+        eta: document.getElementById('scan-eta').textContent, width: innerWidth,
+        scrollWidth: document.documentElement.scrollWidth, left: card.left, right: card.right,
+        buttonRight: button.right, usable: hit === stop || stop.contains(hit) };
+    });
+    assert.match(large.count, /2144\s*\/\s*2544\s+artists/);
+    assert.ok(large.left >= 0 && large.right <= width + 1 && large.buttonRight <= large.right && large.usable,
+      `${width}px: large artist counts must leave Stop reachable: ${JSON.stringify(large)}`);
+    assert.ok(large.scrollWidth <= width + 1, `${width}px: large counts must not cause horizontal overflow`);
+    assert.match(large.eta, /Estimating/i, 'A new step cannot reuse the former step ETA');
+  }
+  const paused = await page.evaluate(() => {
+    ScanProgress.pause(window.__testProgressRun, 'Waiting for the provider to allow more requests', { key: 'provider' });
+    return { eta: document.getElementById('scan-eta').textContent,
+      detail: document.getElementById('scan-detail').textContent, state: document.getElementById('scan-status').dataset.state };
+  });
+  assert.equal(paused.state, 'paused');
+  assert.match(paused.detail, /Waiting for the provider/);
+  assert.match(paused.eta, /hold|waiting/i);
+  assert.doesNotMatch(paused.eta, /About/);
+  await page.evaluate(() => {
+    ScanProgress.resume(window.__testProgressRun, 'provider');
+    document.getElementById('scan-status-stop').focus();
+  });
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
+  await page.waitFor(() => ScanProgress.snapshot()?.outcome === 'stopped');
+  await page.evaluate(async () => { window.__testReleaseProgressJob(); await window.__testProgressJob; });
+  const stopped = await page.evaluate(() => ({ title: document.getElementById('scan-title').textContent,
+    stopHidden: document.getElementById('scan-status-stop').hidden, debugClosed: !dbgVisible,
+    dismissVisible: !document.getElementById('scan-status-dismiss').hidden }));
+  assert.equal(stopped.title, 'Scan stopped');
+  assert.deepEqual([stopped.stopHidden, stopped.dismissVisible, stopped.debugClosed], [true, true, true]);
+});
+
+test('scan progress diagnostics opens only through the Settings button and keyboard close returns focus', { concurrency: false }, async () => {
+  await setViewport(page, 390, 844);
+  await page.evaluate(installFixture, { artists: ['Muse'] });
+  await page.evaluate(() => {
+    markOnboardManualIntent(); hideOnboard();
+    document.getElementById('settings-open-btn').click();
+    document.getElementById('stab-advanced').click();
+    const details = document.getElementById('proxy-details');
+    if (details && !details.open) details.querySelector('summary').click();
+    const button = document.getElementById('settings-debug-log');
+    button.scrollIntoView({ block: 'center' }); button.focus();
+  });
+  const control = await page.evaluate(() => {
+    const button = document.getElementById('settings-debug-log');
+    const rect = button.getBoundingClientRect();
+    return { controls: button.getAttribute('aria-controls'), expanded: button.getAttribute('aria-expanded'),
+      focused: document.activeElement === button, tag: button.tagName, height: rect.height,
+      closed: document.getElementById('dbg-panel').classList.contains('off') };
+  });
+  assert.deepEqual([control.controls, control.expanded, control.focused, control.tag, control.closed],
+    ['dbg-panel', 'false', true, 'BUTTON', true]);
+  assert.ok(control.height >= 44, `The manual diagnostics button needs a phone touch target; actual ${control.height}px`);
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
+  const opened = await page.evaluate(() => ({ visible: dbgVisible,
+    expanded: document.getElementById('settings-debug-log').getAttribute('aria-expanded'),
+    panelClosed: document.getElementById('dbg-panel').classList.contains('off'),
+    focused: document.activeElement.id, settingsClosed: document.getElementById('settings-bg').classList.contains('off'),
+    label: document.getElementById('dbg-panel').getAttribute('aria-label') }));
+  assert.deepEqual(opened, { visible: true, expanded: 'true', panelClosed: false,
+    focused: 'dbg-panel', settingsClosed: true, label: 'Debug log' });
+  await page.evaluate(() => document.querySelector('#dbg-panel button[aria-label="Hide debug log"]').focus());
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' }, page.sessionId);
+  await page.browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
+  const closed = await page.evaluate(() => ({ visible: dbgVisible, focused: document.activeElement.id,
+    expanded: document.getElementById('settings-debug-log').getAttribute('aria-expanded'),
+    panelClosed: document.getElementById('dbg-panel').classList.contains('off') }));
+  assert.deepEqual(closed, { visible: false, focused: 'settings-open-btn', expanded: 'false', panelClosed: true });
+});
+
+test('scan progress stopped and stale callbacks cannot overwrite a newer tracked search summary', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, { artists: ['Muse', 'Sting'] });
+  await page.evaluate(() => {
+    markOnboardManualIntent(); hideOnboard(); closeSettings();
+    window.__testOldProgressJob = withTrackedScanJob('concert-scan', async run => {
+      window.__testOldProgressRun = run;
+      ScanProgress.step(run, { stage: 'concerts', title: 'Searching for concerts', total: 2, unit: 'artists' });
+      ScanProgress.count(run, 1, { remote: true });
+      await new Promise(resolve => { window.__testReleaseOldProgressJob = resolve; });
+      return false;
+    });
+  });
+  await page.waitFor(() => !!window.__testReleaseOldProgressJob);
+  await page.evaluate(() => document.getElementById('scan-status-stop').click());
+  assert.equal(await page.evaluate(() => ScanProgress.snapshot().outcome), 'stopped');
+  await page.evaluate(async () => { window.__testReleaseOldProgressJob(); await window.__testOldProgressJob; });
+  await page.evaluate(() => {
+    window.__testNewProgressJob = withTrackedScanJob('festivals', async run => {
+      window.__testNewProgressRun = run;
+      ScanProgress.step(run, { stage: 'festivals', title: 'Searching for festivals', total: 4, unit: 'searches', next: 'Next: lineup matching' });
+      ScanProgress.count(run, 1, { remote: true });
+      await new Promise(resolve => { window.__testReleaseNewProgressJob = resolve; });
+      return true;
+    });
+  });
+  await page.waitFor(() => ScanProgress.snapshot()?.stage === 'festivals');
+  const afterLate = await page.evaluate(() => {
+    const before = { title: document.getElementById('scan-title').textContent,
+      count: document.getElementById('scan-count').textContent, state: document.getElementById('scan-status').dataset.state };
+    const old = window.__testOldProgressRun;
+    ScanProgress.step(old, { stage: 'concerts', title: 'Late old concert response', total: 2, unit: 'artists' });
+    ScanProgress.count(old, 2, { remote: true });
+    ScanProgress.pause(old, 'Late old network failure');
+    ScanProgress.finish(old, 'error');
+    return { before, after: { title: document.getElementById('scan-title').textContent,
+      count: document.getElementById('scan-count').textContent, state: document.getElementById('scan-status').dataset.state },
+      active: ScanProgress.isActive(window.__testNewProgressRun), debugClosed: !dbgVisible };
+  });
+  assert.deepEqual(afterLate.after, afterLate.before, 'The previous job must not overwrite the visible newer search');
+  assert.equal(afterLate.before.title, 'Searching for festivals');
+  assert.match(afterLate.before.count, /1\s*\/\s*4\s+searches/);
+  assert.equal(afterLate.active, true);
+  assert.equal(afterLate.debugClosed, true);
+  await page.evaluate(async () => { window.__testReleaseNewProgressJob(); await window.__testNewProgressJob; });
+  assert.equal(await page.evaluate(() => ScanProgress.snapshot().outcome), 'complete');
+});
+
+test('scan progress reports fatal festival failure and unresolved artist coverage without dropping available results', { concurrency: false }, async () => {
+  await page.evaluate(installFixture, { artists: ['Alpha', 'Beta'],
+    concerts: [makeConcert('Alpha', 4, 'Offline Venue', 'Mexico City', 'MX', 19.43, -99.13, { id: 'retained-offline-concert' })],
+    festivals: [makeFestival('Offline Festival', 5, 'Mexico City', 'MX', 19.43, -99.13, { id: 'retained-offline-festival' })] });
+  await page.evaluate(() => {
+    markOnboardManualIntent(); hideOnboard(); closeSettings();
+    API_KEY = 'offline-fixture-key';
+    window.__testOriginalFestivalDiscovery = fetchFestivalsData;
+    fetchFestivalsData = async () => {
+      await new Promise(resolve => { window.__testReleaseFailedFestival = resolve; });
+      throw new Error('Offline festival discovery failed');
+    };
+    window.__testFailedFestivalJob = runFestivalRefresh();
+  });
+  await page.waitFor(() => !!window.__testReleaseFailedFestival);
+  const preparing = await page.evaluate(() => ({
+    visible: !document.getElementById('scan-status').hidden,
+    barWidth: Number.parseFloat(getComputedStyle(document.getElementById('scan-progress-fill')).width),
+    currentValue: document.getElementById('scan-progress-track').getAttribute('aria-valuenow'),
+    debugClosed: !dbgVisible,
+  }));
+  assert.equal(preparing.visible, true);
+  assert.ok(preparing.barWidth > 0, 'A preparing job with no known total needs a visible indeterminate bar');
+  assert.equal(preparing.currentValue, null, 'Unknown preparation progress must not advertise a fabricated count');
+  assert.equal(preparing.debugClosed, true);
+  const failed = await page.evaluate(async () => {
+    window.__testReleaseFailedFestival();
+    const result = await window.__testFailedFestivalJob;
+    fetchFestivalsData = window.__testOriginalFestivalDiscovery;
+    return { result, outcome: ScanProgress.snapshot().outcome, state: document.getElementById('scan-status').dataset.state,
+      title: document.getElementById('scan-title').textContent, elapsed: document.getElementById('scan-elapsed').textContent,
+      jobs: _trackedScanJobs.size, active: window._scanActive,
+      concertIds: concerts.map(show => show.id), festivalIds: festivals.map(fest => fest.id),
+      stopHidden: document.getElementById('scan-status-stop').hidden, debugClosed: !dbgVisible };
+  });
+  assert.equal(failed.result, false);
+  assert.equal(failed.outcome, 'error');
+  assert.equal(failed.state, 'error');
+  assert.match(failed.title, /could not finish/i);
+  assert.deepEqual([failed.jobs, failed.active, failed.stopHidden, failed.debugClosed], [0, false, true, true]);
+  assert.deepEqual(failed.concertIds, ['retained-offline-concert']);
+  assert.deepEqual(failed.festivalIds, ['retained-offline-festival']);
+  await delay(1100);
+  assert.equal(await page.evaluate(() => document.getElementById('scan-elapsed').textContent), failed.elapsed,
+    'A fatal summary must freeze its elapsed time once the tracked job settles');
+  const partial = await page.evaluate(async () => {
+    await withTrackedScanJob('concert-scan', async run => {
+      fetchErrors = { Alpha: { resolved: false, attempts: 1, lastErr: 'Offline artist search failed' } };
+      ScanProgress.step(run, { stage: 'concerts', title: 'Searching for concerts', total: 2, unit: 'artists' });
+      ScanProgress.count(run, 2);
+      return true;
+    });
+    return { outcome: ScanProgress.snapshot().outcome, state: document.getElementById('scan-status').dataset.state,
+      detail: document.getElementById('scan-detail').textContent, jobs: _trackedScanJobs.size,
+      concertIds: concerts.map(show => show.id), festivalIds: festivals.map(fest => fest.id), debugClosed: !dbgVisible };
+  });
+  assert.equal(partial.outcome, 'partial', 'A finished dispatcher with an unresolved artist is partial coverage');
+  assert.equal(partial.state, 'partial');
+  assert.match(partial.detail, /1 artist.*could not finish/i);
+  assert.equal(partial.jobs, 0);
+  assert.deepEqual(partial.concertIds, failed.concertIds);
+  assert.deepEqual(partial.festivalIds, failed.festivalIds);
+  assert.equal(partial.debugClosed, true);
+  const merged = await page.evaluate(async () => {
+    await withTrackedScanJob('merge-rescan', async () => true);
+    return ScanProgress.snapshot().outcome;
+  });
+  assert.equal(merged, 'partial', 'Add-only refresh must also report unresolved artist coverage as partial');
+  const recovered = await page.evaluate(async () => {
+    await withTrackedScanJob('concert-scan', async () => { fetchErrors.Alpha.resolved = true; return true; });
+    return { outcome: ScanProgress.snapshot().outcome, jobs: _trackedScanJobs.size };
+  });
+  assert.deepEqual(recovered, { outcome: 'complete', jobs: 0 }, 'Resolved failures must not keep later successful searches partial');
 });
 
 test('scenario A locks onboarding to the pinned playlist and hides multi-user chrome', { concurrency: false }, async () => {

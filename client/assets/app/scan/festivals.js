@@ -74,6 +74,9 @@ async function fetchFestivalsData(run = getScanContext()) {
     tasks.push({ geo: '', keyword: name, hint: name, kind: 'named', music: false });
   }
   result.totalQueries = tasks.length;
+  if (typeof ScanProgress !== 'undefined') ScanProgress.step(run, { stage: 'festivals', title: 'Checking festivals',
+    total: tasks.length, unit: 'searches', detail: 'Searching festival names and your selected countries.',
+    next: 'Results are saved after this step.' });
   let cursor = 0;
   const iso = seconds => new Date(seconds * 1000).toISOString().replace('.000Z', 'Z');
   const from = Math.floor(Date.parse(today + 'T00:00:00Z') / 1000);
@@ -113,7 +116,10 @@ async function fetchFestivalsData(run = getScanContext()) {
       } catch (error) {
         if (!isScanRunCurrent(run) || attempt === 1 || error.retryable === false
             || (error.retryable === undefined && error.message.startsWith('Festival HTTP '))) throw error;
+        if (typeof ScanProgress !== 'undefined') ScanProgress.pause(run, 'Festival provider paused. Waiting before retrying.',
+          { key: `festival:${task.kind}:${task.hint || task.geo}`, until: Date.now() + 250 });
         if (typeof sleep === 'function') await sleep(250);
+        if (typeof ScanProgress !== 'undefined') ScanProgress.resume(run, `festival:${task.kind}:${task.hint || task.geo}`);
       }
     }
   }
@@ -162,6 +168,8 @@ async function fetchFestivalsData(run = getScanContext()) {
   async function worker() {
     while (isScanRunCurrent(run) && cursor < tasks.length) {
       const task = tasks[cursor++];
+      if (typeof ScanProgress !== 'undefined') ScanProgress.detail(run,
+        task.hint ? `Looking for ${task.hint}` : 'Looking for festivals in the selected area.');
       try {
         await partition(task, from, null);
         result.completedQueries++;
@@ -170,12 +178,16 @@ async function fetchFestivalsData(run = getScanContext()) {
         dblog('warn', `Festival search ${task.hint || task.kind}: ${error.message}`);
       }
       const done = result.completedQueries + result.failedQueries.length;
+      if (isScanRunCurrent(run) && typeof ScanProgress !== 'undefined') ScanProgress.count(run, done, { remote: true });
       setProgress(`Festivals: ${done}/${tasks.length} searches · ${festivals.length} found`, 87 + Math.round(done / Math.max(1, tasks.length) * 6));
     }
   }
   await Promise.all(Array.from({ length: Math.min(FESTIVAL_FETCH_CONCURRENCY, Math.max(1, tasks.length)) }, () => worker()));
   result.complete = isScanRunCurrent(run) && result.completedQueries === tasks.length && !result.failedQueries.length;
+  if (typeof _installedScanRuntime !== 'undefined' && _installedScanRuntime?.run === run) _installedScanRuntime.festivalIncomplete = !result.complete;
   if (!isScanRunCurrent(run)) return result;
+  if (typeof ScanProgress !== 'undefined') ScanProgress.step(run, { stage: 'finishing', title: 'Saving festival results',
+    detail: 'Arranging festival matches.' });
   festivals = deduplicateFestivals(festivals);
   scoreFestivals();
   dblog(result.complete ? 'info' : 'warn', `Festivals: ${festivals.length} after dedup; ${result.completedQueries}/${tasks.length} searches complete, ${result.requests} requests`);

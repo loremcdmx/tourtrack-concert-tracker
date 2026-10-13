@@ -755,6 +755,9 @@ function runFestivalRefresh({ force = false, background = false } = {}) {
       if (isScanRunCurrent(run)) {
         setStatus('Festival import failed: ' + error.message, false);
         dblog('error', 'Festival import error: ' + error.message);
+        if (typeof ScanProgress !== 'undefined') ScanProgress.finish(run, 'error', {
+          detail: 'Could not load festivals. Your available results are kept.',
+        });
       }
       return false;
     } finally {

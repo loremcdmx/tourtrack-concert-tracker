@@ -768,6 +768,7 @@ function toggleDbg() {
   dbgVisible = !dbgVisible;
   const panel = document.getElementById('dbg-panel');
   panel.classList.toggle('off', !dbgVisible);
+  document.getElementById('settings-debug-log')?.setAttribute('aria-expanded', String(dbgVisible));
   if (dbgVisible) {
     _lastGroupKey = null; _lastGroupRow = null; _lastGroupCount = 0;
     const log = document.getElementById('dbg-log');
@@ -775,7 +776,15 @@ function toggleDbg() {
     dbgEntries.forEach(appendDbgRow);
     log.scrollTop = log.scrollHeight;
     updateDbgSummary();
+    panel.focus?.();
+  } else {
+    document.getElementById('settings-open-btn')?.focus();
   }
+}
+
+function openDebugLog() {
+  closeSettings();
+  if (!dbgVisible) toggleDbg();
 }
 
 function copyDbg() {

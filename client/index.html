@@ -7,8 +7,8 @@
 <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.min.css?v=1.9.4"/>
 <script defer src="/assets/vendor/leaflet/leaflet.min.js?v=1.9.4"></script>
 <link rel="stylesheet" href="/assets/vendor/fonts/identity-fonts.css?v=1">
-<link rel="stylesheet" href="/assets/styles.css?v=2.31.0074">
-<link rel="stylesheet" href="/assets/design.css?v=2.31.0074">
+<link rel="stylesheet" href="/assets/styles.css?v=2.31.0075">
+<link rel="stylesheet" href="/assets/design.css?v=2.31.0075">
 </head>
 <body>
 <header>
@@ -36,13 +36,33 @@
     <button class="btn btn-spotify-auth" id="spotify-auth-btn" onclick="openSpotifyAccess()">Spotify</button>
     <button class="btn btn-rescan" id="merge-rescan-btn" onclick="runScanAction('smart')" title="Refresh concerts with the cache-aware scan">&#x21BB; Refresh</button>
     <button class="btn btn-rescan-fests" id="fest-rescan-btn" onclick="openScanLibrary()" title="Open all scan and rescan actions">&#x1F50E; Actions</button>
-    <button class="btn btn-primary" onclick="openSettings()">Settings</button>
+    <button class="btn btn-primary" id="settings-open-btn" onclick="openSettings()">Settings</button>
   </div>
 </header>
 <nav class="workspace-nav" aria-label="Workspace">
   <button type="button" data-workspace-view="agenda" aria-pressed="true" onclick="setWorkspaceView('agenda')">Agenda</button>
   <button type="button" data-workspace-view="map" aria-pressed="false" onclick="setWorkspaceView('map')">Map</button>
 </nav>
+
+<section class="scan-status" id="scan-status" aria-label="Scan status" hidden>
+  <div class="scan-status-copy">
+    <h2 id="scan-title" aria-live="polite" aria-atomic="true">Preparing your scan</h2>
+    <p id="scan-detail"></p>
+  </div>
+  <div class="scan-status-numbers">
+    <div id="scan-count"></div>
+    <div class="scan-eta" id="scan-eta">Estimating time for this step…</div>
+  </div>
+  <div class="scan-status-actions">
+    <button type="button" id="scan-status-stop" onclick="stopScan()">Stop scan</button>
+    <button type="button" id="scan-status-diagnostics" onclick="openDebugLog()" hidden>Diagnostics</button>
+    <button type="button" id="scan-status-dismiss" onclick="dismissScanProgress()" hidden>Dismiss</button>
+  </div>
+  <div class="scan-progress-track" id="scan-progress-track" role="progressbar" aria-label="Current scan step" aria-valuemin="0" aria-valuemax="100">
+    <div id="scan-progress-fill"></div>
+  </div>
+  <div class="scan-status-footer"><span id="scan-elapsed"></span><span id="scan-next-step"></span></div>
+</section>
 
 <!-- ── Profile create dialog ── -->
 <div id="prof-dialog-bg" onclick="if(event.target===this)profCloseDialog()">
@@ -687,7 +707,7 @@
 </div>
 
 <!-- DEBUG PANEL -->
-<div class="dbg-panel off" id="dbg-panel">
+<div class="dbg-panel off" id="dbg-panel" role="region" aria-label="Debug log" tabindex="-1">
   <div class="dbg-hd">
     <span class="dbg-title">🔍 Debug Log</span>
     <div class="dbg-filters">
@@ -703,7 +723,7 @@
       <button class="dbg-btn" onclick="dbgRunDiagnose()">🩺 Diagnose</button>
       <button class="dbg-btn" onclick="copyDbg()">📋 Copy</button>
       <button class="dbg-btn" onclick="dbgClear()">🗑 Clear</button>
-      <button class="dbg-btn" onclick="toggleDbg()">✕</button>
+      <button class="dbg-btn" onclick="toggleDbg()" aria-label="Hide debug log">✕</button>
     </div>
   </div>
   <div class="dbg-body">
@@ -899,6 +919,7 @@
           <span class="prx-arr" style="margin-left:auto;font-size:.7rem;color:var(--muted2)">&#x25b8;</span>
         </summary>
         <div class="sset-details-body">
+          <button type="button" class="sset-debug-log-btn" id="settings-debug-log" onclick="openDebugLog()" aria-controls="dbg-panel" aria-expanded="false">Open debug log</button>
           <div style="font-size:.55rem;color:var(--muted2);letter-spacing:.07em;text-transform:uppercase">Spotify</div>
           <div class="proxy-row" id="proxy-opts">
             <button class="proxy-opt" data-p="none"      onclick="setSpProxy('none')">Direct</button>
@@ -945,45 +966,46 @@
   </div>
 </div>
 </div>
-<script defer src="/config.js?v=2.31.0074"></script>
-<script defer src="/assets/app/core/runtime.js?v=2.31.0074"></script>
-<script defer src="/assets/app/core/profiles.js?v=2.31.0074"></script>
-<script defer src="/assets/app/core/storage.js?v=2.31.0074"></script>
-<script defer src="/assets/app/core/filter-presets.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/actions.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/shared/network.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/shared/geo.js?v=2.31.0074"></script>
-    <script defer src="/assets/app/scan/shared/matching.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/shared/concert-records.js?v=2.31.0074"></script>
-<script defer src="/assets/app/core/artist-knowledge.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/shared/preflight.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/settings/panel.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/settings/scope.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/feedback.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/errors.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/runtime.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/pipeline.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/providers.js?v=2.31.0074"></script>
-    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.31.0074"></script>
-    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/festivals/scoring.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/festivals.js?v=2.31.0074"></script>
-<script defer src="/assets/app/scan/concerts.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/calendar.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/tile-cache.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/base.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/drawer.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/match.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/sidebar.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/focus.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/label-layout.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/labels.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/map/render.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/overlays.js?v=2.31.0074"></script>
-<script defer src="/assets/app/integrations/spotify.js?v=2.31.0074"></script>
-<script defer src="/assets/app/integrations/playlist-import.js?v=2.31.0074"></script>
-<script defer src="/assets/app/ui/workspace.js?v=2.31.0074"></script>
-<script defer src="/assets/app/bootstrap.js?v=2.31.0074"></script>
+<script defer src="/config.js?v=2.31.0075"></script>
+<script defer src="/assets/app/core/runtime.js?v=2.31.0075"></script>
+<script defer src="/assets/app/core/profiles.js?v=2.31.0075"></script>
+<script defer src="/assets/app/core/storage.js?v=2.31.0075"></script>
+<script defer src="/assets/app/core/filter-presets.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/actions.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/shared/network.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/shared/geo.js?v=2.31.0075"></script>
+    <script defer src="/assets/app/scan/shared/matching.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/shared/concert-matching.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/shared/concert-records.js?v=2.31.0075"></script>
+<script defer src="/assets/app/core/artist-knowledge.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/shared/preflight.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/settings/panel.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/settings/scope.js?v=2.31.0075"></script>
+<script defer src="/assets/app/core/scan-progress.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/feedback.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/errors.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/runtime.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/pipeline.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/providers.js?v=2.31.0075"></script>
+    <script defer src="/assets/app/scan/festivals/ingest.js?v=2.31.0075"></script>
+    <script defer src="/assets/app/scan/festivals/dedup.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/festivals/scoring.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/festivals.js?v=2.31.0075"></script>
+<script defer src="/assets/app/scan/concerts.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/calendar.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/tile-cache.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/base.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/drawer.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/match.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/sidebar.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/focus.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/label-layout.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/labels.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/map/render.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/overlays.js?v=2.31.0075"></script>
+<script defer src="/assets/app/integrations/spotify.js?v=2.31.0075"></script>
+<script defer src="/assets/app/integrations/playlist-import.js?v=2.31.0075"></script>
+<script defer src="/assets/app/ui/workspace.js?v=2.31.0075"></script>
+<script defer src="/assets/app/bootstrap.js?v=2.31.0075"></script>
 </body>
 </html>

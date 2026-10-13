@@ -26,7 +26,10 @@ function isScanRunCurrent(run) {
   return isScanRunOwned(run) && !scanAborted;
 }
 
-function invalidateScanRun() {
+function invalidateScanRun(reason = 'stopped') {
+  if (typeof ScanProgress !== 'undefined') {
+    for (const job of _trackedScanJobs) ScanProgress.finish(job.run, reason);
+  }
   _scanRunGeneration += 1;
   scanAborted = true;
   window._scanActive = false;
@@ -46,8 +49,22 @@ function withTrackedScanJob(kind, work) {
   const job = { kind, run, promise: null };
   _trackedScanJobs.add(job);
   window._scanActive = true;
+  if (typeof ScanProgress !== 'undefined') ScanProgress.begin(run, kind);
   job.promise = Promise.resolve().then(() => isScanRunCurrent(run) ? work(run) : false)
+    .then(value => { job.result = value; return value; })
+    .catch(error => {
+      if (typeof ScanProgress !== 'undefined') ScanProgress.finish(run, 'error');
+      throw error;
+    })
     .finally(() => {
+      if (typeof ScanProgress !== 'undefined') {
+        const owned = isScanRunOwned(run);
+        const failureCount = ['concert-scan', 'merge-rescan'].includes(kind) && typeof fetchErrors !== 'undefined'
+          ? Object.values(fetchErrors).filter(error => !error?.resolved).length : 0;
+        const partial = scanAborted || job.partial || job.result === false || _installedScanRuntime?.festivalIncomplete || failureCount > 0;
+        ScanProgress.finish(run, !owned ? 'superseded' : partial ? 'partial' : 'complete',
+          owned ? { detail: `${concerts.length} concerts · ${festivals.length} festivals available.${failureCount ? ` ${failureCount} artist searches could not finish.` : ''}` } : {});
+      }
       _trackedScanJobs.delete(job);
       if (_installedScanRuntime?.run === run) clearScanRuntime(_installedScanRuntime);
       if (run.generation === _scanRunGeneration) window._scanActive = false;
@@ -57,7 +74,7 @@ function withTrackedScanJob(kind, work) {
 
 async function stopActiveScanAndWait() {
   _scanStopDepth += 1;
-  invalidateScanRun();
+  invalidateScanRun('superseded');
   const generation = _scanRunGeneration;
   try {
     // An aborted dispatcher still owns its workers until every promise settles.
@@ -84,7 +101,6 @@ function beginScanRun(forceRefresh = false, run = getScanContext()) {
   document.getElementById('stop-btn').style.display = '';
   document.getElementById('pulse').className = 'pulse';
 
-  if (!dbgVisible) toggleDbg();
   const mode = forceRefresh ? 'FORCE-INCREMENTAL (diffs new shows vs cache)' : 'SMART (per-artist 24h cache)';
   dblog('info', `Scan started - ${mode} - key: ..${API_KEY.slice(-6)}, artists: ${ARTISTS.length}`);
 
@@ -99,7 +115,6 @@ function beginScanRun(forceRefresh = false, run = getScanContext()) {
   }
 
   window._scanActive = true;
-  updateProgress._times = [];
   _mapFirstFit = false;
   document.getElementById('dbg-banner')?.classList.remove('visible');
 
@@ -153,6 +168,8 @@ function noteTmRateLimit(runtime) {
   const pause = Math.min(5000 * Math.pow(2, Math.floor((runtime.consecutive429 - 1) / 3)), 60000);
   dblog('warn', `429 x${runtime.consecutive429} - cooling down ${Math.round(pause / 1000)}s`);
   runtime.lastRequestAt = Date.now() + pause;
+  if (typeof ScanProgress !== 'undefined') ScanProgress.pause(runtime.run, 'Waiting for Ticketmaster to allow more requests.',
+    { key: 'rate-limit', until: runtime.lastRequestAt });
   runtime.baseSleep = Math.min(runtime.baseSleep * 1.3, 3000);
 }
 
@@ -176,6 +193,7 @@ function handleTmHardQuota(runtime) {
   if (scanAborted) return;
 
   if (SERVER_MANAGED_TICKETMASTER) {
+    if (typeof ScanProgress !== 'undefined') ScanProgress.pause(runtime.run, 'Ticketmaster quota reached. Keeping partial results.', { key: 'quota' });
     scanAborted = true;
     window._scanActive = false;
     window._hardQuotaHit = true;
@@ -208,6 +226,7 @@ function handleTmHardQuota(runtime) {
   }
 
   scanAborted = true;
+  if (typeof ScanProgress !== 'undefined') ScanProgress.pause(runtime.run, 'Ticketmaster quota reached. Keeping partial results.', { key: 'quota' });
   window._scanActive = false;
   window._hardQuotaHit = true;
   document.getElementById('stop-btn').style.display = 'none';
@@ -231,6 +250,9 @@ function installScanRuntime(runtime, run = getScanContext()) {
 
 function clearScanRuntime(runtime = _installedScanRuntime) {
   if (!runtime || runtime !== _installedScanRuntime) return;
+  if (runtime.festivalIncomplete) {
+    for (const job of _trackedScanJobs) if (job.run === runtime.run) job.partial = true;
+  }
   _installedScanRuntime = null;
   window._rateLimitedWait = null;
   window._onTm429 = null;
@@ -241,10 +263,12 @@ function clearScanRuntime(runtime = _installedScanRuntime) {
 async function waitForCircuitRecovery(run = getScanContext()) {
   if (!circuitOpen) return;
   dblog('warn', 'Circuit open - pausing dispatch until network recovers (or Stop is pressed)');
-  setProgress('Network errors - paused. Check Debug Log or press Diagnose.', null);
+  setProgress('Network connection paused. Waiting for recovery.', null);
+  if (typeof ScanProgress !== 'undefined') ScanProgress.pause(run, 'Network paused. Waiting for the connection to recover.', { key: 'network' });
   while (circuitOpen && isScanRunCurrent(run)) {
     await sleep(500);
   }
+  if (typeof ScanProgress !== 'undefined') ScanProgress.resume(run, 'network');
   if (isScanRunCurrent(run)) dblog('info', 'Resuming scan...');
 }
 
@@ -270,6 +294,9 @@ async function noteArtistFailure(runtime) {
   const pause = Math.min(runtime.consecErrors * 2000, 20000);
   dblog('warn', `${runtime.consecErrors} consecutive errors - pausing ${pause / 1000}s before next artist`);
   runtime.baseSleep = Math.min(runtime.baseSleep * 2, 900);
+  if (typeof ScanProgress !== 'undefined') ScanProgress.pause(runtime.run, 'Pausing after repeated provider errors.',
+    { key: 'consecutive-errors', until: Date.now() + pause });
   await sleep(pause);
+  if (typeof ScanProgress !== 'undefined') ScanProgress.resume(runtime.run, 'consecutive-errors');
   runtime.consecErrors = 0;
 }
