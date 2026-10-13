@@ -96,7 +96,7 @@ function openPlaylistImport() {
   onboardClearProgress();
   clearPlaylistImportError();
   setPlaylistImportMinTracks(1);
-  onboardSetStatus('Paste a playlist link, or reopen a saved playlist below.');
+  onboardSetStatus('');
   focusOnboardPlaylistInput(true);
 }
 

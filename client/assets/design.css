@@ -35,6 +35,58 @@ body.playlist-links .onboard-mintracks-row { margin:0; }
 body.playlist-links .onboard-auth-divider { display:none; }
 body.playlist-links #onboard-history-wrap { padding-top:0; border-top:0; }
 body.playlist-links .onboard-status { font-size:.85rem; line-height:1.5; }
+/* Playlist choice puts familiar music before another import. */
+body.playlist-links .onboard-headnote { display:none; }
+body.playlist-links .onboard-card { max-width:720px; width:min(720px,100%); }
+body.playlist-links .onboard-title { font-size:clamp(1.9rem,4vw,2.5rem); }
+body.playlist-links .onboard-sub { max-width:52ch; }
+.onboard-section-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); font-size:.85rem; margin-bottom:10px; }
+.onboard-main-playlist { padding:8px 0 2px; }
+body.playlist-links .onboard-pl-main { border-color:var(--accent); background:var(--s2); padding:16px; gap:16px; }
+body.playlist-links .onboard-pl-main .onboard-pl-name { font-family:'Syne',sans-serif; font-size:1.2rem; line-height:1.3; overflow-wrap:anywhere; }
+body.playlist-links .onboard-pl-canvas { width:52px; height:52px; flex:0 0 52px; display:block; border-radius:6px; }
+body.playlist-links .onboard-pl-main .onboard-pl-canvas { width:68px; height:68px; flex-basis:68px; }
+body.playlist-links .onboard-pl { transform:none; }
+body.playlist-links .onboard-pl-name { white-space:normal; overflow-wrap:anywhere; line-height:1.35; }
+body.playlist-links .onboard-pl-meta { font-family:inherit; font-size:.78rem; line-height:1.5; white-space:normal; }
+body.playlist-links .onboard-pl-body { padding:0; }
+body.playlist-links .onboard-pl-arrow { font-family:inherit; font-size:.82rem; flex-shrink:0; padding:0; }
+body.playlist-links .onboard-pl-chip { font-family:inherit; font-size:.7rem; }
+body.playlist-links .onboard-pl-main .onboard-pl-chips { flex-wrap:wrap; overflow:visible; }
+body.playlist-links .onboard-link-label { color:var(--text); font-size:.9rem; margin-top:8px; }
+body.playlist-links .onboard-input-wrap { gap:10px; }
+body.playlist-links .onboard-input { min-height:46px; background:var(--bg); border-color:var(--border2); }
+.onboard-import-options { color:var(--muted); font-size:.82rem; }
+.onboard-import-options summary,.onboard-recent summary { min-height:44px; display:list-item; align-content:center; cursor:pointer; }
+.onboard-import-options .onboard-mintracks-row { margin-top:8px !important; }
+body.playlist-links #onboard-history-wrap { padding:0; border:0; color:var(--muted); font-size:.85rem; }
+body.playlist-links .onboard-history { gap:10px; padding:8px 0; }
+.onboard-history-item { min-width:0; }
+body.playlist-links .onboard-history-item .onboard-pl { padding:12px; gap:12px; }
+.onboard-history-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+.onboard-pl-pin { background:none; border:0; color:var(--muted); min-height:44px; padding:8px 12px; cursor:pointer; font-size:.8rem; }
+.onboard-pl-pin:hover { color:var(--accent); }
+body.playlist-links .onboard-pl-del { position:static; flex:0 0 44px; min-height:44px; width:44px; margin:0; padding:8px; }
+body.playlist-links #onboard-auth-wrap { padding-top:16px; border-top:1px solid var(--border); }
+body.playlist-links .onboard-auth-row { flex-wrap:wrap; align-items:center; }
+body.playlist-links .onboard-auth-status { margin:8px 0 14px; }
+body.playlist-links .onboard-auth-list { max-height:280px; overflow-y:auto; overscroll-behavior:contain; padding:3px; gap:8px; }
+body.playlist-links .onboard-auth-list .onboard-pl { padding:12px; gap:12px; min-height:76px; }
+body.playlist-links .onboard-auth-list .onboard-pl-name { font-family:inherit; font-size:.95rem; }
+body.playlist-links .onboard-auth-list .onboard-pl-cover-wrap { width:52px; height:52px; }
+body.playlist-links .onboard-auth-list .onboard-pl-cover { width:52px; height:52px; object-fit:cover; }
+.onboard-playlist-search { width:100%; box-sizing:border-box; margin-bottom:10px; }
+body.playlist-links .onboard-load-save { flex-wrap:wrap; gap:8px; font-size:.8rem; }
+@media(max-width:600px) {
+  body.playlist-links .onboard { padding:16px; }
+  body.playlist-links .onboard-card { padding:20px; }
+  body.playlist-links .onboard-pl-main { padding:12px; gap:12px; flex-wrap:wrap; }
+  body.playlist-links .onboard-pl-main .onboard-pl-canvas { width:52px; height:52px; flex-basis:52px; }
+  body.playlist-links .onboard-pl-main .onboard-pl-body { flex-basis:calc(100% - 64px); }
+  body.playlist-links .onboard-pl-main .onboard-pl-chips { display:none; }
+  body.playlist-links .onboard-pl-main .onboard-pl-arrow { width:100%; min-height:44px; display:flex; align-items:center; justify-content:center; background:var(--accent); color:var(--bg); border-radius:6px; font-weight:700; margin:0; }
+  body.playlist-links .onboard-auth-list { max-height:240px; }
+}
 @media(max-width:600px) {
   body.playlist-links .onboard-card { padding:22px; }
   body.playlist-links .onboard-title { font-size:1.9rem; }

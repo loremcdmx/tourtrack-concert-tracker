@@ -3229,6 +3229,63 @@ function spotifyAccountUiSnapshot() {
   };
 }
 
+test('main playlist survives another import and reload; account selection restores it without Spotify calls', { concurrency: false }, async () => {
+  await configureSpotifyImports({
+    [IMPORT_IDS.a]: spotifyImportFixture(IMPORT_IDS.a, 'My main listening', [['Alpha'], ['Alpha']]),
+    [IMPORT_IDS.b]: spotifyImportFixture(IMPORT_IDS.b, 'Another playlist', [['Beta']]),
+  });
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(() => localStorage.removeItem('tt_preferred_playlist'));
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.a)), true);
+  const event = makeConcert('Alpha', 4, 'Main Venue', 'Berlin', 'DE', 52.52, 13.405, { id: 'main-playlist-show' });
+  await page.evaluate(async (url, show) => {
+    concerts = [show]; persistData(); await persistActivePlaylistSession();
+    if (!setPreferredOnboardPlaylist(url)) throw new Error('Could not set main playlist');
+  }, importUrl(IMPORT_IDS.a), event);
+  assert.equal(await runOfflineSpotifyImport(page, importUrl(IMPORT_IDS.b)), true);
+  await settleUi(page, 560);
+  const callsBefore = (await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls;
+  await page.navigate(baseUrl);
+  await page.waitFor(() => SPOTIFY_PLAYLIST_META?.id === '2'.repeat(22));
+  await page.evaluate(() => { openPlaylistImport(); });
+  await seedKnownSpotifyAccount(page);
+  assert.equal(await page.evaluate(() => getPreferredOnboardPlaylist().id), IMPORT_IDS.a);
+  assert.equal(await page.evaluate(() => document.querySelector('#onboard-main-playlist-card button').dataset.playlistUrl), importUrl(IMPORT_IDS.a));
+  await page.evaluate(id => document.querySelector(`#onboard-auth-list button[data-playlist-id="${id}"]`).click(), IMPORT_IDS.a);
+  await page.waitFor(() => getActivePlaylistSessionId() === '1'.repeat(22) && concerts.some(show => show.id === 'main-playlist-show'));
+  assert.deepEqual((await (await fetch(`${baseUrl}/__test/spotify`)).json()).calls, callsBefore);
+  assert.equal(await page.evaluate(() => document.getElementById('onboard').classList.contains('hidden')), true);
+  await page.evaluate(() => localStorage.removeItem('tt_preferred_playlist'));
+});
+
+test('playlist choice exposes all 30 account playlists, filters by owner, and fits desktop and phone', { concurrency: false }, async () => {
+  await prepareSpotifyImportTest(page);
+  await page.evaluate(() => {
+    localStorage.removeItem('tt_preferred_playlist');
+    Object.assign(spotifyAccountState, { loaded:true, connected:true, loading:false, playlistsLoaded:true,
+      playlistsLoading:false, pendingPlaylistId:'', user:{ displayName:'Another listener' },
+      playlists:Array.from({length:30}, (_, i) => ({id:String(i+1).padStart(22,'0'), name:`Listening ${i+1}`, ownerName:i===29?'Distant Owner':'Another listener', trackCount:i+1})) });
+    renderOnboardSpotifyAuth(); renderOnboardHistory();
+  });
+  assert.equal(await page.evaluate(() => document.getElementById('onboard-main-playlist').hidden), true);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#onboard-auth-list button').length), 30);
+  for (const [width,height] of [[1440,900],[390,844],[320,740]]) {
+    await setViewport(page,width,height);
+    const bounds = await page.evaluate(() => ({ viewport:innerWidth, scroll:document.documentElement.scrollWidth,
+      search:document.getElementById('onboard-playlist-search').getBoundingClientRect().toJSON(),
+      list:document.getElementById('onboard-auth-list').getBoundingClientRect().toJSON() }));
+    assert.ok(bounds.scroll <= bounds.viewport+1);
+    assert.ok(bounds.search.width >= 200 && bounds.search.right <= bounds.viewport+1);
+    assert.ok(bounds.list.height <= 281);
+  }
+  await page.evaluate(() => {
+    const search=document.getElementById('onboard-playlist-search'); search.value='distant owner';
+    search.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#onboard-auth-list button').length), 1);
+  assert.equal(await page.evaluate(() => document.getElementById('onboard-playlist-count').textContent), '1 of 30 playlists');
+});
+
 // Exercise the real response reader and account handlers. Only fetch is offline;
 // a short deadline makes an unfinished response body fail without a long wait.
 async function runSpotifyAccountResponseFixture(spec) {
