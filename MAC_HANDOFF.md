@@ -10,7 +10,7 @@ brew install --cask google-chrome
 node -v
 ```
 
-Use Node 20 or newer. This repo pins `20` in `.nvmrc`.
+Use the Node 24 line this repo pins in `.nvmrc` (Node 20 is end-of-life and no longer receives security fixes).
 
 ## 2. Clone and prepare
 
